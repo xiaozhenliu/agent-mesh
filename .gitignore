@@ -1,0 +1,31 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# secrets: never in the repo
+*.key
+*.key.*
+outbound.key*
+.env
+.env.*
+**/env
+*.pem
+*.p12
+*.token
+
+# engine and relay runtime state (also when the cloud side runs from a clone of this repo)
+.reason/
+**/state/
+box/bin/
+box/person
+*.db
+*.db-wal
+*.db-shm
+fwd-copies/
+spool/
+inbox/
+threads/
+*.plist
+!*.plist.template
+*.log
+*.log.*

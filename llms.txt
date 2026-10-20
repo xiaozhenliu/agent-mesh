@@ -1,0 +1,25 @@
+# agent-mesh
+
+> Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. macOS, Reason Network v0.10.7. MIT.
+
+If you are an agent asked to install this: read AGENT-INSTALL.md and follow it stage by stage. Never read env or key files.
+
+## Install (for agents)
+
+- [AGENT-INSTALL.md](AGENT-INSTALL.md): the runbook. Who does each step, exact commands, expected output, what to ask the user, what never to do.
+- [install.sh](install.sh): one command for the Mac side. Stops where the user must act and says what to do.
+- [check.sh](check.sh): read-only self-check.
+- [prompts/routine.md](prompts/routine.md): the Grok Bot routine prompt (install.sh prints it).
+- [prompts/cloud-setup.md](prompts/cloud-setup.md): what the user sends to Grok Bot so it joins from its cloud machine (install.sh prints it filled in).
+
+## Reference (for humans, Chinese)
+
+- [README.md](README.md): what it is, how it works, install, verify, security, uninstall, message formats.
+- [templates/AGENTS.reason-network.md](templates/AGENTS.reason-network.md): reply convention to append to your AGENTS.md.
+- [dsh/README.md](dsh/README.md): DeepSeek Harness auto-wake plugin.
+
+## Code
+
+- agent_relay.py: the Mac relay (standard library only). install.sh, uninstall.sh, check.sh.
+- box/rn-cloud-setup.sh, box/rn-cloud.sh, box/rn-fetch.py: cloud side.
+- test_relay.py, box/test_rn_fetch.py, dsh/reason-network-bridge.test.mjs: offline tests.
