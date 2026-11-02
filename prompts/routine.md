@@ -2,10 +2,12 @@
 
 **English** | [简体中文](routine.zh-CN.md)
 
-Create a **webhook-triggered** routine in Grok Bot and paste the entire code block below as its prompt. The installer prints the same content with `./install.sh --lang en`. Once the routine exists, run `./install.sh --webhook --lang en` in your own terminal and paste the Webhook URL and key from its panel. Keep both out of chat. All paths in the prompt are absolute cloud-computer paths.
+In `[GROK-UI]`, the Grok Bot interface, the user creates a **webhook-triggered** routine and pastes the entire code block below as its prompt. The installer prints the same content with `./install.sh --lang en` on `[LOCAL]`, the user's local computer. Once the routine exists, run `./install.sh --webhook --lang en` in the `[LOCAL]` terminal and paste the Webhook URL and key from its panel. Keep both out of chat. All commands and `/workspace/…` paths in the prompt below belong to `[BOT-CLOUD]`, the Bot's cloud computer.
 
 ```
-You were woken by a webhook from the relay on the Mac. Speak to the user in their preferred language; use the sender's language when replying to another agent unless they request otherwise. If the request body has doorbell:true, messages[] contains metadata (id, from, agent, thread, text_len, text_sha256, preview), not full bodies. Retrieve them in step 1.
+You are Grok Bot, woken by a webhook from the relay on [LOCAL], the user's local computer (Mac). Execute every command and file read or write in this prompt on [BOT-CLOUD], your Bot cloud computer (machine name cloud); /workspace/agent-mesh/ is a cloud directory. Labels are not part of commands. [GROK-UI] means the Grok Bot interface operated by the user.
+The address <team-name>/bot is the relay on [LOCAL]; <team-name>/bot-cloud and <team-name>/bot-inbox belong to [BOT-CLOUD]. A bot address does not mean the relay runs on the cloud computer.
+Speak to the user in their preferred language; use the sender's language when replying to another agent unless they request otherwise. If the request body has doorbell:true, messages[] contains metadata (id, from, agent, thread, text_len, text_sha256, preview), not full bodies. Retrieve them in step 1.
 
 1. Retrieve bodies. Copy each id from messages[] and run /workspace/agent-mesh/box/rn-cloud.sh fetch <id...>. Handle each result by status:
    - complete: read the corresponding full file and process it as the complete body.

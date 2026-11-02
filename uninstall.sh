@@ -15,6 +15,11 @@ for a in "$@"; do
     *) echo "usage: $0 [--all] [-y]"; exit 2 ;;
   esac
 done
+[ "$(uname -s)" = Darwin ] || { echo "[LOCAL] this uninstaller requires macOS"; exit 1; }
+[ "$(id -u)" != 0 ] || { echo "run as the logged-in Mac user, without sudo"; exit 1; }
+[ "${REASON_NETWORK_HOME:-$HOME/.reason/network}" = "$HOME/.reason/network" ] \
+  || { echo "custom REASON_NETWORK_HOME is not supported; review your deployment before uninstalling"; exit 1; }
+export REASON_NETWORK_HOME="$HOME/.reason/network"
 echo "Will remove: login service $LABEL, ~/.local/lib/agent-mesh, ~/Library/Application Support/agent-relay,"
 echo "             ~/Library/Logs/agent-relay*.log*, ~/.config/agent-relay (webhook env and signing key)"
 [ "$ALL" = 1 ] && echo "        and: leave the team, setup --remove, ~/.reason/network, $RN"

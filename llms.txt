@@ -1,10 +1,16 @@
 # agent-mesh
 
+agent-mesh version: 0.1.0 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
+
 > Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. macOS, Reason Network v0.10.7. MIT.
 
 If you are an agent asked to install this: read AGENT-INSTALL.md (English) or AGENT-INSTALL.zh-CN.md (Simplified Chinese) and follow it stage by stage. Speak the user's language. Pass --lang en or --lang zh-CN on every installer invocation to select prompts; diagnostics and protocol fields stay English. Never read env or key files.
 
+Execution location labels: [LOCAL] = the user's local computer (Mac), where the installing agent, engine and relay run; [BOT-CLOUD] = Grok Bot's cloud computer (machine name cloud), where the Bot runs /workspace/agent-mesh/box/rn-cloud*.sh; [GROK-UI] = the Grok Bot interface, where the user creates routines and approves CopyToBox. install.sh, check.sh and uninstall.sh run on [LOCAL]. Each computer has its own clone and state. CopyToBox copies the signing key from [LOCAL] to [BOT-CLOUD]; never print its contents. The <team-name>/bot address is the relay on [LOCAL], not a cloud process.
+
 ## Install (for agents)
+
+Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), Git, Python 3.9+ with ssl/sqlite3, and at least one installed and authenticated coding agent. [BOT-CLOUD] requires Linux x86_64/ARM64, Bash, Git, Python 3.9+ with ssl/sqlite3, curl, tar, sha256sum, and writable persistent /workspace storage. Both need GitHub HTTPS and iroh connectivity. Default public HTTPS cloning needs no GitHub credentials or SSH key. See README prerequisites for missing tools and existing deployments. The installer uses the actual Mac HOME and Python interpreter; custom engine profiles or conflicting versions/installations stop for review.
 
 - [AGENT-INSTALL.md](AGENT-INSTALL.md): the runbook. Who does each step, exact commands, expected output, what to ask the user, what never to do.
 - [AGENT-INSTALL.zh-CN.md](AGENT-INSTALL.zh-CN.md): the same runbook in Simplified Chinese.

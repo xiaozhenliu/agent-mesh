@@ -2,7 +2,9 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Connect your local Claude Code, Codex, pi, and DeepSeek Harness sessions with a cloud Grok Bot in one private [Reason Network](https://github.com/reason-machines/reason-network) team. Either side can start a conversation, and replies wake the other side. macOS, Reason Network v0.10.7, Python 3, MIT. No Reason account, separately managed server, public IP, Docker, or separate Node installation is required.
+agent-mesh **v0.1.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version.
+
+Connect your local Claude Code, Codex, pi, and DeepSeek Harness sessions with a cloud Grok Bot in one private [Reason Network](https://github.com/reason-machines/reason-network) team. Either side can start a conversation, and replies wake the other side. macOS, Reason Network v0.10.7, Python 3.9+, MIT. No Reason account, separately managed server, public IP, Docker, or separate Node installation is required.
 
 To let an agent install it, give Claude Code or Codex this repository and say: **“Read [AGENT-INSTALL.md](AGENT-INSTALL.md) and install it.”**
 
@@ -25,20 +27,32 @@ Use `--lang en` or `--lang zh-CN` on each installer invocation to select generat
 - If Grok Bot can finish the work on its cloud computer—running scripts, doing research, or writing files—install the relevant CLIs there. You do not need this project.
 - Use agent-mesh when Grok Bot needs to collaborate with **already-open sessions on your own computer**: edit a local repository, use your subscriptions, or continue a long conversation. A command such as `claude -p` starts a new process; it does not reach the session already doing the work.
 
+## Execution location labels
+
+This guide, the runbook, and the prompts use these labels. They are instructions, not text to enter in a terminal.
+
+| Label | Location | What runs or happens there |
+|---|---|---|
+| `[LOCAL]` | User's local computer (Mac), normally named `mac` | Local coding agents, the Reason Network engine, and relay; `install.sh`, `check.sh`, `uninstall.sh` |
+| `[BOT-CLOUD]` | Grok Bot's cloud computer, named `cloud` | Grok Bot runs `/workspace/agent-mesh/box/rn-cloud*.sh` and stores cloud state and message bodies |
+| `[GROK-UI]` | Grok Bot interface opened by the user | Create or pause routines, paste prompts, and approve CopyToBox; these are not terminal commands |
+
+Each computer has its own repository clone; files do not sync automatically. On `[LOCAL]`, `~` is the user's Mac home directory; `/workspace/agent-mesh/` on `[BOT-CLOUD]` is a directory on the Bot's cloud computer. Unless labeled otherwise, terminal commands and `~/…` paths below belong to `[LOCAL]`.
+
 ## How it works
 
 There are three roles:
 
-- **Mac, kept awake:** runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents.
-- **Grok Bot's cloud computer, which may sleep:** starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox`, and uses the machine name `cloud`. No always-on service is installed there.
-- **Routine:** a webhook-triggered task in Grok Bot. A POST from the relay wakes it.
+- **`[LOCAL]` User's local computer, kept awake:** runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the Mac, not to the Bot's cloud computer.
+- **`[BOT-CLOUD]` Bot's cloud computer, which may sleep:** starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox`, and uses the machine name `cloud`. No always-on service is installed there.
+- **`[GROK-UI]` Routine:** a webhook task created in the Grok Bot interface; when woken, the Bot executes its prompt on `[BOT-CLOUD]`. A POST from the `[LOCAL]` relay wakes it.
 
 ```text
-Local agent → Mac relay → full body over Reason Network (RN-FWD) → cloud bot-inbox
-                    └── webhook: id, length, sha256 → routine wakes → rn-cloud.sh fetch
+[LOCAL] agent → [LOCAL] relay → full body over Reason Network (RN-FWD) → [BOT-CLOUD] bot-inbox
+                         └── webhook: id, length, sha256 → Bot wakes → [BOT-CLOUD] rn-cloud.sh fetch
 
-Grok Bot → signed RN-OUT → Mac relay sends as <team-name>/bot → local session
-                                ↑ replies return here, even when the cloud sleeps
+[BOT-CLOUD] Grok Bot → signed RN-OUT → [LOCAL] relay sends as <team-name>/bot → [LOCAL] session
+                                             ↑ replies return here, even when the cloud sleeps
 ```
 
 Four design choices make this work:
@@ -50,7 +64,13 @@ Four design choices make this work:
 
 ## Prerequisites
 
-- macOS with Python 3 available; install Xcode Command Line Tools if needed. Ensure `~/.local/bin` is in `PATH`.
+- `[LOCAL]`: an Apple Silicon or Intel Mac, running as a regular user signed into the macOS desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. Windows and Linux local computers are unsupported.
+- `[LOCAL]`: prepare Git and Python **3.9+**, including the `ssl` and `sqlite3` standard-library modules. Check with `git --version` and `python3 -c 'import sys, ssl, sqlite3; print(sys.version)'`. If Git or Python is missing, run `xcode-select --install`, finish installation and check again; if Python is still too old, install a suitable Python and put it on PATH. The installer also checks `curl`, `tar`, `shasum`, `openssl`, `launchctl`, and `plutil`; supply missing tools before retrying. No separate Node installation or pip packages are needed.
+- `[LOCAL]`: first install and sign in to at least one of Claude Code, Codex, pi, or DeepSeek Harness and verify it works independently. This project does not install these agents or configure model accounts/subscriptions. The integration plan comes from `reason-network setup --dry-run` on the user's computer, not from the author's configuration.
+- `[LOCAL]`: ensure `~/.local/bin` is in PATH. In the current Bash/zsh shell, run `export PATH="$HOME/.local/bin:$PATH"`. For persistence, use `~/.zshrc` for zsh, the appropriate `~/.bash_profile` or `~/.bashrc` for Bash, or `fish_add_path "$HOME/.local/bin"` for fish. Do not always edit `~/.zshrc`. The relay service records the detected Python's absolute path; if that Python is later moved or removed, repair Python and rerun the installer to update the service.
+- `[LOCAL]`: review any existing Reason Network installation first. This flow uses `~/.local/bin/reason-network`, the default `~/.reason/network` state directory, and pinned v0.10.7. A different PATH installation, engine version, or custom `REASON_NETWORK_HOME` stops the installer so the existing deployment can be reviewed. An existing team with the same person name can be reused; a different person cannot be renamed in place. Uninstalling with `--all` removes this default engine and its integrations and may affect existing uses; it is not a general troubleshooting step.
+- `[BOT-CLOUD]`: Linux x86_64 or ARM64, Bash, Git, Python 3.9+ with `ssl` and `sqlite3`, `curl`, `tar`, `sha256sum`, and a writable persistent `/workspace/agent-mesh/`. The Bot prepares missing tools using the cloud system's package manager and explains any needed permissions to the user; do not install them on the user's Mac instead. The cloud script checks system, CPU, and runtime dependencies before downloads; the cloud prompt covers Git and directory checks.
+- Both `[LOCAL]` and `[BOT-CLOUD]` need HTTPS access to GitHub repositories and release downloads, plus iroh relay connectivity. The default public HTTPS clone URL needs no GitHub account or SSH key. For a public fork, pass `--repo-url https://…` on each installer command that generates a cloud prompt; it must allow credential-free cloud reads. The local clone can live anywhere; the cloud clone must remain at `/workspace/agent-mesh/` because prompts use that fixed path.
 - Grok Bot must support webhook-triggered routines and CopyToBox from your Mac.
 - Keep the Mac powered on and awake. Enable the setting that prevents automatic sleep on power, or run `caffeinate`. Closing the lid stops everything.
 - Choose a team name, also used as your person name: 1–40 lowercase ASCII letters, digits, or hyphens; no leading or trailing hyphen. Use a pseudonym. Renaming requires recreating the team.
@@ -64,22 +84,24 @@ Four design choices make this work:
 
 ## Install
 
-Replace the repository URL and team-name placeholders:
+**`[LOCAL]` Run as the user or local installing agent:**
+
+Replace the team-name placeholder:
 
 ```bash
-git clone <repository-url> ~/agent-mesh
+git clone https://github.com/xiaozhenliu/agent-mesh.git ~/agent-mesh
 cd ~/agent-mesh
 ./install.sh --name <team-name> --lang en
 ```
 
-These commands assume a clone of the public distribution. Use the same public repository URL for the cloud clone; its root must contain `box/rn-cloud-setup.sh`.
+If the destination already exists, check that it is the same repository and review uncommitted changes before proceeding; do not overwrite it or blindly pull. These commands clone the public distribution. The cloud defaults to the same public repository, whose root must contain `box/rn-cloud-setup.sh`; the installer does not infer its URL from the local origin.
 
 The installer handles the Mac side and pauses for user actions:
 
 1. Downloads Reason Network v0.10.7, verifies SHA-256, creates your private team, and disables auto-update and LAN broadcasts.
 2. Shows `reason-network setup --dry-run` and **waits for confirmation** before wiring local agents.
-3. Generates the signing key and prints a routine prompt. **Create a webhook-triggered routine in Grok Bot and paste that prompt.** Paste its Webhook URL and key into your own terminal. The installer writes the configuration and installs the relay as a login service.
-4. Prints a team invite and cloud setup prompt. **Send both to Grok Bot.** It clones the repository on its cloud computer, joins the team, and requests approval to copy the signing key with CopyToBox.
+3. `[LOCAL]` generates the signing key and prints a routine prompt. **In `[GROK-UI]`, the user creates a webhook-triggered routine and pastes that prompt.** Paste its Webhook URL and key into the `[LOCAL]` terminal. The installer writes local configuration and installs the relay as a Mac login service.
+4. `[LOCAL]` prints a team invite and cloud setup prompt. **In `[GROK-UI]`, the user sends both to Grok Bot.** On `[BOT-CLOUD]`, the Bot clones the repository and joins the team, then uses CopyToBox to copy the key from `[LOCAL]` to `[BOT-CLOUD]`. The user approves the copy in `[GROK-UI]`.
 
 Reopen Claude Code and Codex sessions that were already running. Codex asks once on first launch; choose “Trust all and continue”.
 
@@ -89,6 +111,8 @@ Optional:
 - Reply convention: append the [English template](templates/AGENTS.reason-network.md) or [Chinese template](templates/AGENTS.reason-network.zh-CN.md) to your working repository's `AGENTS.md`. For Claude Code, also add `@AGENTS.md` to `CLAUDE.md`. The template asks for a conclusion followed by four concise status fields.
 
 ## Verify
+
+Locations: self-checks, test sends, and relay log inspection run on `[LOCAL]`; Grok Bot uses `/workspace/agent-mesh/box/rn-cloud.sh` on `[BOT-CLOUD]` for `who` and `fetch`.
 
 - Run `./check.sh`. This is read-only; each `FAIL` includes a suggested fix.
 - Send `reason-network send <team-name>/bot "test 1"`, then run `reason-network listen --as terminal --wait 600` in another terminal for the reply. Look for `forwarded` and `POST … code=200` in `~/Library/Logs/agent-relay.log`.
@@ -134,7 +158,7 @@ Closed sessions disappear from the roster. Messages remain in the inbox while th
 
 - `./uninstall.sh`: removes the relay service, state, message copies, logs, and `~/.config/agent-relay`.
 - `./uninstall.sh --all`: also runs `leave --force` and `setup --remove`, then removes `~/.reason/network` and the engine binary.
-- Cloud side: pause or delete the routine, then remove `/workspace/agent-mesh/`.
+- `[GROK-UI]`: pause or delete the routine. Then on `[BOT-CLOUD]`, remove `/workspace/agent-mesh/`. Both `uninstall.sh` commands above run on `[LOCAL]`.
 
 ## Appendix: message formats
 

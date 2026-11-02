@@ -13,9 +13,17 @@ bad()  { printf 'FAIL  %s\n      -> %s\n' "$1" "$2"; fail=1; }
 skip() { printf 'SKIP  %s (%s)\n' "$1" "$2"; }
 
 # prerequisites
-[ "$(uname -s)" = Darwin ] && ok "macOS" || bad "not macOS" "this project is tested on macOS only"
-command -v python3 >/dev/null && ok "python3" || bad "python3 missing" "xcode-select --install"
-case ":$PATH:" in *":$HOME/.local/bin:"*) ok "~/.local/bin in PATH";; *) bad "~/.local/bin not in PATH" "add  export PATH=\"\$HOME/.local/bin:\$PATH\"  to ~/.zshrc";; esac
+[ "$(uname -s)" = Darwin ] || { bad "not macOS" "run this check on [LOCAL], the user's Mac"; exit 1; }
+ok "macOS"
+[ "${REASON_NETWORK_HOME:-$HOME/.reason/network}" = "$HOME/.reason/network" ] \
+  || { bad "custom REASON_NETWORK_HOME" "this installer supports the default user profile only"; exit 1; }
+export REASON_NETWORK_HOME="$HOME/.reason/network"
+if command -v python3 >/dev/null && python3 -c 'import sys, ssl, sqlite3; sys.exit(sys.version_info < (3, 9))'; then
+  ok "Python 3.9+ with ssl and sqlite3"
+else
+  bad "Python 3.9+ missing or incomplete" "install Python 3.9+ and ensure python3 is on PATH; see README prerequisites"
+fi
+case ":$PATH:" in *":$HOME/.local/bin:"*) ok "~/.local/bin in PATH";; *) bad "~/.local/bin not in PATH" "add ~/.local/bin to PATH using your shell's startup file; see README prerequisites";; esac
 if curl -sS -o /dev/null -m 10 -w '%{http_code}' https://aps1-1.relay.n0.iroh.link/ 2>/dev/null | grep -q '^200$'; then
   ok "iroh relay reachable"
 else

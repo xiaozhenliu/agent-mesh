@@ -3,6 +3,8 @@
 #   ./install.sh --name <team-name> [--machine mac] [--yes] [--lang en|zh-CN]
 #   ./install.sh --webhook        enter (or change) the routine's Webhook URL and key, then (re)start the relay
 #   ./install.sh --cloud-prompt   print the invite and the text to send to Grok Bot again
+#   --repo-url https://...       public distribution URL accessible from the Bot's cloud computer
+#   ./install.sh --version      print agent-mesh and pinned Reason Network versions; no installation
 # --lang selects prompt language in every mode. Default: AGENT_MESH_LANG, otherwise en. Diagnostics stay English.
 # The team name is also your name inside the team: 1-40 chars, lowercase letters, digits and '-', not your real
 # name. It is fixed once the team exists.
@@ -11,8 +13,9 @@
 # prints what to send to Grok Bot. Re-running is safe.
 set -euo pipefail
 
-VERSION="${VERSION:-v0.10.7}"
+VERSION="v0.10.7"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_VERSION="$(cat "$HERE/VERSION")"
 BIN_DIR="$HOME/.local/bin"; RN="$BIN_DIR/reason-network"
 CONF_DIR="$HOME/.config/agent-relay"; ENV_FILE="$CONF_DIR/env"; KEY_FILE="$CONF_DIR/outbound.key"
 LIB_DIR="$HOME/.local/lib/agent-mesh"; RELAY="$LIB_DIR/agent_relay.py"
@@ -22,6 +25,7 @@ CFG="$HOME/.reason/network/config.toml"
 export REASON_NETWORK_NO_PROMPT=1
 
 NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG="${AGENT_MESH_LANG:-en}"
+REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="${2:?}"; shift 2 ;;
@@ -29,6 +33,8 @@ while [ $# -gt 0 ]; do
     --yes|-y) YES=1; shift ;;
     --webhook) MODE=webhook; shift ;;
     --cloud-prompt) MODE=cloud; shift ;;
+    --repo-url) REPO_URL="${2:?public HTTPS repository URL}"; shift 2 ;;
+    --version) echo "agent-mesh $PROJECT_VERSION (Reason Network ${VERSION#v})"; exit 0 ;;
     --lang) [ $# -ge 2 ] || { echo "install: --lang needs en or zh-CN" >&2; exit 2; }; DOC_LANG="$2"; shift 2 ;;
     -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1"; sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
@@ -42,8 +48,8 @@ esac
 say() { printf '\n== %s\n' "$*"; }
 die() { echo "install: $*" >&2; exit 1; }
 valid_name() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$ ]]; }
-current_person() { sed -n 's/^person = "\(.*\)"/\1/p' "$CFG" 2>/dev/null | head -n 1; }
-render_prompt() { python3 "$HERE/scripts/render_prompt.py" "$@" --lang "$DOC_LANG"; }
+current_person() { if [ -f "$CFG" ]; then sed -n 's/^person = "\(.*\)"/\1/p' "$CFG" | head -n 1; fi; }
+render_prompt() { "$PYTHON" "$HERE/scripts/render_prompt.py" "$@" --lang "$DOC_LANG"; }
 have_webhook() { [ -f "$ENV_FILE" ] && grep -Eq '^WEBHOOK_URL=https://' "$ENV_FILE" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$ENV_FILE"; }
 
 write_env() {   # $1 url, $2 key
@@ -63,30 +69,7 @@ EOF
 }
 
 write_plist() {
-  cat > "$PLIST" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/python3</string>
-    <string>$RELAY</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>$BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>30</integer>
-  <key>ProcessType</key><string>Background</string>
-  <key>StandardOutPath</key><string>$HOME/Library/Logs/agent-relay.launchd.log</string>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/agent-relay.launchd.log</string>
-</dict>
-</plist>
-EOF
+  "$PYTHON" "$HERE/scripts/write_launch_agent.py" "$RELAY" "$PLIST"
   plutil -lint "$PLIST" >/dev/null
 }
 
@@ -106,15 +89,18 @@ start_relay() {
 }
 
 webhook_step() {
+  [ -n "$(current_person)" ] && [ -s "$KEY_FILE" ] \
+    || die "team or signing key missing; run ./install.sh --name <team-name> first"
+  mkdir -p "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
   if [ "$MODE" = webhook ] || ! have_webhook; then
-    echo "In Grok Bot, create a routine that is triggered by a webhook, and paste this as its prompt:"
+    echo "[GROK-UI] User: create a webhook-triggered routine in Grok Bot and paste this prompt. The Bot executes it on [BOT-CLOUD], its cloud computer:"
     echo "----------------------------------------------------------------"
     render_prompt routine
     echo "----------------------------------------------------------------"
     echo "The routine panel then shows a Webhook URL and a key."
     if [ ! -t 0 ]; then
       echo "This is not a terminal, so the values cannot be entered here."
-      echo "Run   ./install.sh --webhook --lang $DOC_LANG   in your own terminal and paste them there (never into a chat)."
+      echo "[LOCAL] User: run   ./install.sh --webhook --lang $DOC_LANG   in this repository on your Mac and paste them there (never into a chat)."
       exit 0
     fi
     read -r -p "Webhook URL: " url
@@ -130,18 +116,46 @@ webhook_step() {
 cloud_prompt() {
   local person repo
   person="$(current_person)"; [ -n "$person" ] || die "not in a team yet; run the full install first"
-  repo="$(git -C "$HERE" remote get-url origin 2>/dev/null || echo '<repo url>')"
+  repo="$REPO_URL"
   local invite
   invite="$("$RN" invite --me | sed -n 's/^For a cloud agent of yours.*send it: //p')"
   [ -n "$invite" ] || invite="$("$RN" invite --me)"
-  echo "Send this to Grok Bot as one message (the first line is the invite, valid 24 hours while this Mac is online):"
+  echo "[GROK-UI] User: send this to Grok Bot as one message. The Bot executes it on [BOT-CLOUD], its cloud computer. The first line is the invite, valid 24 hours while [LOCAL], your Mac, is online:"
   echo "----------------------------------------------------------------"
   echo "$invite"
   echo
-  render_prompt cloud-setup --team-name "$person" --mac-user "$(whoami)" --repo-url "$repo"
+  render_prompt cloud-setup --team-name "$person" --mac-home "$HOME" --repo-url "$repo"
   echo "----------------------------------------------------------------"
-  echo "Grok Bot will ask you once to approve copying $KEY_FILE with CopyToBox. Afterwards run ./check.sh."
+  echo "[GROK-UI] User: approve CopyToBox from [LOCAL] $KEY_FILE to [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key. Afterwards the installing agent runs ./check.sh on [LOCAL]."
 }
+
+# Validate the user's machine in every mode, before downloads or configuration changes.
+[ "$MODE" != full ] || [ -n "$NAME" ] || die "need --name <team-name> (run with --help)"
+[ "$(uname -s)" = Darwin ] || die "[LOCAL] this installer requires macOS (Apple Silicon or Intel)"
+[ "$(id -u)" != 0 ] || die "run as the logged-in Mac user, without sudo"
+case "$(uname -m)" in arm64|x86_64) ;; *) die "unsupported CPU $(uname -m)" ;; esac
+[[ "$HOME" = /* ]] && [ -d "$HOME" ] && [ -w "$HOME" ] || die "HOME must be an absolute, writable user home directory"
+for tool in python3 curl tar shasum openssl launchctl plutil; do
+  command -v "$tool" >/dev/null || die "missing $tool; see README prerequisites before retrying"
+done
+PYTHON="$(python3 -c 'import sys; print(sys.executable)')" \
+  || die "python3 cannot start; finish or repair its installation before retrying"
+"$PYTHON" -c 'import sys, ssl, sqlite3, plistlib; sys.exit(sys.version_info < (3, 9))' \
+  || die "Python 3.9+ with ssl and sqlite3 is required; install it and put python3 on PATH"
+launchctl print "gui/$(id -u)" >/dev/null 2>&1 \
+  || die "no macOS GUI login session; sign in to the Mac desktop as this user first"
+[ "${REASON_NETWORK_HOME:-$HOME/.reason/network}" = "$HOME/.reason/network" ] \
+  || die "custom REASON_NETWORK_HOME is not supported; use the default user profile or stop to review your existing deployment"
+export REASON_NETWORK_HOME="$HOME/.reason/network"
+case "$REPO_URL" in https://*) ;; *) die "--repo-url must be a public HTTPS clone URL accessible without cloud credentials" ;; esac
+
+# Never replace a user's different engine version or create a second PATH installation silently.
+existing="$(command -v reason-network || true)"
+[ -z "$existing" ] || [ "$existing" = "$RN" ] || die "reason-network already exists at $existing; review that installation before using $RN"
+if [ -x "$RN" ]; then
+  installed_version="$("$RN" --version 2>/dev/null | awk '{print $2}')"
+  [ "$installed_version" = "${VERSION#v}" ] || die "existing Reason Network is $installed_version; this release requires ${VERSION#v}. Review an explicit version change before retrying; it has not been overwritten"
+fi
 
 case "$MODE" in
   webhook) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; webhook_step; exit 0 ;;
@@ -151,8 +165,6 @@ esac
 [ -n "$NAME" ] || die "need --name <team-name> (run with --help)"
 valid_name "$NAME" && valid_name "$MACHINE" \
   || die "the name must be 1-40 chars of lowercase letters, digits and '-', not starting or ending with '-'"
-[ "$(uname -s)" = Darwin ] || die "this installer is for macOS"
-command -v python3 >/dev/null || die "python3 missing: run  xcode-select --install"
 
 say "1/6 network"
 code="$(curl -sS -o /dev/null -m 10 -w '%{http_code}' https://aps1-1.relay.n0.iroh.link/ 2>/dev/null || true)"
@@ -177,13 +189,13 @@ else
   mkdir -p "$BIN_DIR"; install -m 755 "$tmp/reason-network" "$RN"
   echo "installed $("$RN" --version) at $RN"
 fi
-case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "note: add $BIN_DIR to your PATH, e.g.  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc" ;; esac
+case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "note: add $BIN_DIR to PATH using your shell startup file; see README prerequisites" ;; esac
 
 say "3/6 team"
 export REASON_NETWORK_MACHINE="$MACHINE"
 if "$RN" team >/dev/null 2>&1; then
   have="$(current_person)"
-  [ -z "$have" ] || [ "$have" = "$NAME" ] || die "this Mac is already '$have' in a team and names cannot change. Run ./uninstall.sh --all to start over."
+  [ "$have" = "$NAME" ] || die "existing team person is '$have', requested '$NAME'; review the existing deployment before changing it. Nothing can be renamed in place"
   echo "already in a team"
 else
   "$RN" stop >/dev/null 2>&1 || true

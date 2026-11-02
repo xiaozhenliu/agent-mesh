@@ -2,6 +2,8 @@
 
 [English](README.md) | **简体中文**
 
+执行位置：本指南中的所有命令、App 操作和文件路径都属于 `[LOCAL]` 用户本地电脑（Mac）。这个插件不安装在 `[BOT-CLOUD]` Bot 云电脑上。`[GROK-UI]` 表示用户操作的 Grok Bot 界面，三种标识与主指南一致。
+
 这个插件让 DeepSeek Harness（dsh）的会话像 Claude Code、Codex、pi 一样，能即时收到 Reason Network 的消息。它是一个 dsh 主机插件，没有任何包依赖，需要的 dsh 模块在运行时直接从 App 安装包里解析。
 
 为什么需要它：Reason Network 自带的 `setup` 只给 dsh 接了一个 MCP，所有会话共用同一个地址，而且消息只有会话自己去查收件箱才看得到。这个插件补上了两样东西：每个会话一个独立地址，以及自动唤醒。
@@ -15,21 +17,23 @@
 - 日志写在 `~/.dsh/logs/reason-network-bridge.log`，权限 600，超过 1 MB 自动轮转。
 
 ## 安装（macOS 桌面版）
+先安装、打开并配置好 DeepSeek Harness 桌面版，确认能独立使用。脚本依次查找 `~/Applications/DeepSeek Harness.app` 和 `/Applications/DeepSeek Harness.app`；如果安装在其他位置，运行时传入 `DSH_APP="/实际路径/DeepSeek Harness.app" dsh/mac-install.sh <team-name>`。需要主指南中的 Python；插件测试使用 App 自带运行时，无需另装 Node。
+
 先按[主指南](../README.zh-CN.md)装好 Mac 侧，然后在发行版根目录运行：
 
 ```
 dsh/mac-install.sh <team-name>
 ```
 
-脚本会依次做四件事：用 App 自带的运行时跑一遍单测；把 `~/.dsh/cordis.patch.yml` 备份到 `~/.dsh/backup-reason-network-bridge/`；把插件拷到 `~/.dsh/plugins/`；最后把 patch 里 Reason Network 的 MCP 块换成下面这一块。任何一步失败都会自动把 patch 恢复原样。装完后要**完全退出 dsh（⌘Q）再重新打开**，因为桌面版不会热加载。
+脚本会依次做四件事：用 App 自带的运行时跑一遍单测；把 `~/.dsh/cordis.patch.yml` 备份到 `~/.dsh/backup-reason-network-bridge/`；把插件拷到 `~/.dsh/plugins/`；最后把 patch 里 Reason Network 的 MCP 块换成下面这一块，其中 `<mac-home>` 会使用用户实际的 home 绝对路径。任何一步失败都会自动把 patch 恢复原样。装完后要**完全退出 dsh（⌘Q）再重新打开**，因为桌面版不会热加载。
 
 ```yaml
 - insert:
     - id: reason-network-bridge
-      name: '/Users/<mac-user>/.dsh/plugins/reason-network-bridge.mjs'
+      name: '<mac-home>/.dsh/plugins/reason-network-bridge.mjs'
       config:
         serverName: reason-network
-        command: '/Users/<mac-user>/.local/bin/reason-network'
+        command: '<mac-home>/.local/bin/reason-network'
         allowPeople:
           - '<team-name>'
 ```

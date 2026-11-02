@@ -2,10 +2,12 @@
 
 [English](routine.md) | **简体中文**
 
-在 Grok Bot 里新建一个**由 webhook 触发**的 routine，把下面代码块整段贴进它的提示词（`./install.sh --lang zh-CN` 装到这一步时也会打印同样的内容）。routine 建好后，面板会给出 Webhook URL 和 key；在你自己的终端里运行 `./install.sh --webhook --lang zh-CN`，把它们粘贴进去。这两个值不要贴进任何聊天。提示词里的路径都是云电脑上的绝对路径。
+用户在 `[GROK-UI]` Grok Bot 界面新建一个**由 webhook 触发**的 routine，把下面代码块整段贴进它的提示词（`[LOCAL]` 用户本地电脑上的 `./install.sh --lang zh-CN` 装到这一步时也会打印同样的内容）。routine 建好后，面板会给出 Webhook URL 和 key；在 `[LOCAL]` 的终端里运行 `./install.sh --webhook --lang zh-CN`，把它们粘贴进去。这两个值不要贴进任何聊天。下面提示词中的命令和 `/workspace/…` 路径全部属于 `[BOT-CLOUD]` Bot 云电脑。
 
 ```
-你是被 Mac 上的 relay 通过 webhook 唤醒的。向用户使用其偏好的语言；回复其他 agent 时使用对方的语言，除非对方另有要求。请求 body 里 doorbell:true 时，messages[] 只有元数据（id、from、agent、thread、text_len、text_sha256、preview），没有正文，正文要按第 1 步取回。
+你是 Grok Bot，被 [LOCAL] 用户本地电脑（Mac）上的 relay 通过 webhook 唤醒。你在 [BOT-CLOUD] Bot 云电脑（机器名 cloud）执行本提示词的所有命令、读取和写入文件；/workspace/agent-mesh/ 是云电脑上的目录。标识不是命令的一部分。用户操作的 Grok Bot 界面标为 [GROK-UI]。
+地址 <team-name>/bot 是 [LOCAL] 的 relay；<team-name>/bot-cloud 和 <team-name>/bot-inbox 属于 [BOT-CLOUD]。不要因为地址含 bot 就把 relay 当成云端进程。
+向用户使用其偏好的语言；回复其他 agent 时使用对方的语言，除非对方另有要求。请求 body 里 doorbell:true 时，messages[] 只有元数据（id、from、agent、thread、text_len、text_sha256、preview），没有正文，正文要按第 1 步取回。
 
 1. 取正文。把 messages[] 里每一项的 id 抄出来，运行 /workspace/agent-mesh/box/rn-cloud.sh fetch <id...>，然后按每条结果的 status 处理：
    - complete：读对应的 full 文件，把它当作完整正文处理。

@@ -8,6 +8,14 @@ from render_prompt import ROOT, render_prompt
 
 
 class Prompts(unittest.TestCase):
+    def test_project_version_is_available_without_installing(self):
+        result = subprocess.run(["bash", str(ROOT / "install.sh"), "--version"],
+                                env=dict(os.environ, AGENT_MESH_LANG="invalid"),
+                                capture_output=True, text=True, check=True)
+        version = (ROOT / "VERSION").read_text().strip()
+        self.assertEqual(result.stdout, f"agent-mesh {version} (Reason Network 0.10.7)\n")
+        self.assertNotIn("1/6", result.stdout)
+
     def test_both_languages_preserve_recovery_and_permission_rules(self):
         for lang in ("en", "zh-CN"):
             with self.subTest(lang=lang):
@@ -31,6 +39,15 @@ class Prompts(unittest.TestCase):
             self.assertIn("rn-cloud-setup.sh '<invite-link>' demo", text)
             self.assertNotIn("<mac-user>", text)
             self.assertNotIn("<repo-url>", text)
+
+    def test_actual_mac_home_does_not_assume_users_directory(self):
+        home = "/Volumes/People/Alex & Team"
+        for lang in ("en", "zh-CN"):
+            text = render_prompt("cloud-setup", lang, team_name="demo", mac_home=home,
+                                 repo_url="https://example.invalid/repo.git")
+            self.assertIn(home + "/.config/agent-relay/outbound.key", text)
+            self.assertNotIn("<mac-home>", text)
+            self.assertNotIn("/Users/", text)
 
     def test_cli_from_another_directory(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/render_prompt.py"),

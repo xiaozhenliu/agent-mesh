@@ -17,11 +17,15 @@
 # State lives under /workspace/agent-mesh/box (survives box restarts). Nothing here runs in the background
 # on purpose: the engine daemon is started on demand and dies with the box.
 set -euo pipefail
+die() { echo "rn-cloud: $*" >&2; exit 1; }
+[ "$(uname -s)" = Linux ] || die "[BOT-CLOUD] run this on the Bot's Linux cloud computer, not the user's Mac"
+command -v python3 >/dev/null || die "Python 3.9+ is required on [BOT-CLOUD]; see README prerequisites"
 BASE="${RN_CLOUD_BASE:-/workspace/agent-mesh/box}"   # override only for tests
 export REASON_NETWORK_HOME="$BASE/state"
 export REASON_NETWORK_NO_PROMPT=1
 export REASON_NETWORK_MACHINE="${MACHINE_NAME:-cloud}"   # same machine name as rn-cloud-setup.sh used to join
 RN="$BASE/bin/reason-network"
+[ -s "$BASE/person" ] || die "cloud setup is incomplete; run rn-cloud-setup.sh with the Mac invite and team name first"
 PERSON="$(cat "$BASE/person")"            # written by rn-cloud-setup.sh; the same name as the Mac
 CLOUD="${RN_CLOUD_NAME:-bot-cloud}"
 INBOX="${RN_INBOX_NAME:-bot-inbox}"
@@ -29,7 +33,6 @@ STRAY="${RN_INBOX_DIR:-/workspace/agent-mesh/inbox}/_stray"
 export RN_BOX="$BASE" RN_PERSON="$PERSON" RN_INBOX_NAME="$INBOX" RN_KEY_FILE="$BASE/outbound.key"
 KEY_FILE="$BASE/outbound.key"             # same secret as OUTBOUND_KEY on the Mac, mode 0600
 
-die() { echo "rn-cloud: $*" >&2; exit 1; }
 [ -x "$RN" ] || die "engine not installed at $RN"
 [ -s "$KEY_FILE" ] || die "missing $KEY_FILE"
 

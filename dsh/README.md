@@ -2,6 +2,8 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+Execution location: all commands, app actions, and file paths in this guide belong to `[LOCAL]`, the user's local computer (Mac). This plugin is not installed on `[BOT-CLOUD]`, the Bot's cloud computer. `[GROK-UI]` means the Grok Bot interface operated by the user; all three labels match the main guide.
+
 This host plugin lets DeepSeek Harness (dsh) sessions receive Reason Network messages automatically, like Claude Code, Codex, and pi. It has no package dependencies; it resolves the required dsh modules from the installed app at runtime.
 
 Reason Network's built-in setup supplies a shared MCP address and requires sessions to check their inbox. This plugin adds a separate address for each session and automatic wake-ups.
@@ -17,21 +19,23 @@ Reason Network's built-in setup supplies a shared MCP address and requires sessi
 
 ## Install (macOS desktop)
 
+First install, open, and configure DeepSeek Harness desktop and confirm it works independently. The installer searches `~/Applications/DeepSeek Harness.app` and then `/Applications/DeepSeek Harness.app`; for another location, run `DSH_APP="/actual/path/DeepSeek Harness.app" dsh/mac-install.sh <team-name>`. Python from the main guide is required; plugin tests use the app's runtime, with no separate Node installation.
+
 First install the Mac side using the [main guide](../README.md), then run from the distribution root:
 
 ```bash
 dsh/mac-install.sh <team-name>
 ```
 
-The script runs tests with the app's runtime, backs up `~/.dsh/cordis.patch.yml` to `~/.dsh/backup-reason-network-bridge/`, copies the plugin to `~/.dsh/plugins/`, and replaces the Reason Network MCP block with the configuration below. If a step fails after backup, it restores the patch. **Quit dsh completely (⌘Q) and reopen it**; the desktop app does not hot-reload plugins.
+The script runs tests with the app's runtime, backs up `~/.dsh/cordis.patch.yml` to `~/.dsh/backup-reason-network-bridge/`, copies the plugin to `~/.dsh/plugins/`, and replaces the Reason Network MCP block with the configuration below. It fills `<mac-home>` with the user's actual absolute home path. If a step fails after backup, it restores the patch. **Quit dsh completely (⌘Q) and reopen it**; the desktop app does not hot-reload plugins.
 
 ```yaml
 - insert:
     - id: reason-network-bridge
-      name: '/Users/<mac-user>/.dsh/plugins/reason-network-bridge.mjs'
+      name: '<mac-home>/.dsh/plugins/reason-network-bridge.mjs'
       config:
         serverName: reason-network
-        command: '/Users/<mac-user>/.local/bin/reason-network'
+        command: '<mac-home>/.local/bin/reason-network'
         allowPeople:
           - '<team-name>'
 ```

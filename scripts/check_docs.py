@@ -23,6 +23,16 @@ def anchors(text):
 
 def check_docs():
     errors = []
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        errors.append("VERSION: expected major.minor.patch")
+    for name in ("README.md", "README.zh-CN.md"):
+        if f"**v{version}**" not in (ROOT / name).read_text(encoding="utf-8"):
+            errors.append(f"{name}: project version differs from VERSION")
+    for name in ("CHANGELOG.md", "CHANGELOG.zh-CN.md"):
+        if not re.search(rf"^## v{re.escape(version)} — \d{{4}}-\d{{2}}-\d{{2}}$",
+                         (ROOT / name).read_text(encoding="utf-8"), re.M):
+            errors.append(f"{name}: missing release entry for VERSION")
     documents = sorted(ROOT.rglob("*.md")) + [ROOT / "llms.txt"]
     for path in documents:
         text = path.read_text(encoding="utf-8")
@@ -49,11 +59,11 @@ def check_docs():
         try:
             en = render_prompt(template, "en")
             zh = render_prompt(template, "zh-CN")
-            placeholders = lambda text: set(re.findall(r"<(?:repo-url|team-name|mac-user|invite-link)>", text))
+            placeholders = lambda text: set(re.findall(r"<(?:repo-url|team-name|mac-home|invite-link)>", text))
             if placeholders(en) != placeholders(zh):
                 errors.append(f"{template}: translated placeholders differ")
             if template == "cloud-setup" and placeholders(en) != {
-                    "<repo-url>", "<team-name>", "<mac-user>", "<invite-link>"}:
+                    "<repo-url>", "<team-name>", "<mac-home>", "<invite-link>"}:
                 errors.append("cloud-setup: expected placeholders are missing")
         except (OSError, ValueError) as error:
             errors.append(str(error))
@@ -70,5 +80,5 @@ if __name__ == "__main__":
     for error in errors:
         print(f"FAIL {error}")
     if not errors:
-        print("PASS bilingual pairs, local links and anchors, prompt placeholders, protocol vectors")
+        print("PASS release version, bilingual pairs, local links and anchors, prompt placeholders, protocol vectors")
     raise SystemExit(bool(errors))
