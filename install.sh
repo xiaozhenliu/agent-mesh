@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # agent-mesh: install the Mac side in one run.
-#   ./install.sh --name <team-name> [--machine mac] [--yes]
+#   ./install.sh --name <team-name> [--machine mac] [--yes] [--lang en|zh-CN]
 #   ./install.sh --webhook        enter (or change) the routine's Webhook URL and key, then (re)start the relay
 #   ./install.sh --cloud-prompt   print the invite and the text to send to Grok Bot again
+# --lang selects prompt language in every mode. Default: AGENT_MESH_LANG, otherwise en. Diagnostics stay English.
 # The team name is also your name inside the team: 1-40 chars, lowercase letters, digits and '-', not your real
 # name. It is fixed once the team exists.
 # What it does: installs Reason Network, creates your private team, wires your local agents (after showing the
@@ -20,7 +21,7 @@ LOG="$HOME/Library/Logs/agent-relay.log"
 CFG="$HOME/.reason/network/config.toml"
 export REASON_NETWORK_NO_PROMPT=1
 
-NAME=""; MACHINE="mac"; YES=0; MODE=full
+NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG="${AGENT_MESH_LANG:-en}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="${2:?}"; shift 2 ;;
@@ -28,16 +29,21 @@ while [ $# -gt 0 ]; do
     --yes|-y) YES=1; shift ;;
     --webhook) MODE=webhook; shift ;;
     --cloud-prompt) MODE=cloud; shift ;;
-    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --lang) [ $# -ge 2 ] || { echo "install: --lang needs en or zh-CN" >&2; exit 2; }; DOC_LANG="$2"; shift 2 ;;
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1"; sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
+case "$DOC_LANG" in
+  en|zh-CN) ;;
+  *) echo "install: unsupported language '$DOC_LANG'; choose en or zh-CN" >&2; exit 2 ;;
+esac
 
 say() { printf '\n== %s\n' "$*"; }
 die() { echo "install: $*" >&2; exit 1; }
 valid_name() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$ ]]; }
 current_person() { sed -n 's/^person = "\(.*\)"/\1/p' "$CFG" 2>/dev/null | head -n 1; }
-code_block() { sed -n '/^```$/,/^```$/p' "$1" | sed '1d;$d'; }
+render_prompt() { python3 "$HERE/scripts/render_prompt.py" "$@" --lang "$DOC_LANG"; }
 have_webhook() { [ -f "$ENV_FILE" ] && grep -Eq '^WEBHOOK_URL=https://' "$ENV_FILE" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$ENV_FILE"; }
 
 write_env() {   # $1 url, $2 key
@@ -103,12 +109,12 @@ webhook_step() {
   if [ "$MODE" = webhook ] || ! have_webhook; then
     echo "In Grok Bot, create a routine that is triggered by a webhook, and paste this as its prompt:"
     echo "----------------------------------------------------------------"
-    code_block "$HERE/prompts/routine.md"
+    render_prompt routine
     echo "----------------------------------------------------------------"
     echo "The routine panel then shows a Webhook URL and a key."
     if [ ! -t 0 ]; then
       echo "This is not a terminal, so the values cannot be entered here."
-      echo "Run   ./install.sh --webhook   in your own terminal and paste them there (never into a chat)."
+      echo "Run   ./install.sh --webhook --lang $DOC_LANG   in your own terminal and paste them there (never into a chat)."
       exit 0
     fi
     read -r -p "Webhook URL: " url
@@ -132,7 +138,7 @@ cloud_prompt() {
   echo "----------------------------------------------------------------"
   echo "$invite"
   echo
-  code_block "$HERE/prompts/cloud-setup.md" | sed -e "s|<team-name>|$person|g" -e "s|<用户>|$(whoami)|g" -e "s|<仓库地址>|$repo|g"
+  render_prompt cloud-setup --team-name "$person" --mac-user "$(whoami)" --repo-url "$repo"
   echo "----------------------------------------------------------------"
   echo "Grok Bot will ask you once to approve copying $KEY_FILE with CopyToBox. Afterwards run ./check.sh."
 }
@@ -150,7 +156,7 @@ command -v python3 >/dev/null || die "python3 missing: run  xcode-select --insta
 
 say "1/6 network"
 code="$(curl -sS -o /dev/null -m 10 -w '%{http_code}' https://aps1-1.relay.n0.iroh.link/ 2>/dev/null || true)"
-[ "$code" = 200 ] || die "cannot reach the iroh relay (HTTP '$code'). A VPN or proxy app is almost always the cause: add a direct (bypass) rule for the whole iroh.link domain, exclude it from HTTPS decryption, confirm the curl check in README prints 200, then run this again. See README, 常见问题."
+[ "$code" = 200 ] || die "cannot reach the iroh relay (HTTP '$code'). Check VPN/proxy bypass rules for the whole iroh.link domain and exclude it from HTTPS decryption. Confirm the curl check prints 200, then run this again. See README.md: Troubleshooting (Chinese: README.zh-CN.md)."
 echo "ok"
 
 say "2/6 Reason Network $VERSION"

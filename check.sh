@@ -19,7 +19,7 @@ case ":$PATH:" in *":$HOME/.local/bin:"*) ok "~/.local/bin in PATH";; *) bad "~/
 if curl -sS -o /dev/null -m 10 -w '%{http_code}' https://aps1-1.relay.n0.iroh.link/ 2>/dev/null | grep -q '^200$'; then
   ok "iroh relay reachable"
 else
-  bad "iroh relay not reachable" "almost always a VPN/proxy app: add a direct (bypass) rule for the whole iroh.link domain and exclude it from HTTPS decryption; see README 常见问题"
+  bad "iroh relay not reachable" "check VPN/proxy bypass rules for the whole iroh.link domain and exclude it from HTTPS decryption; see README.md: Troubleshooting (Chinese: README.zh-CN.md)"
 fi
 
 # engine and team
