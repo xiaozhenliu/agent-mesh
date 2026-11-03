@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- Treat every HTTP 2xx webhook response as delivered, including 202 and 204, so accepted batches are removed from the spool instead of being sent again. Failed requests remain queued for retry.
+
 - Added an English and Chinese [security policy](SECURITY.md): private vulnerability reporting, scope and upstream ownership, how reports are handled, and steps after a possible leak of the signing key, webhook key or an invite link. The README's security section and documentation table link to it.
 
 ## v0.1.0 — 2026-11-02
