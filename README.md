@@ -2,24 +2,58 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Connect your local Claude Code, Codex, pi, and DeepSeek Harness sessions with a cloud Grok Bot in one private [Reason Network](https://github.com/reason-machines/reason-network) team. Either side can start a conversation, and replies wake the other side.
+Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harness (dsh) sessions running on your local computer, in one private [Reason Network](https://github.com/reason-machines/reason-network) team. The two sides can hold multi-turn conversations: either side can start one, and whoever replies wakes the other.
 
 | | |
 |---|---|
 | **Version** | agent-mesh **v0.1.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
-| **Runs on** | macOS (local) · Reason Network v0.10.7 · Python 3.9+ |
-| **Not required** | Reason account, separately managed server, public IP, Docker, or separate Node installation |
+| **Platform** | Local: not tied to one OS by design (the engine ships macOS / Linux / Windows builds; the relay is pure Python), but only macOS currently has a one-click installer and has been verified · Python 3.9+ |
+| **Network** | No public IP, no dedicated server, no port forwarding required |
+| **Not required** | Reason account, Docker, or Node |
 | **License** | MIT |
 
 > [!TIP]
 > To let an agent install it, give Claude Code or Codex this repository and say: **“Read [AGENT-INSTALL.md](AGENT-INSTALL.md) and install it.”**
 
-**Contents:** [When to use it](#when-to-use-it) · [Execution location labels](#execution-location-labels) · [How it works](#how-it-works) · [Prerequisites](#prerequisites) · [Install](#install) · [Verify](#verify) · [How agents receive messages](#how-agents-receive-messages) · [Security and privacy](#security-and-privacy) · [Troubleshooting](#troubleshooting) · [Uninstall](#uninstall) · [Documentation and language](#documentation-and-language) · [Appendix: message formats](#appendix-message-formats)
+**Contents:** [Architecture overview](#architecture-overview) · [What problem it solves](#what-problem-it-solves) · [Key highlights](#key-highlights) · [Execution location labels](#execution-location-labels) · [How it works](#how-it-works) · [Prerequisites](#prerequisites) · [Install](#install) · [Verify](#verify) · [How agents receive messages](#how-agents-receive-messages) · [Security and privacy](#security-and-privacy) · [Troubleshooting](#troubleshooting) · [Uninstall](#uninstall) · [Documentation and language](#documentation-and-language) · [Appendix: message formats](#appendix-message-formats)
 
-## When to use it
+## Architecture overview
 
-- If Grok Bot can finish the work on its cloud computer—running scripts, doing research, or writing files—install the relevant CLIs there. You do not need this project.
-- Use agent-mesh when Grok Bot needs to collaborate with **already-open sessions on your own computer**: edit a local repository, use your subscriptions, or continue a long conversation. A command such as `claude -p` starts a new process; it does not reach the session already doing the work.
+```mermaid
+flowchart LR
+    subgraph LOCAL["💻 Local Computer (Your workspace · No public IP needed)"]
+        direction TB
+        AGENT["🤖 Local Coding Agent<br/>(Claude Code / Codex / dsh / pi)"]
+        RELAY["📮 Local Relay<br/>Lightweight daemon for proxying and inbox"]
+        AGENT <-->|"Local session messaging"| RELAY
+    end
+
+    subgraph CLOUD["☁️ Grok Bot (Cloud Environment)"]
+        direction TB
+        DOORBELL["🔔 Webhook Routine (Doorbell)<br/>Carries only id, length, checksum, and a preview, not the full body, to wake the bot"]
+        BOT["🧠 Grok Bot (Cloud Box)<br/>Sleeps when idle; wakes to fetch and verify"]
+        DOORBELL -->|"Wake up"| BOT
+    end
+
+    RELAY -->|"① Full message body (Reason Network)"| BOT
+    RELAY -->|"② Webhook POST doorbell"| DOORBELL
+    BOT -->|"③ Signed replies (proxied to local session)"| RELAY
+```
+
+## What problem it solves
+
+- **Reaching the right person (retaining live conversation context)**: Calling `claude -p "..."` from a remote script executes a one-off command, but it **spawns a brand new, blank process every time**. If you already have an active terminal session with extensive project background, conversation history, and pending edits, `claude -p` cannot touch it. agent-mesh addresses your specific live session directly without losing context.
+- **No busy waiting (two-way doorbell wake-up)**: Complex tasks require back-and-forth dialogue (clarifying details, making revisions, and resuming discussions). Without wake-up mechanisms, the cloud must either hang in a busy loop or poll periodically; with agent-mesh, each turn sleeps immediately after sending. A reply rings the "doorbell" to wake the other side (by default the relay waits at least 20 seconds between wake-ups and wakes at most 20 times per hour; whether a local session wakes depends on its [delivery mode](#how-agents-receive-messages)), saving compute and quota on both ends.
+- **Zero public exposure (no server, no public IP)**: Built on Reason Network; messages may pass through iroh public relays. Upstream describes message content as encrypted; this project has not independently audited it. Your local computer opens no inbound port and, as long as it can reach the iroh relays, works inside home or corporate networks without a self-hosted server or relay. With a VPN or proxy, allow `iroh.link`; see [Troubleshooting](#troubleshooting).
+- **Guarded permissions (communication without privilege escalation)**: The channel transmits text messages only and **grants no extra execution privileges**. Your local agent still asks you to confirm sensitive actions, provided it does not auto-approve: for sessions in modes such as `--full-auto`, incoming text acts as a command; see [Security and privacy](#security-and-privacy).
+- **When you don't need it**: If the entire task can be finished inside Grok Bot's cloud computer (running scripts, conducting research, writing standalone files), install the needed CLIs directly on the cloud box; you do not need this project.
+
+## Key highlights
+
+- 📦 **No need to migrate local code and environments**: Your code, documents, dependencies, and session history stay where they are. You do not need to pack and upload projects to a cloud machine to get cloud collaboration.
+- ⚡ **Save tokens and avoid idle burn**: The cloud bot sleeps immediately after dispatching; your local agent works and rings the doorbell when finished. Neither side busy-polls (the local side runs only a lightweight relay that long-polls for mail), saving Grok quotas while utilizing your existing local agent subscriptions.
+- 🤝 **Multi-session team collaboration**: Not limited to 1-on-1. Open multiple terminal sessions locally for different roles (e.g. refactoring code, auditing docs, inspecting logs); the cloud bot can communicate with them simultaneously, and local sessions can even cross-check discrepancies before reporting back.
+- 🔒 **No self-hosted relay, clear permission boundary**: Built on Reason Network with no server to host or rent (messages may pass through iroh public relays); the channel carries task conversation only and grants no extra execution rights, so what runs locally is still governed by the agent's own approval settings.
 
 ## Execution location labels
 
@@ -27,11 +61,11 @@ This guide, the runbook, and the prompts use these labels. They are instructions
 
 | Label | Location | What runs or happens there |
 |---|---|---|
-| `[LOCAL]` | User's local computer (Mac), normally named `mac` | Local coding agents, the Reason Network engine, and relay; `install.sh`, `check.sh`, `uninstall.sh` |
+| `[LOCAL]` | User's local computer (default machine name `mac`) | Local coding agents, the Reason Network engine, and relay; `install.sh`, `check.sh`, `uninstall.sh` |
 | `[BOT-CLOUD]` | Grok Bot's cloud computer, named `cloud` | Grok Bot runs `/workspace/agent-mesh/box/rn-cloud*.sh` and stores cloud state and message bodies |
 | `[GROK-UI]` | Grok Bot interface opened by the user | Create or pause routines, paste prompts, and approve CopyToBox; these are not terminal commands |
 
-Each computer has its own repository clone; files do not sync automatically. On `[LOCAL]`, `~` is the user's Mac home directory; `/workspace/agent-mesh/` on `[BOT-CLOUD]` is a directory on the Bot's cloud computer. Unless labeled otherwise, terminal commands and `~/…` paths below belong to `[LOCAL]`.
+Each computer has its own repository clone; files do not sync automatically. On `[LOCAL]`, `~` is the user's home directory on their local computer; `/workspace/agent-mesh/` on `[BOT-CLOUD]` is a directory on the Bot's cloud computer. Unless labeled otherwise, terminal commands and `~/…` paths below belong to `[LOCAL]`.
 
 ## How it works
 
@@ -39,30 +73,42 @@ There are three roles:
 
 | Role | Availability | What it does |
 |---|---|---|
-| `[LOCAL]` User's local computer | Kept awake | Runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the Mac, not to the Bot's cloud computer. |
+| `[LOCAL]` User's local computer | Kept awake | Runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the local computer, not to the Bot's cloud computer. |
 | `[BOT-CLOUD]` Bot's cloud computer | May sleep | Starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox`, and uses the machine name `cloud`. No always-on service is installed there. |
 | `[GROK-UI]` Routine | Woken by webhook | A webhook task created in the Grok Bot interface; when woken, the Bot executes its prompt on `[BOT-CLOUD]`. A POST from the `[LOCAL]` relay wakes it. |
 
-```text
-[LOCAL] agent → [LOCAL] relay → full body over Reason Network (RN-FWD) → [BOT-CLOUD] bot-inbox
-                         └── webhook: id, length, sha256 → Bot wakes → [BOT-CLOUD] rn-cloud.sh fetch
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Local as [LOCAL] Local Agent
+    participant Relay as [LOCAL] Relay
+    participant Webhook as [GROK-UI] Webhook Doorbell
+    participant Cloud as [BOT-CLOUD] Grok Bot Cloud Box
 
-[BOT-CLOUD] Grok Bot → signed RN-OUT → [LOCAL] relay sends as <team-name>/bot → [LOCAL] session
-                                             ↑ replies return here, even when the cloud sleeps
+    Note over Local,Cloud: Scenario 1: Local Agent replies to Cloud (Body & Doorbell split)
+    Local->>Relay: Local Agent replies
+    Relay->>Cloud: First, deliver body to bot-inbox (RN-FWD)
+    Relay->>Webhook: Then POST doorbell (id, length, sha256, preview, no full body, rung even if forwarding failed)
+    Webhook->>Cloud: Wake up Grok Bot
+    Cloud->>Cloud: rn-cloud.sh fetch retrieves and verifies body
+
+    Note over Local,Cloud: Scenario 2: Cloud Grok Bot sends to Local (Signed proxy)
+    Cloud->>Relay: Send signed envelope (RN-OUT)
+    Relay->>Local: Proxied as <team-name>/bot to target local session
 ```
 
 Four design choices make this work:
 
-1. **The always-on machine handles replies.** The Mac sends every cloud-originated message on Grok Bot's behalf, so replies return to the Mac rather than a sleeping cloud computer.
+1. **The always-on machine handles replies.** The local computer sends every cloud-originated message on Grok Bot's behalf, so replies return to the local computer rather than a sleeping cloud computer.
 2. **The webhook is a doorbell.** In the original deployment, Grok Bot retained roughly the first 4,000 characters of a wake-up body. Full text therefore travels over Reason Network; the webhook carries an id, length, checksum, and optional preview. The routine fetches and verifies the body. A 10,000-character message can use one wake-up, within the engine's byte limit.
 3. **The receiver requests redelivery.** The relay keeps forwarded bodies for seven days. If `fetch` cannot retrieve one, it requests a signed re-forward, at most twice per message. This also recovers a failed initial forward.
 4. **Relay protocol messages are signed.** A team session can claim another sender name. Proxy envelopes, forwarded bodies, and re-forward requests therefore use HMAC signatures. Envelopes and requests have a 15-minute freshness window and replay protection. The signing key has one copy on each machine.
 
 ## Prerequisites
 
-### `[LOCAL]` Mac
+### `[LOCAL]` Local computer
 
-- **Computer and login:** an Apple Silicon or Intel Mac, running as a regular user signed into the macOS desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. Windows and Linux local computers are unsupported.
+- **Computer and system:** not tied to one OS by design; the engine ships macOS / Linux / Windows builds, and the relay is pure Python. Currently only macOS (Apple Silicon or Intel) has the one-click installer `./install.sh` and has been verified, running as a regular user signed into the desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. Linux and Windows have no installer support yet and are unverified; in principle systemd or Task Scheduler could replace the macOS login service. Community testing and contributions are welcome.
 - **Git and Python 3.9+**, including the `ssl` and `sqlite3` standard-library modules. Check with:
 
   ```bash
@@ -74,12 +120,12 @@ Four design choices make this work:
 - **At least one coding agent:** first install and sign in to at least one of Claude Code, Codex, pi, or DeepSeek Harness and verify it works independently. This project does not install these agents or configure model accounts/subscriptions. The integration plan comes from `reason-network setup --dry-run` on the user's computer, not from the author's configuration.
 - **`~/.local/bin` in PATH:** in the current Bash/zsh shell, run `export PATH="$HOME/.local/bin:$PATH"`. For persistence, use `~/.zshrc` for zsh, the appropriate `~/.bash_profile` or `~/.bashrc` for Bash, or `fish_add_path "$HOME/.local/bin"` for fish. Do not always edit `~/.zshrc`. The relay service records the detected Python's absolute path; if that Python is later moved or removed, repair Python and rerun the installer to update the service.
 - **Existing Reason Network installations:** review them first. This flow uses `~/.local/bin/reason-network`, the default `~/.reason/network` state directory, and pinned v0.10.7. A different PATH installation, engine version, or custom `REASON_NETWORK_HOME` stops the installer so the existing deployment can be reviewed. An existing team with the same person name can be reused; a different person cannot be renamed in place. Uninstalling with `--all` removes this default engine and its integrations and may affect existing uses; it is not a general troubleshooting step.
-- **Stay awake:** keep the Mac powered on and awake. Enable the setting that prevents automatic sleep on power, or run `caffeinate`. Closing the lid stops everything.
+- **Stay awake:** keep the local computer powered on and awake during collaboration. On macOS, enable the setting that prevents automatic sleep on power, or run `caffeinate`. Closing a laptop lid stops everything.
 
 ### `[BOT-CLOUD]` Bot's cloud computer
 
 - Linux x86_64 or ARM64, Bash, Git, Python 3.9+ with `ssl` and `sqlite3`, `curl`, `tar`, `sha256sum`, and a writable persistent `/workspace/agent-mesh/`.
-- The Bot prepares missing tools using the cloud system's package manager and explains any needed permissions to the user; do not install them on the user's Mac instead. The cloud script checks system, CPU, and runtime dependencies before downloads; the cloud prompt covers Git and directory checks.
+- The Bot prepares missing tools using the cloud system's package manager and explains any needed permissions to the user; do not install them on the local computer instead. The cloud script checks system, CPU, and runtime dependencies before downloads; the cloud prompt covers Git and directory checks.
 
 ### Grok Bot and team name
 
@@ -110,7 +156,7 @@ cd ~/agent-mesh
 
 If the destination already exists, check that it is the same repository and review uncommitted changes before proceeding; do not overwrite it or blindly pull. These commands clone the public distribution. The cloud defaults to the same public repository, whose root must contain `box/rn-cloud-setup.sh`; the installer does not infer its URL from the local origin.
 
-The installer handles the Mac side and pauses for user actions:
+The installer handles the local computer (Mac) side and pauses for user actions:
 
 1. Downloads Reason Network v0.10.7, verifies SHA-256, creates your private team, and disables auto-update and LAN broadcasts.
 2. Shows `reason-network setup --dry-run` and **waits for confirmation** before wiring local agents.

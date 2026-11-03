@@ -2,24 +2,58 @@
 
 [English](README.md) | **简体中文**
 
-把你电脑上的 Claude Code、Codex、pi、dsh 会话和云端的 Grok Bot 放进同一个 [Reason Network](https://github.com/reason-machines/reason-network) 私有团队。两边可以多轮对话，任何一方都能主动发起，谁回了信，对方都会被立刻叫醒。
+把你电脑上的 Claude Code、Codex、pi、dsh 会话和云端的 Grok Bot 放进同一个 [Reason Network](https://github.com/reason-machines/reason-network) 私有团队。两边可以多轮对话，任何一方都能主动发起，谁回了信，对方都会被叫醒。
 
 | | |
 |---|---|
 | **版本** | agent-mesh **v0.1.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
-| **运行环境** | macOS（本地）· 固定使用 Reason Network v0.10.7 · Python 3.9+ |
-| **不需要** | Reason 账号、服务器、公网 IP、Docker 或 Node |
+| **支持平台** | 本地：设计上不绑定系统（引擎有 macOS / Linux / Windows 版本，relay 为纯 Python），但目前只有 macOS 提供一键安装并经过验证 · Python 3.9+ |
+| **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
+| **不需要** | Reason 账号、Docker 或 Node |
 | **许可证** | MIT |
 
 > [!TIP]
 > 安装可以交给 agent 代劳：把本仓库的链接发给 Claude Code 或 Codex，说一句「读 [AGENT-INSTALL.zh-CN.md](AGENT-INSTALL.zh-CN.md)，照着装」。
 
-**目录：**[什么时候需要它](#什么时候需要它) · [执行位置标识](#执行位置标识) · [怎么工作](#怎么工作) · [准备](#准备) · [安装](#安装) · [验证](#验证) · [各 agent 怎么收信](#各-agent-怎么收信) · [安全与隐私](#安全与隐私) · [常见问题](#常见问题) · [卸载](#卸载) · [文档与语言](#文档与语言) · [附录：消息格式](#附录消息格式)
+**目录：**[架构概览](#架构概览) · [解决什么问题](#解决什么问题) · [核心亮点](#核心亮点) · [执行位置标识](#执行位置标识) · [怎么工作](#怎么工作) · [准备](#准备) · [安装](#安装) · [验证](#验证) · [各 agent 怎么收信](#各-agent-怎么收信) · [安全与隐私](#安全与隐私) · [常见问题](#常见问题) · [卸载](#卸载) · [文档与语言](#文档与语言) · [附录：消息格式](#附录消息格式)
 
-## 什么时候需要它
+## 架构概览
 
-- **不需要**：如果任务在 Grok Bot 的云电脑上就能干完，比如跑脚本、做调研、写文件，那直接让它在云电脑上装各家 CLI 就够了，用不上本项目。
-- **需要**：如果你想让 Grok Bot 指挥你自己电脑上**正在开着**的 agent 会话，比如改本地仓库、用你自己的订阅额度、在一个长会话里多轮来回，就需要它。注意 `claude -p` 这类命令只会起一个新进程，碰不到正在干活的那个会话。
+```mermaid
+flowchart LR
+    subgraph LOCAL["💻 本地电脑 (你的工作环境 · 无需公网 IP)"]
+        direction TB
+        AGENT["🤖 本地 Coding Agent<br/>(Claude Code / Codex / dsh / pi)"]
+        RELAY["📮 本地 Relay (轻量传达室)<br/>常驻后台，负责代发与收件"]
+        AGENT <-->|"本地消息收发"| RELAY
+    end
+
+    subgraph CLOUD["☁️ Grok Bot (云端环境)"]
+        direction TB
+        DOORBELL["🔔 Webhook Routine (门铃)<br/>只传编号、长度、校验码和预览，不传完整正文，负责叫醒"]
+        BOT["🧠 Grok Bot (云电脑)<br/>平时休眠，被叫醒后核验取信"]
+        DOORBELL -->|"叫醒"| BOT
+    end
+
+    RELAY -->|"① 完整正文直投 (Reason Network)"| BOT
+    RELAY -->|"② Webhook POST 按门铃"| DOORBELL
+    BOT -->|"③ 签名回信 (代发回本地会话)"| RELAY
+```
+
+## 解决什么问题
+
+- **找得到人（保留长会话上下文）**：给云端写个脚本跑 `claude -p "..."` 确实能执行单次任务，但它**每次都会拉起一个全新、空白的进程**。如果你本地终端里已经开着一个会话，项目背景、上下文和改动记录都在里面，`claude -p` 根本碰不到它。agent-mesh 能精确联系到正在干活的那个具体会话，把上下文留住。
+- **不用傻等（双向门铃唤醒）**：复杂任务中间往往要提问、要修改、过会儿还要接着聊。没有唤醒机制时，云端发完信必须一直挂起等待，或者写脚本每隔几秒轮询查进度；连上 agent-mesh 后，发完消息就可以直接休眠，对方有了结果一回信，像“按门铃”一样叫醒这边（relay 默认两次叫醒至少间隔 20 秒、每小时最多 20 次；本地会话能否被叫醒见[各 agent 怎么收信](#各-agent-怎么收信)），两端都不耗费无谓的算力和挂机额度。
+- **免公网暴露（无服务器、无公网 IP）**：底层基于 Reason Network 连接，消息可能经过 iroh 公共中继；上游将消息内容描述为加密传输，本项目未独立审计。本地电脑不开入站端口，只要能连上 iroh 中继，在家庭或公司局域网内都能收发，不需要自建服务器或中转服务；如果用 VPN 或代理，需要给 `iroh.link` 放行，见[常见问题](#常见问题)。
+- **守住权限（通道不越权）**：通道只负责传递文字消息，**不额外授予任何本机执行特权**。本地 agent 收到消息后，该找你确认的危险操作依然会找你确认，前提是本地 agent 没开自动批准：开了 `--full-auto` 之类模式的会话，收到的文字就等于命令，详见[安全与隐私](#安全与隐私)。
+- **什么时候不需要它**：如果任务在 Grok Bot 的云电脑上就能完全搞定（比如纯跑脚本、做调研、写独立文件），直接让它在云电脑上装各家 CLI 就够了，用不上本项目。
+
+## 核心亮点
+
+- 📦 **免搬家本地代码与环境**：本地已积累了大量代码、文档、依赖环境和会话记录，不需要为了借助云端能力把整个项目打包备份到云电脑上，直接在原地接入。
+- ⚡ **省额度、不空转**：云端任务派发完立刻休眠，本地改完直接回信唤醒。两端都不用轮询空转（本地只有一个长轮询等信的轻量 relay），既不白白消耗 Grok 的高级调用额度，也能充分利用你本地已有的各家 Agent 订阅。
+- 🤝 **多会话团队级协同**：不局限于单对单。你可以在本地同时打开多个不同职责的终端会话（如一个负责代码重构，一个负责文档核对，一个负责运行日志），云端可同时与多个会话保持联系，甚至支持会话之间就分歧交叉核实后再向云端回报。
+- 🔒 **无需自建中转，权限边界清晰**：基于 Reason Network 组网，不需要自建或租用服务器（消息可能经过 iroh 公共中继）；通道只传达任务对话，不额外授予执行权限，本地能执行什么仍由 agent 自己的审批设置决定。
 
 ## 执行位置标识
 
@@ -27,11 +61,11 @@
 
 | 标识 | 指哪一端 | 在这里做什么 |
 |---|---|---|
-| `[LOCAL]` | 用户本地电脑（Mac），通常机器名为 `mac` | 本地 coding agent、Reason Network 引擎、relay；运行 `install.sh`、`check.sh`、`uninstall.sh` |
+| `[LOCAL]` | 用户本地电脑（默认机器名为 `mac`） | 本地 coding agent、Reason Network 引擎、relay；运行 `install.sh`、`check.sh`、`uninstall.sh` |
 | `[BOT-CLOUD]` | Grok Bot 的云电脑，机器名为 `cloud` | Grok Bot 运行 `/workspace/agent-mesh/box/rn-cloud*.sh`，保存云端状态和收件正文 |
 | `[GROK-UI]` | 用户打开的 Grok Bot 界面 | 创建或暂停 routine、粘贴提示词、批准 CopyToBox；这里的操作不是终端命令 |
 
-两台电脑各有一份仓库，文件不会自动同步。`[LOCAL]` 的 `~` 是用户 Mac 的 home；`[BOT-CLOUD]` 的 `/workspace/agent-mesh/` 是 Bot 云电脑的目录。下文未另行标注的终端命令和 `~/…` 路径均属于 `[LOCAL]`。
+两台电脑各有一份仓库，文件不会自动同步。`[LOCAL]` 的 `~` 是本地电脑的 home 目录；`[BOT-CLOUD]` 的 `/workspace/agent-mesh/` 是 Bot 云电脑的目录。下文未另行标注的终端命令和 `~/…` 路径均属于 `[LOCAL]`。
 
 ## 怎么工作
 
@@ -39,29 +73,42 @@
 
 | 角色 | 在线情况 | 做什么 |
 |---|---|---|
-| `[LOCAL]` 用户本地电脑 | 一直开着 | 运行 Reason Network 引擎和 relay。relay 用 `<team-name>/bot` 这个名字收信，所以在本地 agent 看来，它就是 Grok Bot。地址中的 `bot` 代表在 Mac 上收信的 relay，不是 Bot 云电脑。 |
+| `[LOCAL]` 用户本地电脑 | 一直开着 | 运行 Reason Network 引擎和 relay。relay 用 `<team-name>/bot` 这个名字收信，所以在本地 agent 看来，它就是 Grok Bot。地址中的 `bot` 代表在本地电脑上收信的 relay，不是 Bot 云电脑。 |
 | `[BOT-CLOUD]` Bot 云电脑 | 会睡 | 不留任何常驻进程，只在被叫醒的那一轮里临时启动引擎。它用 `<team-name>/bot-cloud` 发信，用 `<team-name>/bot-inbox` 收正文，机器名是 `cloud`。 |
 | `[GROK-UI]` routine | 由 webhook 叫醒 | 在 Grok Bot 界面创建的 webhook 任务，醒来后由 Bot 在 `[BOT-CLOUD]` 执行提示词。`[LOCAL]` 的 relay 向这个 webhook 发一次 POST，Grok Bot 就会醒来。 |
 
-```text
-[LOCAL] 本地 agent ──回信──► [LOCAL] relay ──正文走 Reason Network（RN-FWD）──► [BOT-CLOUD] bot-inbox
-                              └──门铃：webhook 只带 id、长度、sha256──► Bot 醒来 ──[BOT-CLOUD] rn-cloud.sh fetch 取正文并核对
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Local as [LOCAL] 本地 Agent
+    participant Relay as [LOCAL] Relay (传达室)
+    participant Webhook as [GROK-UI] Webhook 门铃
+    participant Cloud as [BOT-CLOUD] Grok Bot 云电脑
 
-[BOT-CLOUD] Grok Bot ──签名信封 RN-OUT──► [LOCAL] relay 以 <team-name>/bot 代发 ──► [LOCAL] 本地会话；回信回到 relay
+    Note over Local,Cloud: 场景一：本地 Agent 回信给云端（正文与门铃分流）
+    Local->>Relay: 本地 Agent 回信
+    Relay->>Cloud: 先投递正文到 bot-inbox (RN-FWD)
+    Relay->>Webhook: 再 POST 门铃 (id、长度、sha256、预览，不含完整正文，转发失败也照样按门铃)
+    Webhook->>Cloud: 叫醒 Grok Bot
+    Cloud->>Cloud: rn-cloud.sh fetch 取回正文并核对校验码
+
+    Note over Local,Cloud: 场景二：云端 Grok Bot 发信给本地（签名代发）
+    Cloud->>Relay: 发出签名信封 (RN-OUT)
+    Relay->>Local: 以 <team-name>/bot 代发至具体本地会话
 ```
 
 背后有四个设计决定：
 
-1. **谁一直开着，谁就是中心。** 云端发出的每一封信都交给 Mac 代发，所以本机会话的回信总是落回 Mac，而不是落到一台可能已经睡着的云电脑上。
+1. **谁一直开着，谁就是中心。** 云端发出的每一封信都交给本地电脑代发，所以本机会话的回信总是落回本地电脑，而不是落到一台可能已经睡着的云电脑上。
 2. **webhook 只当门铃，不当快递。** 原部署中观察到 Grok Bot 醒来时只保留 webhook body 的前 4000 字左右，所以正文不走 webhook，而是通过 Reason Network 投进云端收件箱；webhook 携带消息编号、长度、校验码和可选预览。routine 醒来后按编号取回正文、核对无误再处理。在引擎字节限制内，一条 10000 字的消息也只需要叫醒一次。
 3. **补寄由收件方发起。** relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到正文时，会自动发出一条带签名的重投请求，relay 按副本重发，每条消息最多重发 2 次。第一次转发就失败的消息，也靠这条路补回来。
-4. **所有跨端消息都签名。** 同一个团队里的任何会话都可以用别人的名字发信，所以 relay 代发的信封、转发的正文和重投请求都带 HMAC 签名；信封和重投请求还有 15 分钟时效并防重放。密钥只有两份，Mac 和云电脑各一份。
+4. **所有跨端消息都签名。** 同一个团队里的任何会话都可以用别人的名字发信，所以 relay 代发的信封、转发的正文和重投请求都带 HMAC 签名；信封和重投请求还有 15 分钟时效并防重放。密钥只有两份，本地电脑和云电脑各一份。
 
 ## 准备
 
-### `[LOCAL]` Mac
+### `[LOCAL]` 本地电脑
 
-- **电脑与登录方式**：支持 Apple Silicon 或 Intel Mac，需要已登录 macOS 桌面的普通用户；不要用 `sudo`，纯 SSH/无桌面登录环境不在本流程支持范围内。Windows 和 Linux 本地电脑不支持。
+- **系统与运行环境**：设计上不绑定系统，引擎有 macOS / Linux / Windows 版本，relay 为纯 Python。但目前只有 macOS（Apple Silicon 或 Intel）有一键安装脚本 `./install.sh` 并经过验证，需要已登录桌面的普通用户；不要用 `sudo`，纯 SSH/无桌面登录环境不在本流程支持范围内。Linux 和 Windows 还没有安装支持，也未经验证；思路上可以用 systemd 或 Task Scheduler 代替 macOS 的登录服务，欢迎社区实测并贡献安装支持。
 - **Git 与 Python 3.9+**（含 `ssl`、`sqlite3` 标准库模块）。用下面的命令检查：
 
   ```bash
@@ -73,12 +120,12 @@
 - **至少一个 coding agent**：至少先安装并登录一个要接入的 Claude Code、Codex、pi 或 DeepSeek Harness，确认它能独立正常工作；本项目不负责安装这些 agent、配置模型账号或订阅。接入哪些工具以 `reason-network setup --dry-run` 在这台电脑上打印的计划为准，不沿用作者电脑的配置。
 - **`~/.local/bin` 在 PATH 里**：当前 Bash/zsh 可运行 `export PATH="$HOME/.local/bin:$PATH"`；需要持久生效时，zsh 写入 `~/.zshrc`，Bash 按实际启动方式写入 `~/.bash_profile` 或 `~/.bashrc`，fish 使用 `fish_add_path "$HOME/.local/bin"`。不要一律修改 `~/.zshrc`。relay 服务会记录安装时检测到的 Python 绝对路径；如果以后移动或卸载该 Python，需要修复 Python 后重新运行安装器来更新服务。
 - **已有的 Reason Network**：安装前先检查。本流程使用 `~/.local/bin/reason-network`、默认状态目录 `~/.reason/network`，固定 v0.10.7。其他 PATH 安装、不同版本或自定义 `REASON_NETWORK_HOME` 会导致安装器停止，请先评估已有部署，避免覆盖。已有同名 person 的团队可复用；不同 person 不能直接改名。`--all` 卸载会移除这套默认引擎及其接入，可能影响已有用途，不能把它当作通用排错步骤。
-- **保持唤醒**：Mac 需要一直开着、不睡眠：在系统设置里打开「接通电源时防止自动进入睡眠」，或者开一个终端跑 `caffeinate`。注意合上盖子整套就会停。
+- **保持唤醒**：本地电脑在协作期间需要一直开着、不睡眠：macOS 在系统设置里打开「接通电源时防止自动进入睡眠」，或者开一个终端跑 `caffeinate`。注意合上笔记本盖子整套就会停。
 
 ### `[BOT-CLOUD]` Bot 云电脑
 
 - 需要 Linux x86_64 或 ARM64、Bash、Git、Python 3.9+（含 `ssl`、`sqlite3`）、`curl`、`tar`、`sha256sum`，以及可写且持久的 `/workspace/agent-mesh/`。
-- 缺少工具时由 Bot 按云电脑实际系统的包管理方式准备；需要权限时向用户说明，不要改在用户 Mac 上安装。云端脚本会在下载前检查系统、CPU 和运行依赖；准备目录和 Git 的检查见云端提示词。
+- 缺少工具时由 Bot 按云电脑实际系统的包管理方式准备；需要权限时向用户说明，不要改在本地电脑上安装。云端脚本会在下载前检查系统、CPU 和运行依赖；准备目录和 Git 的检查见云端提示词。
 
 ### Grok Bot 与团队名
 
@@ -109,7 +156,7 @@ cd ~/agent-mesh
 
 目标目录已存在时先核对它是不是同一仓库、有无未提交改动，不要覆盖或盲目 pull。以上克隆的是公开发行仓库。云端默认克隆同一个公开发行仓库，其根目录必须包含 `box/rn-cloud-setup.sh`；安装器不会读取本地 origin 来推断云端仓库地址。
 
-这一条命令会做完 Mac 这边的全部工作，中途会停两次等你动手：
+这一条命令会做完本地电脑（Mac）这边的全部工作，中途会停两次等你动手：
 
 1. 安装 Reason Network v0.10.7（会校验 sha256），创建一个只有你一个人的私有团队，并关掉自动更新和局域网广播。
 2. 显示 `reason-network setup --dry-run` 的计划，**等你确认后**再把本机 agent 接入团队。
