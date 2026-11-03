@@ -4,7 +4,7 @@
 
 ## v0.1.1 — 2026-11-03
 
-Security fix release for advisory GHSA-427q-x36f-vqwh (security documentation gaps: trust root, auto-approve modes, unattended wakes, data retention, key rotation).
+Security hardening release.
 
 - Added an English and Chinese [security policy](SECURITY.md): private vulnerability reporting, scope and upstream ownership, how reports are handled, and steps after a possible leak of the signing key, webhook key or an invite link. The README's security section and documentation table link to it.
 - Rewrote the README's [Security and privacy](README.md#security-and-privacy) section: Grok Bot is the trust root and can still send validly signed messages if prompt injection steers it; the Claude Code and Codex auto-approve modes are named one by one; Reason Network v0.10.7 actually wakes Codex with `codex queue` (previously misstated as `codex exec resume`), with the tested approval behavior during unattended wakes; where message bodies stay in plain text and for how long (including doorbell previews waiting in the relay's `state.json`), with a warning not to send secrets through the channel; and a team-membership check.
