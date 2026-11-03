@@ -2,25 +2,19 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-agent-mesh **v0.1.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version.
+Connect your local Claude Code, Codex, pi, and DeepSeek Harness sessions with a cloud Grok Bot in one private [Reason Network](https://github.com/reason-machines/reason-network) team. Either side can start a conversation, and replies wake the other side.
 
-Connect your local Claude Code, Codex, pi, and DeepSeek Harness sessions with a cloud Grok Bot in one private [Reason Network](https://github.com/reason-machines/reason-network) team. Either side can start a conversation, and replies wake the other side. macOS, Reason Network v0.10.7, Python 3.9+, MIT. No Reason account, separately managed server, public IP, Docker, or separate Node installation is required.
+| | |
+|---|---|
+| **Version** | agent-mesh **v0.1.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Runs on** | macOS (local) · Reason Network v0.10.7 · Python 3.9+ |
+| **Not required** | Reason account, separately managed server, public IP, Docker, or separate Node installation |
+| **License** | MIT |
 
-To let an agent install it, give Claude Code or Codex this repository and say: **“Read [AGENT-INSTALL.md](AGENT-INSTALL.md) and install it.”**
+> [!TIP]
+> To let an agent install it, give Claude Code or Codex this repository and say: **“Read [AGENT-INSTALL.md](AGENT-INSTALL.md) and install it.”**
 
-## Documentation and language
-
-| Guide | English | 简体中文 |
-|---|---|---|
-| User guide | [README](README.md) | [使用指南](README.zh-CN.md) |
-| Agent installation | [Runbook](AGENT-INSTALL.md) | [安装手册](AGENT-INSTALL.zh-CN.md) |
-| DeepSeek Harness | [Bridge](dsh/README.md) | [插件指南](dsh/README.zh-CN.md) |
-| Grok Bot routine | [Prompt](prompts/routine.md) | [提示词](prompts/routine.zh-CN.md) |
-| Cloud setup | [Prompt](prompts/cloud-setup.md) | [提示词](prompts/cloud-setup.zh-CN.md) |
-| Reply convention | [Template](templates/AGENTS.reason-network.md) | [模板](templates/AGENTS.reason-network.zh-CN.md) |
-| Maintaining translations | [Contributing](CONTRIBUTING.md) | [维护说明](CONTRIBUTING.zh-CN.md) |
-
-Use `--lang en` or `--lang zh-CN` on each installer invocation to select generated prompts. English is the default; `AGENT_MESH_LANG` sets a shell-level default, and `--lang` overrides it. Terminal diagnostics, configuration keys, and protocol fields remain English. Agents speak to users in their preferred language. Language support does not change operating-system or network requirements.
+**Contents:** [When to use it](#when-to-use-it) · [Execution location labels](#execution-location-labels) · [How it works](#how-it-works) · [Prerequisites](#prerequisites) · [Install](#install) · [Verify](#verify) · [How agents receive messages](#how-agents-receive-messages) · [Security and privacy](#security-and-privacy) · [Troubleshooting](#troubleshooting) · [Uninstall](#uninstall) · [Documentation and language](#documentation-and-language) · [Appendix: message formats](#appendix-message-formats)
 
 ## When to use it
 
@@ -43,9 +37,11 @@ Each computer has its own repository clone; files do not sync automatically. On 
 
 There are three roles:
 
-- **`[LOCAL]` User's local computer, kept awake:** runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the Mac, not to the Bot's cloud computer.
-- **`[BOT-CLOUD]` Bot's cloud computer, which may sleep:** starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox`, and uses the machine name `cloud`. No always-on service is installed there.
-- **`[GROK-UI]` Routine:** a webhook task created in the Grok Bot interface; when woken, the Bot executes its prompt on `[BOT-CLOUD]`. A POST from the `[LOCAL]` relay wakes it.
+| Role | Availability | What it does |
+|---|---|---|
+| `[LOCAL]` User's local computer | Kept awake | Runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the Mac, not to the Bot's cloud computer. |
+| `[BOT-CLOUD]` Bot's cloud computer | May sleep | Starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox`, and uses the machine name `cloud`. No always-on service is installed there. |
+| `[GROK-UI]` Routine | Woken by webhook | A webhook task created in the Grok Bot interface; when woken, the Bot executes its prompt on `[BOT-CLOUD]`. A POST from the `[LOCAL]` relay wakes it. |
 
 ```text
 [LOCAL] agent → [LOCAL] relay → full body over Reason Network (RN-FWD) → [BOT-CLOUD] bot-inbox
@@ -64,16 +60,36 @@ Four design choices make this work:
 
 ## Prerequisites
 
-- `[LOCAL]`: an Apple Silicon or Intel Mac, running as a regular user signed into the macOS desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. Windows and Linux local computers are unsupported.
-- `[LOCAL]`: prepare Git and Python **3.9+**, including the `ssl` and `sqlite3` standard-library modules. Check with `git --version` and `python3 -c 'import sys, ssl, sqlite3; print(sys.version)'`. If Git or Python is missing, run `xcode-select --install`, finish installation and check again; if Python is still too old, install a suitable Python and put it on PATH. The installer also checks `curl`, `tar`, `shasum`, `openssl`, `launchctl`, and `plutil`; supply missing tools before retrying. No separate Node installation or pip packages are needed.
-- `[LOCAL]`: first install and sign in to at least one of Claude Code, Codex, pi, or DeepSeek Harness and verify it works independently. This project does not install these agents or configure model accounts/subscriptions. The integration plan comes from `reason-network setup --dry-run` on the user's computer, not from the author's configuration.
-- `[LOCAL]`: ensure `~/.local/bin` is in PATH. In the current Bash/zsh shell, run `export PATH="$HOME/.local/bin:$PATH"`. For persistence, use `~/.zshrc` for zsh, the appropriate `~/.bash_profile` or `~/.bashrc` for Bash, or `fish_add_path "$HOME/.local/bin"` for fish. Do not always edit `~/.zshrc`. The relay service records the detected Python's absolute path; if that Python is later moved or removed, repair Python and rerun the installer to update the service.
-- `[LOCAL]`: review any existing Reason Network installation first. This flow uses `~/.local/bin/reason-network`, the default `~/.reason/network` state directory, and pinned v0.10.7. A different PATH installation, engine version, or custom `REASON_NETWORK_HOME` stops the installer so the existing deployment can be reviewed. An existing team with the same person name can be reused; a different person cannot be renamed in place. Uninstalling with `--all` removes this default engine and its integrations and may affect existing uses; it is not a general troubleshooting step.
-- `[BOT-CLOUD]`: Linux x86_64 or ARM64, Bash, Git, Python 3.9+ with `ssl` and `sqlite3`, `curl`, `tar`, `sha256sum`, and a writable persistent `/workspace/agent-mesh/`. The Bot prepares missing tools using the cloud system's package manager and explains any needed permissions to the user; do not install them on the user's Mac instead. The cloud script checks system, CPU, and runtime dependencies before downloads; the cloud prompt covers Git and directory checks.
-- Both `[LOCAL]` and `[BOT-CLOUD]` need HTTPS access to GitHub repositories and release downloads, plus iroh relay connectivity. The default public HTTPS clone URL needs no GitHub account or SSH key. For a public fork, pass `--repo-url https://…` on each installer command that generates a cloud prompt; it must allow credential-free cloud reads. The local clone can live anywhere; the cloud clone must remain at `/workspace/agent-mesh/` because prompts use that fixed path.
+### `[LOCAL]` Mac
+
+- **Computer and login:** an Apple Silicon or Intel Mac, running as a regular user signed into the macOS desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. Windows and Linux local computers are unsupported.
+- **Git and Python 3.9+**, including the `ssl` and `sqlite3` standard-library modules. Check with:
+
+  ```bash
+  git --version
+  python3 -c 'import sys, ssl, sqlite3; print(sys.version)'
+  ```
+
+  If Git or Python is missing, run `xcode-select --install`, finish installation and check again; if Python is still too old, install a suitable Python and put it on PATH. The installer also checks `curl`, `tar`, `shasum`, `openssl`, `launchctl`, and `plutil`; supply missing tools before retrying. No separate Node installation or pip packages are needed.
+- **At least one coding agent:** first install and sign in to at least one of Claude Code, Codex, pi, or DeepSeek Harness and verify it works independently. This project does not install these agents or configure model accounts/subscriptions. The integration plan comes from `reason-network setup --dry-run` on the user's computer, not from the author's configuration.
+- **`~/.local/bin` in PATH:** in the current Bash/zsh shell, run `export PATH="$HOME/.local/bin:$PATH"`. For persistence, use `~/.zshrc` for zsh, the appropriate `~/.bash_profile` or `~/.bashrc` for Bash, or `fish_add_path "$HOME/.local/bin"` for fish. Do not always edit `~/.zshrc`. The relay service records the detected Python's absolute path; if that Python is later moved or removed, repair Python and rerun the installer to update the service.
+- **Existing Reason Network installations:** review them first. This flow uses `~/.local/bin/reason-network`, the default `~/.reason/network` state directory, and pinned v0.10.7. A different PATH installation, engine version, or custom `REASON_NETWORK_HOME` stops the installer so the existing deployment can be reviewed. An existing team with the same person name can be reused; a different person cannot be renamed in place. Uninstalling with `--all` removes this default engine and its integrations and may affect existing uses; it is not a general troubleshooting step.
+- **Stay awake:** keep the Mac powered on and awake. Enable the setting that prevents automatic sleep on power, or run `caffeinate`. Closing the lid stops everything.
+
+### `[BOT-CLOUD]` Bot's cloud computer
+
+- Linux x86_64 or ARM64, Bash, Git, Python 3.9+ with `ssl` and `sqlite3`, `curl`, `tar`, `sha256sum`, and a writable persistent `/workspace/agent-mesh/`.
+- The Bot prepares missing tools using the cloud system's package manager and explains any needed permissions to the user; do not install them on the user's Mac instead. The cloud script checks system, CPU, and runtime dependencies before downloads; the cloud prompt covers Git and directory checks.
+
+### Grok Bot and team name
+
 - Grok Bot must support webhook-triggered routines and CopyToBox from your Mac.
-- Keep the Mac powered on and awake. Enable the setting that prevents automatic sleep on power, or run `caffeinate`. Closing the lid stops everything.
 - Choose a team name, also used as your person name: 1–40 lowercase ASCII letters, digits, or hyphens; no leading or trailing hyphen. Use a pseudonym. Renaming requires recreating the team.
+
+### Network
+
+- Both `[LOCAL]` and `[BOT-CLOUD]` need HTTPS access to GitHub repositories and release downloads, plus iroh relay connectivity.
+- The default public HTTPS clone URL needs no GitHub account or SSH key. For a public fork, pass `--repo-url https://…` on each installer command that generates a cloud prompt; it must allow credential-free cloud reads. The local clone can live anywhere; the cloud clone must remain at `/workspace/agent-mesh/` because prompts use that fixed path.
 - Check connectivity to `*.iroh.link`, especially with a VPN or proxy. This probe should return HTTP 200:
 
   ```bash
@@ -84,9 +100,7 @@ Four design choices make this work:
 
 ## Install
 
-**`[LOCAL]` Run as the user or local installing agent:**
-
-Replace the team-name placeholder:
+**`[LOCAL]` Run as the user or local installing agent.** Replace the team-name placeholder:
 
 ```bash
 git clone https://github.com/xiaozhenliu/agent-mesh.git ~/agent-mesh
@@ -105,27 +119,46 @@ The installer handles the Mac side and pauses for user actions:
 
 Reopen Claude Code and Codex sessions that were already running. Codex asks once on first launch; choose “Trust all and continue”.
 
-Optional:
+### Prompt language
 
-- dsh automatic wake-ups: run `dsh/mac-install.sh <team-name>`; see the [bridge guide](dsh/README.md).
-- Reply convention: append the [English template](templates/AGENTS.reason-network.md) or [Chinese template](templates/AGENTS.reason-network.zh-CN.md) to your working repository's `AGENTS.md`. For Claude Code, also add `@AGENTS.md` to `CLAUDE.md`. The template asks for a conclusion followed by four concise status fields.
+Use `--lang en` or `--lang zh-CN` on each installer invocation to select generated prompts. English is the default; `AGENT_MESH_LANG` sets a shell-level default, and `--lang` overrides it. Terminal diagnostics, configuration keys, and protocol fields remain English. Agents speak to users in their preferred language. Language support does not change operating-system or network requirements.
+
+### Optional
+
+- **dsh automatic wake-ups:** run `dsh/mac-install.sh <team-name>`; see the [bridge guide](dsh/README.md).
+- **Reply convention:** append the [English template](templates/AGENTS.reason-network.md) or [Chinese template](templates/AGENTS.reason-network.zh-CN.md) to your working repository's `AGENTS.md`. For Claude Code, also add `@AGENTS.md` to `CLAUDE.md`. The template asks for a conclusion followed by four concise status fields.
 
 ## Verify
 
 Locations: self-checks, test sends, and relay log inspection run on `[LOCAL]`; Grok Bot uses `/workspace/agent-mesh/box/rn-cloud.sh` on `[BOT-CLOUD]` for `who` and `fetch`.
 
-- Run `./check.sh`. This is read-only; each `FAIL` includes a suggested fix.
-- Send `reason-network send <team-name>/bot "test 1"`, then run `reason-network listen --as terminal --wait 600` in another terminal for the reply. Look for `forwarded` and `POST … code=200` in `~/Library/Logs/agent-relay.log`.
-- Ask Grok Bot to run `who` and send a sentence to a specific Claude Code session. The session should wake even if idle; its reply should wake Grok Bot again.
-- Send a 10,000-character message. Expect one wake-up and a `complete` fetch result with matching length and SHA-256. The signed message must fit within the relay's 60 KiB forwarding limit; UTF-8 byte size depends on the text.
+1. **Self-check.** This is read-only; each `FAIL` includes a suggested fix.
+
+   ```bash
+   ./check.sh
+   ```
+
+2. **Test message.** Send a message, then wait for the reply in another terminal:
+
+   ```bash
+   reason-network send <team-name>/bot "test 1"
+   reason-network listen --as terminal --wait 600   # in another terminal
+   ```
+
+   Look for `forwarded` and `POST … code=200` in `~/Library/Logs/agent-relay.log`.
+
+3. **Wake a session.** Ask Grok Bot to run `who` and send a sentence to a specific Claude Code session. The session should wake even if idle; its reply should wake Grok Bot again.
+4. **Long message.** Send a 10,000-character message. Expect one wake-up and a `complete` fetch result with matching length and SHA-256. The signed message must fit within the relay's 60 KiB forwarding limit; UTF-8 byte size depends on the text.
 
 ## How agents receive messages
 
 The last column of `reason-network who` shows the delivery mode:
 
-- **push:** wakes an idle session. Claude Code receives an injected message; Codex uses `codex exec resume`; pi polls through an extension every five seconds.
-- **turn:** normally waits for a tool call or the end of a turn. dsh with the bridge reports `turn`, but starts a turn within roughly five seconds when idle.
-- **pull:** does not wake automatically. dsh without the bridge must check its inbox.
+| Mode | Behavior | Agents |
+|---|---|---|
+| **push** | Wakes an idle session. | Claude Code receives an injected message; Codex uses `codex exec resume`; pi polls through an extension every five seconds. |
+| **turn** | Normally waits for a tool call or the end of a turn. | dsh with the bridge reports `turn`, but starts a turn within roughly five seconds when idle. |
+| **pull** | Does not wake automatically. | dsh without the bridge must check its inbox. |
 
 Closed sessions disappear from the roster. Messages remain in the inbox while the recipient is offline. After reopening, you have to tell the agent to check its inbox before it reads them. Keep a session open for prompt delivery.
 
@@ -156,16 +189,45 @@ Closed sessions disappear from the roster. Messages remain in the inbox while th
 
 ## Uninstall
 
-- `./uninstall.sh`: removes the relay service, state, message copies, logs, and `~/.config/agent-relay`.
-- `./uninstall.sh --all`: also runs `leave --force` and `setup --remove`, then removes `~/.reason/network` and the engine binary.
-- `[GROK-UI]`: pause or delete the routine. Then on `[BOT-CLOUD]`, remove `/workspace/agent-mesh/`. Both `uninstall.sh` commands above run on `[LOCAL]`.
+All `uninstall.sh` commands run on `[LOCAL]`:
+
+| Command | Removes |
+|---|---|
+| `./uninstall.sh` | The relay service, state, message copies, logs, and `~/.config/agent-relay`. |
+| `./uninstall.sh --all` | Everything above; also runs `leave --force` and `setup --remove`, then removes `~/.reason/network` and the engine binary. |
+
+Then, in `[GROK-UI]`, pause or delete the routine, and on `[BOT-CLOUD]`, remove `/workspace/agent-mesh/`.
+
+## Documentation and language
+
+| Guide | English | 简体中文 |
+|---|---|---|
+| User guide | [README](README.md) | [使用指南](README.zh-CN.md) |
+| Agent installation | [Runbook](AGENT-INSTALL.md) | [安装手册](AGENT-INSTALL.zh-CN.md) |
+| DeepSeek Harness | [Bridge](dsh/README.md) | [插件指南](dsh/README.zh-CN.md) |
+| Grok Bot routine | [Prompt](prompts/routine.md) | [提示词](prompts/routine.zh-CN.md) |
+| Cloud setup | [Prompt](prompts/cloud-setup.md) | [提示词](prompts/cloud-setup.zh-CN.md) |
+| Reply convention | [Template](templates/AGENTS.reason-network.md) | [模板](templates/AGENTS.reason-network.zh-CN.md) |
+| Maintaining translations | [Contributing](CONTRIBUTING.md) | [维护说明](CONTRIBUTING.zh-CN.md) |
+
+To choose the language of generated prompts, see [Prompt language](#prompt-language).
 
 ## Appendix: message formats
 
-The key is the 64-character hex **string** in `outbound.key`, stripped of surrounding whitespace. Use its UTF-8 bytes directly as the HMAC-SHA256 key; do not hex-decode it. Signatures are lowercase hex. The engine trims message whitespace, so strip trailing body whitespace before signing. Avoid the literal `<reason-message` in a body. Protocol fields and test-vector text are identical in every language.
+### Signing rules
 
-**RN-OUT v1** (`bot-cloud` asks `bot` to send a message)：
-```
+- The key is the 64-character hex **string** in `outbound.key`, stripped of surrounding whitespace. Use its UTF-8 bytes directly as the HMAC-SHA256 key; do not hex-decode it.
+- Signatures are lowercase hex.
+- The engine trims message whitespace, so strip trailing body whitespace before signing.
+- Avoid the literal `<reason-message` in a body.
+- Protocol fields and test-vector text are identical in every language.
+- All test vectors below use the same key: `0123456789abcdef` repeated four times.
+
+### RN-OUT v1
+
+`bot-cloud` asks `bot` to send a message:
+
+```text
 RN-OUT v1
 to: <recipient address>
 reply_to: <message id being replied to, or empty>
@@ -175,10 +237,20 @@ sig: <hex>
 ---
 <body>
 ```
-Signature: `sig = HMAC(key, "v1\n" + to + "\n" + reply_to + "\n" + ts + "\n" + nonce + "\n" + body)`. Split headers and body at the first `\n---\n`. Test vector: key = `0123456789abcdef` repeated four times, to=`demo/claude-session`, reply_to=`01JTESTREPLYTO0000000000`, ts=`1700000000`, nonce=`0123456789abcdef01234567`, body = `hello` + newline + `第二行`. Expected sig=`652fbb03f1fd8626fd4f5db689b5983bdd57c797d5ba1085c340aaf699003088`.
 
-**RN-FWD v1** (relay forwards a body to `bot-inbox`)：
-```
+Signature: `sig = HMAC(key, "v1\n" + to + "\n" + reply_to + "\n" + ts + "\n" + nonce + "\n" + body)`. Split headers and body at the first `\n---\n`.
+
+Test vector:
+
+- to=`demo/claude-session`, reply_to=`01JTESTREPLYTO0000000000`, ts=`1700000000`, nonce=`0123456789abcdef01234567`
+- body = `hello` + newline + `第二行`
+- Expected sig=`652fbb03f1fd8626fd4f5db689b5983bdd57c797d5ba1085c340aaf699003088`
+
+### RN-FWD v1
+
+The relay forwards a body to `bot-inbox`:
+
+```text
 RN-FWD v1
 id: <message id>
 from: <sender address>
@@ -192,20 +264,39 @@ sig: <hex>
 <original body>
 --- RN-FWD END
 ```
-Signature: `sig = HMAC(key, "fwd1\n" + id + "\n" + from + "\n" + agent + "\n" + thread + "\n" + text_len + "\n" + text_sha256 + "\n" + ts)`. text_len counts Unicode code points (Python len), not bytes or grapheme clusters; SHA-256 uses UTF-8 bytes. Test vector: same key, id=`01JTESTMSG0000000000000000`, from=`demo/claude-session`, agent=`claude-code`, empty thread, text = `你好` + newline + ` x `, ts=`1700000000`. Expected sig=`a48eb3bbb089a3d6b31fed070d76063bb3b3ddabfac08b7651f4093ce358c576`.
 
-**RN-REFWD v1** (`bot-cloud` requests redelivery from `bot`; no body)：
-```
+Signature: `sig = HMAC(key, "fwd1\n" + id + "\n" + from + "\n" + agent + "\n" + thread + "\n" + text_len + "\n" + text_sha256 + "\n" + ts)`. text_len counts Unicode code points (Python len), not bytes or grapheme clusters; SHA-256 uses UTF-8 bytes.
+
+Test vector:
+
+- id=`01JTESTMSG0000000000000000`, from=`demo/claude-session`, agent=`claude-code`, empty thread, ts=`1700000000`
+- text = `你好` + newline + ` x `
+- Expected sig=`a48eb3bbb089a3d6b31fed070d76063bb3b3ddabfac08b7651f4093ce358c576`
+
+### RN-REFWD v1
+
+`bot-cloud` requests redelivery from `bot`; no body:
+
+```text
 RN-REFWD v1
 id: <message id to resend>
 ts: <Unix seconds>
 nonce: <random hex>
 sig: <hex>
 ```
-Signature: `sig = HMAC(key, "refwd1\n" + id + "\n" + ts + "\n" + nonce)`. The first line identifies a re-forward request. Test vector: same key, id=`01JTESTMSG0000000000000000`, ts=`1700000000`, nonce=`0123456789abcdef01234567`. Expected sig=`eb9e0a80d3126e9f8f026e584927e864871d390c39b5dec8cc02a7a6e2922668`.
 
-**RN-REFWD-ACK v1** (relay acknowledgement to `bot-inbox`)：
-```
+Signature: `sig = HMAC(key, "refwd1\n" + id + "\n" + ts + "\n" + nonce)`. The first line identifies a re-forward request.
+
+Test vector:
+
+- id=`01JTESTMSG0000000000000000`, ts=`1700000000`, nonce=`0123456789abcdef01234567`
+- Expected sig=`eb9e0a80d3126e9f8f026e584927e864871d390c39b5dec8cc02a7a6e2922668`
+
+### RN-REFWD-ACK v1
+
+Relay acknowledgement to `bot-inbox`:
+
+```text
 RN-REFWD-ACK v1
 id: <message id>
 status: <resent | no-copy | limit | failed>
@@ -214,10 +305,19 @@ reason: <reason, or empty>
 ts: <Unix seconds>
 sig: <hex>
 ```
-Signature: `sig = HMAC(key, "refwdack1\n" + id + "\n" + status + "\n" + attempt + "\n" + ts)`. Test vector: same key and id as above, status=`resent`, attempt=`1`, ts=`1700000000`. Expected sig=`faa3cd29c693eb142c3f3bbb38fa0be8c46bcea4869f90ce9842aa41aa83f6ea`.
 
-**Doorbell** (JSON POSTed to the routine; abbreviated values)：
-```
+Signature: `sig = HMAC(key, "refwdack1\n" + id + "\n" + status + "\n" + attempt + "\n" + ts)`.
+
+Test vector:
+
+- Same id as above, status=`resent`, attempt=`1`, ts=`1700000000`
+- Expected sig=`faa3cd29c693eb142c3f3bbb38fa0be8c46bcea4869f90ce9842aa41aa83f6ea`
+
+### Doorbell
+
+JSON POSTed to the routine (abbreviated values):
+
+```text
 {
   "source": "reason-network",
   "relay_version": 3,
@@ -230,4 +330,5 @@ Signature: `sig = HMAC(key, "refwdack1\n" + id + "\n" + status + "\n" + attempt 
   ]
 }
 ```
+
 An item may also contain `refwd` (re-forward attempt number) and `forward_failed` (the reason the initial forward failed). Relay system notices use `doorbell:false` and carry `text` directly in each item.
