@@ -6,7 +6,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 
 | | |
 |---|---|
-| **Version** | agent-mesh **v0.1.1** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Version** | agent-mesh **v0.2.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
 | **Platform** | Local: not tied to one OS by design (the engine ships macOS / Linux / Windows builds; the relay is pure Python), but only macOS currently has a one-click installer and has been verified · Python 3.9+ |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
@@ -107,7 +107,7 @@ Five design choices make this work:
    - An alert delivered `GOT_MAX_RERINGS + 1` times without being confirmed is dropped and stays only in the relay log (`ALERT` lines).
    - Past 200 alerts waiting, only their count is sent; the individual alerts are in the relay log.
    - Re-ringing gives up after `GOT_MAX_RERINGS` and reports the message; it never retries forever.
-4. **Each message goes to one turn, and an interrupted one is not redone silently.** Wake-ups can overlap, and a retried webhook can ring twice for the same id. `fetch` claims each body it hands out for one hour (`RN_CLAIM_LEASE`), so an overlapping turn gets `claimed` and skips it; a finished message reports `handled`. The Bot runs `rn-cloud.sh working <id>` before acting, and `rn-cloud.sh send` marks a reply as started before the engine sees it. If a turn stops after either point without recording completion, later turns report `uncertain`: the Bot checks its thread notes or asks the user rather than acting again. Every `fetch` also hands out verified bodies from the last seven days that no doorbell asked for and nobody handled, such as after a lost doorbell (`"orphan": true`). This is not exactly-once: a message whose turn stopped before `working` is handed out again after the claim expires, and one whose turn stopped later waits for the user's decision.
+4. **Each message goes to one turn, and an interrupted one is not redone silently.** Wake-ups can overlap, and a retried webhook can ring twice for the same id. `fetch` claims each body it hands out for one hour (`RN_CLAIM_LEASE`), so an overlapping turn gets `claimed` and skips it; a finished message reports `handled`. The Bot runs `rn-cloud.sh working <id>` before acting, and `rn-cloud.sh send` marks a reply as started before the engine sees it. If a turn stops after either point without recording completion, later turns report `uncertain`: the Bot checks its thread notes or asks the user rather than acting again. Every `fetch` also hands out verified bodies from the last seven days that no doorbell asked for and nobody handled, such as after a lost doorbell (`"orphan": true`; `RN_ORPHAN_DAYS` sets the days and `RN_ORPHANS=0` turns this off). This is not exactly-once: a message whose turn stopped before `working` is handed out again after the claim expires, and one whose turn stopped later waits for the user's decision.
 5. **Relay protocol messages are signed.** A team session can claim another sender name. Proxy envelopes, forwarded bodies, and re-forward requests therefore use HMAC signatures. Envelopes and requests have a 15-minute freshness window and replay protection. The signing key has one copy on each machine.
 
 ## Prerequisites
@@ -291,6 +291,28 @@ All `uninstall.sh` commands run on `[LOCAL]`:
 | `./uninstall.sh --all` | Everything above; also runs `leave --force` and `setup --remove`, then removes `~/.reason/network` and the engine binary. |
 
 Then, in `[GROK-UI]`, pause or delete the routine, and on `[BOT-CLOUD]`, remove `/workspace/agent-mesh/`.
+
+## Upgrade
+
+The local repository, the clone on the Bot cloud computer and the saved routine prompt are separate: changing files on the Mac does not update the other two. A reply convention already appended to a project's `AGENTS.md` is not updated either; copy the template again. The [changelog](CHANGELOG.md) says which parts each version changes.
+
+When the relay, the cloud scripts and the routine prompt all change, update them together in this order, so that no doorbell rings while some parts are old:
+
+1. On `[LOCAL]`, stop the relay: `launchctl bootout "gui/$(id -u)/com.local.agent-relay"`. Messages that reach the Mac from now on stay unread in the local engine and ring no doorbell.
+2. In `[GROK-UI]`, pause the routine and wait until no run is active.
+3. Have Grok Bot update `/workspace/agent-mesh` on `[BOT-CLOUD]` (ask it directly in chat, not through the routine) and confirm that the `rn-cloud.sh` usage lists `done`, `working` and `RN_GOT`.
+4. In `[GROK-UI]`, replace the saved routine prompt and resume the routine. The relay is still stopped, so no doorbell rings yet.
+5. On `[LOCAL]`, update the repository and rerun the full install: `./install.sh --name <team-name> --lang <en|zh-CN>`. An already configured webhook is not asked for again; the installer copies the new `agent_relay.py` and starts the relay service, which first catches up from `network.db` and then picks up the messages that arrived while it was stopped. The agent wiring step shows its plan again and asks for confirmation.
+
+While the relay is stopped the Mac gets no pushes; messages are only delayed. If step 3 or 4 fails, start the old relay again with `launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.local.agent-relay.plist` to return to the state before the upgrade.
+
+To roll back receipts and re-rings later, go in this order so that an old relay never receives a receipt:
+
+1. On `[LOCAL]`, set `GOT_TIMEOUT_SECONDS=0` in `~/.config/agent-relay/env`, restart the relay with `launchctl kickstart -k "gui/$(id -u)/com.local.agent-relay"`, keep the routine running and wait until `~/Library/Logs/agent-relay.log` shows `pending: 0` and `alerts: 0` (while the webhook delivers, at most about `GOT_DONE_SECONDS × (GOT_MAX_RERINGS + 1)`).
+2. In `[GROK-UI]`, pause the routine and wait until no run is active.
+3. Have Grok Bot roll `/workspace/agent-mesh` back on `[BOT-CLOUD]` and check that the cloud engine's outbox is empty, then wait a few minutes so the relay still handles any receipt on its way.
+4. Restore the previous routine prompt and resume the routine.
+5. Roll back the relay on `[LOCAL]` last.
 
 ## Documentation and language
 

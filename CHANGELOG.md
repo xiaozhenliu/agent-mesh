@@ -2,52 +2,76 @@
 
 **English** | [简体中文](CHANGELOG.zh-CN.md)
 
-## Unreleased
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-- Added CI: every push to `main` and every pull request runs the offline checks from [CONTRIBUTING](CONTRIBUTING.md#check-a-change-offline) on Linux and macOS, with Python 3.9 and a current Python, and Node 20. It needs no secrets and does not install anything or contact Reason Network, Grok or iroh.
-- Fixed: the relay now treats every HTTP 2xx webhook response as delivered, including 201, 202 and 204. Before, only 200 counted, so an accepted batch stayed in the spool, was POSTed again and spent another wake. Other responses and network errors still keep the batch for retry.
-- Fixed (#1, #5): one failing message no longer loses the rest of its batch. `reason-network listen` marks a whole batch read as soon as it returns; before, a proxied send that timed out after 60 seconds, or any other error, ended the batch, and the messages after it were never forwarded and never rang the doorbell. The relay now handles each message on its own: a failure is logged and reported to the routine as a relay notice, and the rest of the batch goes on. A proxied send that timed out is reported as "not confirmed", since the engine may still have sent it. For incoming mail the relay now keeps the copy and saves the doorbell before forwarding the body, so a relay stopped in between still rings and the cloud's fetch asks for the copy. At startup, and after a `listen` that timed out or failed, the relay reads the local engine's `network.db` (read-only) for messages to it that were marked read but never handled, going back at most `FWD_COPY_DAYS` days and never before its first start on this version, and handles them; messages still held for inbound approval are left alone. If the database cannot be read it logs that, sends one notice and carries on. A `listen` timeout is now logged as such. `state.json` keeps handled message ids for `FWD_COPY_DAYS` + 1 days instead of the last 2,000 and gains the fields `seen_t` and `recv_floor`; the previous relay version still reads it.
-- Cloud fetch now hands each message to one routine turn and finds messages whose doorbell was lost. `rn-cloud.sh fetch` claims every body it hands out for `RN_CLAIM_LEASE` seconds (default 3600) and reports new statuses: `handled` (already done), `claimed` (another turn holds it), and `uncertain` (an earlier turn started work or a reply and never recorded completion; the Bot checks its thread notes or asks the user instead of redoing it). New commands `rn-cloud.sh working <id>` and `rn-cloud.sh done <id>...`; `rn-cloud.sh send <to> <id>` records the reply as started before the engine sees it and as done after "handed to the Mac". Each fetch also returns verified bodies from the last `RN_ORPHAN_DAYS` days (default 7) that no doorbell asked for and nobody handled, marked `"orphan": true` (`RN_ORPHANS=0` turns this off); a bad row found that way is reported once. The first run marks existing inbox folders `legacy` so they are not reported as orphans. `rn-cloud.sh purge` also removes the remembered bad rows and reports a `mismatch` count. The routine prompt checks the thread notes for every `complete` result, runs `working` before acting and `done` for receipts, and names the handled ids in its thread notes. No message format changes.
-- Added (#7): receipts from the cloud and re-rings from the relay. After each fetch the cloud sends the relay one signed receipt (new format RN-GOT v1) listing the messages it stored and those already handled; `rn-cloud.sh done` sends a done receipt, and a reply with `reply_to` also counts as handled. The relay keeps every forwarded message pending until it is handled. With no stored receipt `GOT_TIMEOUT_SECONDS` (default 900) after its doorbell, it re-sends the body and rings again; stored but not handled after `GOT_DONE_SECONDS` (default 7200), it rings again. It does this at most `GOT_MAX_RERINGS` (default 2) times per message, apart from the re-forward limit, and then sends the routine an alert naming the message. Alerts are kept in `state.json` outside the spool, so an overflowing spool cannot drop them. They arrive as a notice whose id starts with `relay-alerts-` and are sent again until the routine confirms them with `rn-cloud.sh done <id>`. Each side declares the feature with an unsigned `caps: got1` line in RN-FWD and RN-REFWD, so an old cloud sends no receipts and an old relay ignores the line; a re-forward request from a new cloud no longer rings an extra `refwd` doorbell. If the cloud stops sending receipts, the relay notices after one extra re-ring, sends one alert and stops watching new mail until the next receipt. Doorbell items can carry `rering`. New relay settings `GOT_TIMEOUT_SECONDS` (`0` turns re-ringing off for new mail), `GOT_DONE_SECONDS` and `GOT_MAX_RERINGS` go in `~/.config/agent-relay/env` and survive `./install.sh --webhook`; on the cloud, `RN_GOT=0` turns receipts off (set `GOT_TIMEOUT_SECONDS=0` on the relay with it). The relay log gains `pending: N`, `alerts: N` and `ALERT` lines. The routine prompt passes relay alerts to the user and confirms them, ends every handled message with `send` or `done`, and ignores protocol control messages that reach it by mistake. `state.json` gains `pending`, `alerts`, `got_last`, `caps_lost`, `got_probe` and `last_batch`; the previous relay version still reads it and drops them.
-- Added (#8): a reply resent by the cloud is delivered only once. With a `reply_to`, `rn-cloud.sh send` now derives the envelope nonce from the recipient, `reply_to` and body (see [RN-OUT v1](README.md#rn-out-v1)), so resending the same reply file repeats the nonce. The relay keeps a send record for every proxied nonce in `state.json` (new field `sends`), saved before it calls the engine and kept for `NONCE_KEEP_SECONDS` (default 86400): a repeat of a nonce already sent is dropped silently; a repeat of one whose result is unknown (engine timeout, `held`, no clear answer, or the relay stopped during the send) is not sent and gets one alert; a clearly refused or failed send may be resent. A record still marked as sending at startup becomes unknown, with an alert. A stale envelope, the hourly limit, a group or own address, a failed send and an unknown result are now reported as relay alerts instead of spool notices, so an overflowing spool cannot drop them; an envelope with a bad signature still gets a plain notice. Nonces recorded by the previous relay count as unknown after the upgrade. When a send is still queued on the box after 60 seconds, `rn-cloud.sh send` now says it goes out the next time the box connects and must not be resent; the routine prompt resends a reply, with the same file, only after a relay alert says it was refused, and tells the user when the result is unknown. Deduplication is a safety net: the Bot still should not resend a queued message. The new relay setting `NONCE_KEEP_SECONDS` goes in `~/.config/agent-relay/env` and survives `./install.sh --webhook`. The previous relay version still reads `state.json`, drops `sends` and keeps one hour of replay protection from `nonces`.
+## v0.2.0 — 2026-11-03
 
-Existing users: the relay, the cloud scripts and the routine prompt all changed and must be updated together, in this order, so that no doorbell rings while some parts are old:
+Reliable delivery release: per-message isolation in the relay, idempotent cloud fetch, receipts with re-rings, and reply deduplication.
 
-1. On `[LOCAL]`, stop the relay: `launchctl bootout "gui/$(id -u)/com.local.agent-relay"`. Messages that reach the Mac from now on stay unread in the local engine and ring no doorbell.
-2. In `[GROK-UI]`, pause the routine and wait until no run is active.
-3. Have Grok Bot update `/workspace/agent-mesh` on `[BOT-CLOUD]` (ask it directly in chat, not through the routine) and confirm that the `rn-cloud.sh` usage lists `done`, `working` and `RN_GOT`.
-4. In `[GROK-UI]`, replace the saved routine prompt and resume the routine. The relay is still stopped, so no doorbell rings yet.
-5. On `[LOCAL]`, update the repository and rerun the full install: `./install.sh --name <team-name> --lang <en|zh-CN>`. An already configured webhook is not asked for again; the installer copies the new `agent_relay.py` and starts the relay service, which first catches up from `network.db` and then picks up the messages that arrived while it was stopped. The agent wiring step shows its plan again and asks for confirmation.
+### Added
 
-While the relay is stopped the Mac gets no pushes; messages are only delayed. If step 3 or 4 fails, start the old relay again with `launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.local.agent-relay.plist` to return to the state before the upgrade.
+- Cloud receipts and relay re-rings (#7): after each fetch the cloud sends the relay a signed receipt (new format RN-GOT v1); the relay tracks every forwarded message, rings again when it is not stored or handled in time, and alerts the user after repeated failures. Alerts must be confirmed by the routine and survive spool overflow.
+- A reply resent by the cloud is delivered only once (#8): a reply with `reply_to` gets a nonce derived from its content, and the relay records the result of every nonce; a repeat of a sent reply is dropped, and one with an unknown result is not resent.
+- Cloud orphan scan: messages whose doorbell was lost and that nobody handled are handed out on the next fetch.
+- New commands `rn-cloud.sh working` and `rn-cloud.sh done`.
+- Relay settings `GOT_TIMEOUT_SECONDS`, `GOT_DONE_SECONDS`, `GOT_MAX_RERINGS` and `NONCE_KEEP_SECONDS`; cloud settings `RN_CLAIM_LEASE`, `RN_ORPHAN_DAYS`, `RN_ORPHANS` and `RN_GOT`.
+- CI: offline checks run on Linux and macOS for every push and pull request.
 
-To roll back the receipts and re-rings (#7) later, go in this order so that an old relay never receives a receipt: (1) on `[LOCAL]`, set `GOT_TIMEOUT_SECONDS=0` in `~/.config/agent-relay/env`, restart the relay with `launchctl kickstart -k "gui/$(id -u)/com.local.agent-relay"`, keep the routine running and wait until `~/Library/Logs/agent-relay.log` shows `pending: 0` and `alerts: 0` (while the webhook delivers, at most about `GOT_DONE_SECONDS × (GOT_MAX_RERINGS + 1)`); (2) in `[GROK-UI]`, pause the routine and wait until no run is active; (3) have Grok Bot roll `/workspace/agent-mesh` back on `[BOT-CLOUD]` and check that the cloud engine's outbox is empty, then wait a few minutes so the relay still handles any receipt on its way; (4) restore the previous routine prompt and resume the routine; (5) roll back the relay on `[LOCAL]` last.
+### Changed
+
+- The cloud hands each message to one routine turn, with new statuses `handled`, `claimed` and `uncertain`; an interrupted message is left to the user instead of being redone.
+- The relay handles messages one by one, so one failure no longer affects the rest of its batch.
+- At startup the relay recovers messages the local engine marked read but that were never handled.
+- A re-forward request from a new cloud no longer rings an extra doorbell.
+- Proxied-send problems such as refused or unknown results are reported as relay alerts instead of spool notices.
+- The routine prompt follows the behavior above.
+
+### Fixed
+
+- The relay treats every HTTP 2xx webhook response as delivered; before, only 200 counted, which caused repeated wakes.
+- A proxied send that times out no longer ends the whole batch and is reported as "not confirmed" (#1, #5).
+
+### Upgrade notes
+
+The relay, the cloud scripts and the routine prompt must be updated together, in the [order given in the README](README.md#upgrade).
 
 ## v0.1.1 — 2026-11-03
 
 Security hardening release.
 
-- Added an English and Chinese [security policy](SECURITY.md): private vulnerability reporting, scope and upstream ownership, how reports are handled, and steps after a possible leak of the signing key, webhook key or an invite link. The README's security section and documentation table link to it.
-- Rewrote the README's [Security and privacy](README.md#security-and-privacy) section: Grok Bot is the trust root and can still send validly signed messages if prompt injection steers it; the Claude Code and Codex auto-approve modes are named one by one; Reason Network v0.10.7 actually wakes Codex with `codex queue` (previously misstated as `codex exec resume`), with the tested approval behavior during unattended wakes; where message bodies stay in plain text and for how long (including doorbell previews waiting in the relay's `state.json`), with a warning not to send secrets through the channel; and a team-membership check.
-- Added `./install.sh --rotate-key`: generates a new signing key, restarts the relay, and prints the CopyToBox steps for copying the new key to the cloud. It refuses, leaving the key unchanged, when the relay configuration loads its key from elsewhere (`OUTBOUND_KEY` or a different `OUTBOUND_KEY_FILE`). The README and security policy explain that mail forwarded before a rotation and not yet fetched by the cloud reports `mismatch` afterwards and has to be resent. The security policy now uses it instead of manual commands.
-- Added cleanup commands: `./install.sh --purge-copies` on `[LOCAL]` deletes the relay's kept message copies and refuses a symlinked directory; `rn-cloud.sh purge <days>` on `[BOT-CLOUD]` stops the cloud engine, then deletes received messages, inbox folders, misdirected mail logs and thread notes older than that many days; `0` means everything. Re-forwards of a message count by their newest copy, the remaining copies and inbox folder stay together, and purged messages are not fetched again as new. Cleanup takes the inbox lock before stopping the engine, then selects and deletes rows in one write transaction, and checks again before removing inbox folders, so a re-forward arriving during cleanup keeps its folder. It waits for a running fetch and refuses when a directory is a symlink or the engine is still running. Cloud fetch and cleanup share one lock, so they never change the inbox at the same time.
-- `./check.sh` now checks team membership and reports FAIL for any member other than this machine and `cloud`, or for more than one `cloud`.
-- `./install.sh --webhook` keeps the user's optional settings, such as `DOORBELL_PREVIEW_CHARS=0`, when it rewrites the configuration, instead of silently restoring defaults.
-- The reply convention template adds security boundaries: treat the Bot's messages as outside input; ask the user before hard-to-reverse or outward-facing actions; keep secrets out of messages; report unknown team members to the user.
+### Added
 
-Existing users: the relay program `agent_relay.py` is unchanged; updating the repository on `[LOCAL]` is enough to use the new commands, with no reinstall. For the cloud cleanup command and the fetch lock, have Grok Bot update the repository at `/workspace/agent-mesh` on `[BOT-CLOUD]`. A reply convention already appended to your repositories' `AGENTS.md` is not updated automatically; copy the template again. The routine prompt is unchanged.
+- English and Chinese [security policy](SECURITY.md).
+- `./install.sh --rotate-key` to rotate the signing key.
+- Cleanup commands: `./install.sh --purge-copies` locally and `rn-cloud.sh purge <days>` on the cloud.
+- `./check.sh` checks team membership and reports FAIL for unexpected members.
+- Security boundaries in the reply convention template.
+
+### Changed
+
+- Rewrote the README's [Security and privacy](README.md#security-and-privacy) section: trust root, local agent auto-approve modes, where bodies stay in plain text, team-membership checks.
+- Cloud fetch and cleanup share one lock.
+- `./install.sh --webhook` keeps the user's optional settings when it rewrites the configuration.
+
+### Fixed
+
+- The documented Codex wake method is corrected to `codex queue`.
+
+### Upgrade notes
+
+The relay program is unchanged. The cloud clone and reply conventions already copied into projects must be updated separately.
 
 ## v0.1.0 — 2026-11-02
 
-First tagged agent-mesh release. Earlier public commits remain in the repository history.
+First tagged release.
 
-- Connect local Claude Code, Codex, pi, and DeepSeek Harness sessions with Grok Bot through a private Reason Network team, signed messages, webhook wake-ups, and full-body retrieval with redelivery.
-- Provide paired English and Simplified Chinese guides and prompts. Label commands and file locations as `[LOCAL]`, `[BOT-CLOUD]`, or `[GROK-UI]`, including key-copy source and destination.
-- Use the actual Mac home directory and detected Python interpreter; generate escaped launchd configuration. Support Apple Silicon and Intel Macs and detect dsh in user/system Applications or via `DSH_APP`.
-- Use a public HTTPS cloud clone URL by default, with an explicit `--repo-url` option. Check existing installations, dependencies, platform, and CPU before proceeding; stop on incompatible engine versions, alternate PATH installations, or custom local state directories.
-- Document agent installation/login, Git, Python 3.9+ with `ssl`/`sqlite3`, network access, and cloud tools and persistent storage requirements. Make dsh plugin installation repeatable and keep unique configuration backups.
-- Add isolated installer tests for different homes, architectures, repository URLs, missing prerequisites, and existing deployments. Add `VERSION` and the offline `./install.sh --version` command.
+### Added
 
-Compatibility: local installation requires a macOS desktop login; the Bot cloud computer requires Linux x86_64 or ARM64 and the persistent path `/workspace/agent-mesh/`. Reason Network remains pinned to **v0.10.7**; its version is independent of agent-mesh's version.
+- Connects local Claude Code, Codex, pi and DeepSeek Harness sessions with Grok Bot through a private Reason Network team: signed messages, webhook wake-ups, full-body retrieval and redelivery.
+- Paired English and Simplified Chinese guides and prompts, with `[LOCAL]`, `[BOT-CLOUD]` and `[GROK-UI]` execution labels.
+- Supports Apple Silicon and Intel Macs; the cloud side supports Linux x86_64 and ARM64.
+- Pre-install checks for existing deployments, dependencies, platform and CPU.
+- Isolated installer tests.
+- `VERSION` file and `./install.sh --version`.
 
-Existing users: review the prerequisites and existing deployment before rerunning the installer. The Bot cloud clone and saved routine prompt are updated separately; changing files on the Mac does not update either automatically. This release does not migrate a running local deployment by itself.
+Reason Network is pinned to v0.10.7; its version is independent of agent-mesh's.
