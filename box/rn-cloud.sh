@@ -140,7 +140,7 @@ PY
     for _ in $(seq 1 30); do
       if [ "$(outbox_count)" = "0" ]; then
         echo "rn-cloud: handed to the Mac"
-        if [ -n "$reply_to" ] && ! err="$(python3 "$BASE/rn-fetch.py" done "$reply_to" --via send 2>&1 >/dev/null)"; then
+        if [ -n "$reply_to" ] && ! err="$(python3 "$BASE/rn-fetch.py" "done" "$reply_to" --via send 2>&1 >/dev/null)"; then
           # Already sent: exit 0 so nobody retries; the id stays "replying" and later shows as uncertain.
           echo "rn-cloud: sent, but could not record $reply_to as handled: ${err:-unknown error}" >&2
         fi
@@ -157,7 +157,7 @@ PY
   done)
     shift
     [ "$#" -gt 0 ] || die "usage: rn-cloud.sh done <id>..."
-    python3 "$BASE/rn-fetch.py" done "$@" >/dev/null || die "could not record $* as done"
+    python3 "$BASE/rn-fetch.py" "done" "$@" >/dev/null || die "could not record $* as done"
     echo "rn-cloud: recorded as done: $*" ;;
   purge)
     days="${2:-}"

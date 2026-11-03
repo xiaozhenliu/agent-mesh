@@ -208,9 +208,9 @@ rotate_key() {
 # missing copy is answered with no-copy. The loop catches a copy renamed from .tmp to .json while we delete.
 purge_copies() {
   local state="$HOME/Library/Application Support/agent-relay"
-  local dir="$state/fwd-copies" files=() removed=0 pass
+  local dir="$state/fwd-copies" files=() removed=0
   [ ! -L "$state" ] && [ ! -L "$dir" ] || die "refusing to delete through a symlink: $dir; nothing was removed"
-  for pass in 1 2 3 4 5; do
+  for _ in 1 2 3 4 5; do
     files=()
     if [ -d "$dir" ]; then
       shopt -s nullglob; files=("$dir"/*.json "$dir"/*.tmp); shopt -u nullglob

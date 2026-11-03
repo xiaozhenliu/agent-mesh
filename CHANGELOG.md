@@ -4,6 +4,19 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.1 — 2026-11-03
+
+Maintenance release with no behavior changes.
+
+### Changed
+
+- CI's shellcheck job now blocks a failing build, and all shell scripts pass it.
+- `./check.sh` words its PATH check as "PATH includes ~/.local/bin" or "PATH lacks ~/.local/bin".
+
+### Upgrade notes
+
+Existing deployments need no update.
+
 ## v0.2.0 — 2026-11-03
 
 Reliable delivery release: per-message isolation in the relay, idempotent cloud fetch, receipts with re-rings, and reply deduplication.

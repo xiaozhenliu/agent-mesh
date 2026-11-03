@@ -23,7 +23,7 @@ if command -v python3 >/dev/null && python3 -c 'import sys, ssl, sqlite3; sys.ex
 else
   bad "Python 3.9+ missing or incomplete" "install Python 3.9+ and ensure python3 is on PATH; see README prerequisites"
 fi
-case ":$PATH:" in *":$HOME/.local/bin:"*) ok "~/.local/bin in PATH";; *) bad "~/.local/bin not in PATH" "add ~/.local/bin to PATH using your shell's startup file; see README prerequisites";; esac
+case ":$PATH:" in *":$HOME/.local/bin:"*) ok "PATH includes ~/.local/bin";; *) bad "PATH lacks ~/.local/bin" "add ~/.local/bin to PATH using your shell's startup file; see README prerequisites";; esac
 if curl -sS -o /dev/null -m 10 -w '%{http_code}' https://aps1-1.relay.n0.iroh.link/ 2>/dev/null | grep -q '^200$'; then
   ok "iroh relay reachable"
 else

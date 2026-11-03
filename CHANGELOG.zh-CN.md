@@ -4,6 +4,19 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.1 — 2026-11-03
+
+维护版本，行为没有变化。
+
+### 变更
+
+- CI 的 shellcheck 作业改为失败即判定构建失败，所有 shell 脚本均已通过。
+- `./check.sh` 的 PATH 检查改为提示 "PATH includes ~/.local/bin" 或 "PATH lacks ~/.local/bin"。
+
+### 升级说明
+
+已有部署无需更新。
+
 ## v0.2.0 — 2026-11-03
 
 可靠投递版本：relay 逐条隔离、云端幂等取信、回执与补按门铃、回复去重。
