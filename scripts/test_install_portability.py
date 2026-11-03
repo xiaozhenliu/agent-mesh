@@ -2,6 +2,7 @@
 import os
 import plistlib
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ class Installation(unittest.TestCase):
         self.bin = self.base / "tools"
         self.bin.mkdir()
         for name in ("dirname", "sed", "head", "awk", "tar", "shasum", "openssl", "mkdir",
-                     "chmod", "cp", "date", "grep", "cat", "install", "sleep", "tail", "wc", "mktemp", "rm"):
+                     "chmod", "cp", "date", "grep", "cat", "install", "sleep", "tail", "wc", "mktemp", "rm", "mv"):
             found = shutil.which(name)
             if found:
                 (self.bin / name).symlink_to(found)
@@ -71,6 +72,87 @@ class Installation(unittest.TestCase):
         self.assertNotIn("unexpected git", self.calls())
         self.assertNotIn("curl", self.calls())
         self.assertNotIn("bootstrap", self.calls())
+
+    def configured(self):
+        """An installed engine plus a configured relay: env with a webhook, and the current key."""
+        self.engine()
+        conf = self.home / ".config/agent-relay"
+        conf.mkdir(parents=True)
+        (conf / "env").write_text("WEBHOOK_URL=https://example.invalid/hook\nWEBHOOK_KEY=0123456789\n"
+                                  "OUTBOUND_KEY_FILE=~/.config/agent-relay/outbound.key\n")
+        key = conf / "outbound.key"
+        key.write_text("a" * 64 + "\n")
+        key.chmod(0o600)
+        log = self.home / "Library/Logs/agent-relay.log"
+        self.tool("launchctl", f'echo "launchctl $*" >> "$CALL_LOG"; '
+                               f'[ "$1" = bootstrap ] && echo "agent-relay up" >> "{log}"; exit 0')
+        return key
+
+    def test_rotate_key_replaces_key_restarts_relay_and_explains_cloud_copy(self):
+        key = self.configured()
+        result = self.run_script("install.sh", "--rotate-key", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        new = key.read_text()
+        self.assertRegex(new, r"^[0-9a-f]{64}\n$")
+        self.assertNotEqual(new, "a" * 64 + "\n")
+        self.assertEqual(key.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(key.parent.glob("outbound.key.new.*")), [])
+        self.assertIn("bootstrap", self.calls())
+        self.assertIn("CopyToBox", result.stdout)
+        self.assertIn("/workspace/agent-mesh/box/outbound.key", result.stdout)
+        self.assertIn("./install.sh --webhook", result.stdout)
+        self.assertNotIn(new.strip(), result.stdout + result.stderr)
+
+    def test_rotate_key_without_terminal_or_relay_changes_nothing(self):
+        key = self.configured()
+        result = self.run_script("install.sh", "--rotate-key")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(key.read_text(), "a" * 64 + "\n")
+        self.assertNotIn("bootstrap", self.calls())
+        (key.parent / "env").unlink()
+        result = self.run_script("install.sh", "--rotate-key", "--yes")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("relay is not configured", result.stderr)
+        self.assertEqual(key.read_text(), "a" * 64 + "\n")
+
+    def test_rotate_key_refuses_when_the_relay_loads_another_key(self):
+        key = self.configured()
+        env = key.parent / "env"
+        base = env.read_text()
+        for extra, said in (("OUTBOUND_KEY=" + "b" * 64 + "\n", "sets OUTBOUND_KEY inline"),
+                            ("OUTBOUND_KEY_FILE=/elsewhere/outbound.key\n", "does not load the key")):
+            env.write_text(base + extra)
+            result = self.run_script("install.sh", "--rotate-key", "--yes")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(said, result.stderr)
+            self.assertEqual(key.read_text(), "a" * 64 + "\n")
+            self.assertNotIn("bootstrap", self.calls())
+
+    def test_purge_copies_removes_kept_bodies_only(self):
+        state = self.home / "Library/Application Support/agent-relay"
+        result = self.run_script("install.sh", "--purge-copies")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("removed 0 kept message copies", result.stdout)
+        copies = state / "fwd-copies"
+        copies.mkdir(parents=True)
+        for name in ("01A.json", "01B.json", "01C.tmp"):
+            (copies / name).write_text("{}")
+        (state / "state.json").write_text("{}")
+        result = self.run_script("install.sh", "--purge-copies")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("removed 3 kept message copies", result.stdout)
+        self.assertEqual(list(copies.iterdir()), [])
+        self.assertTrue((state / "state.json").exists())
+        self.assertNotIn("curl", self.calls())
+        elsewhere = self.base / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "keep.json").write_text("{}")
+        copies.rmdir()
+        copies.symlink_to(elsewhere, target_is_directory=True)
+        result = self.run_script("install.sh", "--purge-copies")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink", result.stderr)
+        self.assertTrue((elsewhere / "keep.json").exists())
 
     def test_explicit_public_fork(self):
         self.engine()
@@ -154,6 +236,30 @@ class Installation(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Bot's Linux cloud computer", result.stderr)
         self.assertNotIn("No such file", result.stderr)
+
+    def test_cloud_purge_stops_engine_first_and_checks_days(self):
+        box = self.base / "box"
+        (box / "state").mkdir(parents=True)
+        (box / "person").write_text("demo\n")
+        (box / "outbound.key").write_text("k" * 64)
+        (box / "rn-fetch.py").symlink_to(ROOT / "box/rn-fetch.py")
+        self.tool("reason-network", 'echo "rn $*" >> "$CALL_LOG"', box / "bin/reason-network")
+        db = sqlite3.connect(box / "state/network.db")
+        db.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, body TEXT, sent_at INTEGER)")
+        db.execute("INSERT INTO messages VALUES ('m1', 'demo/terminal', 'demo/bot-inbox', 'old text', 1)")
+        db.commit()
+        db.close()
+        self.env.update(MOCK_OS="Linux", MOCK_ARCH="x86_64", RN_CLOUD_BASE=str(box),
+                        RN_INBOX_DIR=str(self.base / "inbox"), RN_THREADS_DIR=str(self.base / "threads"))
+        for bad in ((), ("x",), ("-1",)):
+            result = self.run_script("box/rn-cloud.sh", "purge", *bad)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("usage: rn-cloud.sh purge <days>", result.stderr)
+        self.assertNotIn("rn stop", self.calls())
+        result = self.run_script("box/rn-cloud.sh", "purge", "0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"messages": 1', result.stdout)
+        self.assertEqual(self.calls().strip(), "rn stop")
 
     def test_launch_agent_keeps_selected_python_and_escapes_paths(self):
         destination = self.base / "agent.plist"

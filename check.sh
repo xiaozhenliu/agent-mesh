@@ -36,6 +36,15 @@ if [ -x "$RN" ]; then
   if team="$("$RN" team 2>/dev/null)"; then
     [ -n "$PERSON" ] && ok "team name: $PERSON" || bad "no person in $CFG" "run ./install.sh"
     echo "$team" | grep -Eq "^\s+$PERSON\s+cloud\s" && ok "cloud machine joined" || skip "cloud machine" "not joined yet: send the text from ./install.sh --cloud-prompt to Grok Bot"
+    # Rows are "  <person>  <machine>  <link>"; only this machine and the person's cloud belong here.
+    # Members are endpoints, so a second machine may reuse the label <person> cloud: count those rows as well.
+    extra="$(echo "$team" | awk -v p="$PERSON" '
+      NR > 1 && NF >= 3 && !/this machine$/ {
+        if ($1 == p && $2 == "cloud" && !clouds++) next
+        printf "%s%s/%s", sep, $1, $2; sep = ", "
+      }')"
+    [ -z "$extra" ] && ok "team holds only this machine and cloud" \
+      || bad "unexpected team members: $extra" "if you did not add them: reason-network remove <person>/<machine> for each, then ./install.sh --rotate-key (README: Security and privacy)"
   else
     bad "not in a team" "run ./install.sh"
   fi

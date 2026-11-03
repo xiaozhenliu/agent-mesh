@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| **版本** | agent-mesh **v0.1.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
+| **版本** | agent-mesh **v0.1.1** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
 | **支持平台** | 本地：设计上不绑定系统（引擎有 macOS / Linux / Windows 版本，relay 为纯 Python），但目前只有 macOS 提供一键安装并经过验证 · Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
@@ -45,7 +45,7 @@ flowchart LR
 - **找得到人（保留长会话上下文）**：给云端写个脚本跑 `claude -p "..."` 确实能执行单次任务，但它**每次都会拉起一个全新、空白的进程**。如果你本地终端里已经开着一个会话，项目背景、上下文和改动记录都在里面，`claude -p` 根本碰不到它。agent-mesh 能精确联系到正在干活的那个具体会话，把上下文留住。
 - **不用傻等（双向门铃唤醒）**：复杂任务中间往往要提问、要修改、过会儿还要接着聊。没有唤醒机制时，云端发完信必须一直挂起等待，或者写脚本每隔几秒轮询查进度；连上 agent-mesh 后，发完消息就可以直接休眠，对方有了结果一回信，像“按门铃”一样叫醒这边（relay 默认两次叫醒至少间隔 20 秒、每小时最多 20 次；本地会话能否被叫醒见[各 agent 怎么收信](#各-agent-怎么收信)），两端都不耗费无谓的算力和挂机额度。
 - **免公网暴露（无服务器、无公网 IP）**：底层基于 Reason Network 连接，消息可能经过 iroh 公共中继；上游将消息内容描述为加密传输，本项目未独立审计。本地电脑不开入站端口，只要能连上 iroh 中继，在家庭或公司局域网内都能收发，不需要自建服务器或中转服务；如果用 VPN 或代理，需要给 `iroh.link` 放行，见[常见问题](#常见问题)。
-- **守住权限（通道不越权）**：通道只负责传递文字消息，**不额外授予任何本机执行特权**。本地 agent 收到消息后，该找你确认的危险操作依然会找你确认，前提是本地 agent 没开自动批准：开了 `--full-auto` 之类模式的会话，收到的文字就等于命令，详见[安全与隐私](#安全与隐私)。
+- **守住权限（通道不越权）**：通道只负责传递文字消息，**不额外授予任何本机执行特权**。本地 agent 收到消息后，该找你确认的危险操作依然会找你确认，前提是本地 agent 没开自动批准：开了 Claude Code 的 `--dangerously-skip-permissions`、Codex 的 `--yolo` 之类模式的会话，收到的文字就等于命令。另外，云端 Grok Bot 是这条通道的信任根，它如果被读到的内容诱导，也能发出签名有效的消息，详见[安全与隐私](#安全与隐私)。
 - **什么时候不需要它**：如果任务在 Grok Bot 的云电脑上就能完全搞定（比如纯跑脚本、做调研、写独立文件），直接让它在云电脑上装各家 CLI 就够了，用不上本项目。
 
 ## 核心亮点
@@ -202,7 +202,7 @@ cd ~/agent-mesh
 
 | 方式 | 表现 | 适用的 agent |
 |---|---|---|
-| **push** | 空闲时也会被叫醒。 | Claude Code 是直接把消息写进会话；Codex 是通过 `codex exec resume`；pi 是靠扩展每 5 秒轮询一次。 |
+| **push** | 空闲时也会被叫醒。 | Claude Code 是直接把消息写进会话；Codex 是通过 `codex queue` 把消息排进已打开的会话；pi 是靠扩展每 5 秒轮询一次。 |
 | **turn** | 要等到下一次工具调用或这一轮结束才看到。 | dsh 装了插件后显示为 `turn`，但实际上它空闲时约 5 秒内就会自动开一轮来处理。 |
 | **pull** | 不会被叫醒。 | 没装插件的 dsh 属于这一档，得让它自己去查收件箱。 |
 
@@ -210,14 +210,55 @@ cd ~/agent-mesh
 
 ## 安全与隐私
 
+### 信任根是 Grok Bot
+
+- 签名密钥有两份，其中一份在 `[BOT-CLOUD]`。签名防的是拿不到密钥的会话冒名发信，防不了被操纵的 Bot：Grok Bot 如果被它读到的网页或文档诱导（提示词注入），照样能生成签名有效的 RN-OUT 信封，以 `<team-name>/bot` 的名义给你本地的任何会话发信。所以本地 agent 要把 Bot 的来信当作外部输入，而不是你本人的指令。
+- 同一个 macOS 用户下运行的任何 agent 都读得到 `~/.config/agent-relay/` 里的密钥和 webhook key，项目文件夹并不是权限边界。
+
+### 本地 agent 的权限
+
 - 这条桥接通道只给本地 agent 发文字，不直接授予 Grok Bot 文件访问权，也不绕过本地 agent 的权限。要不要执行、怎么执行由接收会话决定。Mac 不开任何入站端口。Grok Bot App 里的「本机永远批准」和「通过本机网络连接」两个开关都不用开。
-- 上一条成立的前提是本机 agent 没开自动批准。对开了 `--full-auto` 之类模式的 agent 来说，收到的文字就等于命令，这种会话只能在沙盒文件夹里开。
-- 签名防的是拿不到密钥的会话冒名发信。但同一个 macOS 用户下运行的任何 agent 都读得到 `~/.config/agent-relay/` 里的密钥和 webhook key，项目文件夹并不是权限边界。
+- 上一条成立的前提是本机 agent 没开自动批准。即使没开，会话的沙盒和权限设置本来就允许的操作（例如读文件、在工作目录里改文件）也不会再问你，只有需要人工批准的操作才会等你。下面这些模式会让更多操作不问就做，收到的文字就等于命令，这种会话只能在沙盒文件夹或隔离环境里开：
+  - Claude Code：`--dangerously-skip-permissions`，或 `--permission-mode bypassPermissions`。
+  - Codex：`--yolo`（即 `--dangerously-bypass-approvals-and-sandbox`，不问也不受沙盒限制）；`--sandbox danger-full-access`（不受沙盒限制）；`--ask-for-approval never`（从不询问：沙盒允许的直接执行，不允许的直接失败）；以及交给自动审查代为批准的 `--approve-for-me`。
+- **无人值守的唤醒**：push 档的会话在你不在电脑前时也会被叫醒。Reason Network v0.10.7 用 `codex queue --thread <id> --message` 唤醒 Codex：消息排进那个已经打开的会话，作为新的一轮执行，沿用这个会话启动时的审批和沙盒设置，不附加任何放宽权限的参数。实测（Codex 0.166.0，`--ask-for-approval on-request --sandbox read-only`，这个配置下写文件需要人工批准）：被叫醒的这一轮要写文件时，审批框出现在该会话的终端里等待，没人确认就不执行，等了约一分钟也没有自动批准。所以没开自动批准时，需要人工批准的操作会停在审批处等你回来，沙盒和权限设置已经允许的操作照常执行；开了自动批准时，没有人拦。Claude Code 的消息直接写进已打开的会话，本项目没有单独实测它在无人值守时的审批表现。
 - 如果你不想让云端来信直接投递，可以在 `~/.reason/network/config.toml` 里设置 `[inbound] default = "hold"`，这样每条来信都要你 `reason-network approve` 之后才会投递。
+
+### 正文以明文保存
+
+消息正文会以明文留在下面这些地方，所以**不要通过这条通道发送密钥、密码、token 等机密**：
+
+| 位置 | 内容 | 保留多久 |
+|---|---|---|
+| `[LOCAL]` `~/.reason/network/network.db`、`[BOT-CLOUD]` `/workspace/agent-mesh/box/state/network.db` | 两个引擎收到的消息，读过也保留 | 引擎不自动删除 |
+| `[LOCAL]` `~/Library/Application Support/agent-relay/fwd-copies/` | relay 为补寄保留的正文副本 | 超过 `FWD_COPY_DAYS`（默认 7 天）就不再补寄，但要等之后有消息经过 relay 才删除（最多每小时检查一次），relay 空闲时会一直留着 |
+| `[BOT-CLOUD]` `/workspace/agent-mesh/inbox/<id>/full.txt` | `fetch` 取回的正文 | 不自动删除 |
+| `[BOT-CLOUD]` `/workspace/agent-mesh/threads/*.md` | routine 每轮追加的会话摘要 | 不自动删除 |
+| `[LOCAL]` `~/Library/Application Support/agent-relay/state.json` | 等待送往 webhook 的门铃，每条带正文预览 | webhook 送达后移出；webhook 一直失败时留着，超过 `MAX_SPOOL` 条才丢弃最旧的。改 `DOORBELL_PREVIEW_CHARS` 只影响之后的门铃，修好 webhook 让积压送出即可清空 |
+| routine 的 webhook | 门铃里正文的前 200 字预览 | 保存多久取决于 Grok Bot；`DOORBELL_PREVIEW_CHARS=0` 可关闭预览 |
+
+relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS` 和 `DOORBELL_PREVIEW_CHARS` 都在 `~/.config/agent-relay/env` 里设置，改完运行 `launchctl kickstart -k "gui/$(id -u)/com.local.agent-relay"` 重启 relay 才生效。需要清理时：
+
+- `[LOCAL]` 运行 `./install.sh --purge-copies`，删除 relay 保留的全部副本。之后这些消息的补寄请求会得到 `no-copy`，只能请发送方重发。
+- `[BOT-CLOUD]` 在 `[GROK-UI]` 让 Grok Bot 运行 `/workspace/agent-mesh/box/rn-cloud.sh purge <天数>`。它先停掉云端引擎，再删除早于该天数的已收消息（云端 `network.db`）、`inbox/<id>/`、`inbox/_stray/` 里的误投记录和 `threads/*.md`；`0` 表示全部删除。thread 笔记是 routine 了解上文的依据，删掉后 Bot 不再记得之前的对话。云端仓库要先更新到包含这个命令的版本。
+- 本地 `network.db` 由引擎管理，本项目不提供部分清理；`./uninstall.sh --all` 会删除整个 `~/.reason/network`。
+
+### 团队成员
+
+- 装好后，以及之后定期，运行 `reason-network team`，确认只有你的本地电脑和 `cloud` 两台机器。`./check.sh` 也会检查这一项，出现其他成员时报 FAIL。发现陌生的人或机器，用 `reason-network remove <person>/<machine>` 移除，再按下文更换签名密钥。
 - 团队成员能看到每个会话的名字、所在目录的最后一级、仓库名和分支。所以别在 `~` 下直接开 agent。团队邀请链接只在终端里用，不要在浏览器里打开。
+
+### 更换密钥
+
+- **签名密钥**：在 `[LOCAL]` 运行 `./install.sh --rotate-key --lang zh-CN`。它生成新的 `outbound.key`，重启 relay，然后打印 CopyToBox 步骤：在 `[GROK-UI]` 让 Grok Bot 用 CopyToBox 把新密钥从 `[LOCAL]` 的 `~/.config/agent-relay/outbound.key` 复制到 `[BOT-CLOUD]` 的 `/workspace/agent-mesh/box/outbound.key`，由你批准复制，再在云端执行 `chmod 600`。云端换上新密钥之前，两个方向的签名校验都会失败。换钥前已经转发、云端还没取回的消息仍是旧密钥签名，换钥后 `fetch` 报 `mismatch`（签名不符），不会自动补寄，每次扫描都会再报。旧密钥没有泄露时，先让 Bot 取完待取消息再换钥；否则请发送方重发，留下的旧消息用 `rn-cloud.sh purge` 清理。
+- **Webhook URL 或 key**：在 `[GROK-UI]` 重新生成该 routine 的 key；界面不支持时，删除 routine 后重建。然后在 `[LOCAL]` 运行 `./install.sh --webhook --lang zh-CN`，填入新值。
+- 完整的泄露处理步骤见[安全策略](SECURITY.zh-CN.md#怀疑凭据泄露时)。
+
+### 网络与用量
+
 - 引擎开源、固定版本，以无账号模式在本机运行，无账号模式下不向 Reason 官方发送数据。消息可能经过 iroh 公共中继，上游将消息内容描述为加密传输；本项目没有独立审计这些中继。用 `reason-network relay <URL>` 可以换成自建中继。
 - 每叫醒一次 Grok Bot 就消耗一次它的用量。relay 默认每小时最多叫醒 20 次。
-- 发现安全问题请按[安全策略](SECURITY.zh-CN.md)私下报告，不要公开提 Issue；怀疑密钥、webhook key 或邀请链接泄露时的处理办法也写在里面。
+- 发现安全问题请按[安全策略](SECURITY.zh-CN.md)私下报告，不要公开提 Issue。
 
 ## 常见问题
 

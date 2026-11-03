@@ -112,6 +112,124 @@ class T(unittest.TestCase):
         rc, res = self.run_fetch("scan")
         self.assertEqual(res, [])
 
+    def row(self, rid, body, sent_ms):
+        self.db.execute("INSERT INTO messages (id, sender, recipient, body, wake, sent_at) VALUES (?,?,?,?,1,?)",
+                        (rid, "demo/terminal", "demo/bot-inbox", body.strip(), sent_ms))
+        self.db.commit()
+
+    def purge_fixture(self):
+        import time
+        now = int(time.time() * 1000)
+        self.put(self.fwd("old1", "old secret"))                  # sent_at ~1970: older than any cutoff
+        self.put(self.fwd("old2", "also old"))
+        self.row("01RNRECENT", self.fwd("new1", "recent"), now)
+        self.put(self.fwd("dup", "sent long ago"))                # original before the cutoff ...
+        self.row("01RNDUPAGAIN", self.fwd("dup", "sent long ago"), now)   # ... its re-forward after it
+        self.row("01RNFUTURE", self.fwd("fut", "clock skew"), now + 10 * 86400 * 1000)
+        rc, res = self.run_fetch("scan")
+        self.assertEqual(sorted(r["id"] for r in res), ["dup", "fut", "new1", "old1", "old2"])
+        inbox, threads = self.d / "inbox", self.d / "threads"
+        (inbox / "_refwd").mkdir()
+        (inbox / "_refwd" / "old1.json").write_text("[1]")
+        (inbox / "_stray").mkdir()
+        (inbox / "_stray" / "bot-cloud.log").write_text("stray text")
+        threads.mkdir()
+        for name in ("demo_old.md", "demo_new.md"):
+            (threads / name).write_text("notes")
+        os.utime(threads / "demo_old.md", (1, 1))
+        os.utime(inbox / "_stray" / "bot-cloud.log", (1, 1))
+        self.env["RN_THREADS_DIR"] = str(threads)
+        self.db.close()
+        return inbox, threads
+
+    def rows_left(self):
+        db = sqlite3.connect(self.d / "state" / "network.db")
+        try:
+            return sorted(r[0] for r in db.execute("SELECT id FROM messages"))
+        finally:
+            db.close()
+
+    def test_purge_removes_old_plaintext_together_and_keeps_recent(self):
+        inbox, threads = self.purge_fixture()
+        rc, res = self.run_fetch("purge", "7")
+        self.assertEqual(rc, 0)
+        self.assertEqual(res, [{"purged": {"messages": 2, "inbox": 2, "stray": 1, "threads": 1}, "older_than_days": 7}])
+        # both copies of "dup" stay: its newest copy is recent, and its folder stays with them
+        self.assertEqual(self.rows_left(), ["01RN0000000000000000000003", "01RNDUPAGAIN", "01RNFUTURE", "01RNRECENT"])
+        self.assertEqual(sorted(p.name for p in inbox.iterdir()), ["_lock", "_refwd", "_stray", "dup", "fut", "new1"])
+        self.assertTrue((inbox / "_refwd" / "old1.json").exists())   # the per-id re-forward cap survives
+        self.assertEqual([p.name for p in threads.iterdir()], ["demo_new.md"])
+        rc, res = self.run_fetch("scan")                              # nothing purged comes back as new
+        self.assertEqual((rc, res), (0, []))
+        rc, res = self.run_fetch("purge", "0")                        # 0 = everything, future timestamps too
+        self.assertEqual(res[0]["purged"], {"messages": 4, "inbox": 3, "stray": 0, "threads": 1})
+        self.assertEqual(self.rows_left(), [])
+        self.assertEqual(sorted(p.name for p in inbox.iterdir()), ["_lock", "_refwd", "_stray"])
+        for bad in (["purge"], ["purge", "-1"], ["purge", "7d"], ["purge", "²"]):
+            p = subprocess.run([sys.executable, str(HERE / "rn-fetch.py"), *bad], env=self.env,
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(p.returncode, 2, bad)
+
+    def test_purge_refuses_symlinks_and_a_running_fetch_before_deleting(self):
+        import fcntl
+        inbox, threads = self.purge_fixture()
+        before = self.rows_left()
+        elsewhere = self.d / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "keep.md").write_text("not ours")
+        (elsewhere / "keep.log").write_text("not ours")
+        os.utime(elsewhere / "keep.md", (1, 1))
+        os.utime(elsewhere / "keep.log", (1, 1))
+        for link_name in ("threads", "stray"):
+            link = threads if link_name == "threads" else inbox / "_stray"
+            saved = link.with_name(link.name + ".real")
+            link.rename(saved)
+            link.symlink_to(elsewhere, target_is_directory=True)
+            p = subprocess.run([sys.executable, str(HERE / "rn-fetch.py"), "purge", "0"], env=self.env,
+                               capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertIn("symlinked", p.stderr)
+            link.unlink()
+            saved.rename(link)
+        self.assertEqual(sorted(p.name for p in elsewhere.iterdir()), ["keep.log", "keep.md"])
+        self.assertEqual(self.rows_left(), before)
+        with open(inbox / "_lock", "a") as held:                      # a fetch holds the inbox lock
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.env["RN_PURGE_LOCK_WAIT"] = "1"
+            p = subprocess.run([sys.executable, str(HERE / "rn-fetch.py"), "purge", "0"], env=self.env,
+                               capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("still running", p.stderr)
+        self.assertEqual(self.rows_left(), before)
+
+    def test_purge_keeps_the_folder_of_a_re_forward_that_lands_during_the_purge(self):
+        import time
+        inbox, _ = self.purge_fixture()
+        # A copy of old1 lands right after purge commits its deletes, before it removes folders.
+        driver = (
+            "import importlib.util, sqlite3, sys, time\n"
+            "spec = importlib.util.spec_from_file_location('rnf', sys.argv[1]); m = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(m)\n"
+            "orig = m.live_ids\n"
+            "def late(db_path):\n"
+            "    db = sqlite3.connect(db_path)\n"
+            "    db.execute('INSERT INTO messages (id, sender, recipient, body, wake, sent_at) VALUES (?,?,?,?,1,?)',"
+            " ('01RNLATE', 'demo/terminal', 'demo/bot-inbox', sys.argv[2], int(time.time() * 1000)))\n"
+            "    db.commit(); db.close()\n"
+            "    return orig(db_path)\n"
+            "m.live_ids = late\n"
+            "print(m.purge(7, m.Path(sys.argv[3]))['purged'])\n")
+        p = subprocess.run([sys.executable, "-c", driver, str(HERE / "rn-fetch.py"),
+                            self.fwd("old1", "old secret").strip(), str(self.d / "threads")],
+                           env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("'inbox': 1", p.stdout)                         # old2 went; old1 stayed with its new row
+        self.assertIn("01RNLATE", self.rows_left())
+        self.assertTrue((inbox / "old1").is_dir())
+        self.assertFalse((inbox / "old2").exists())
+        rc, res = self.run_fetch("scan")                              # old1 already fetched: not new
+        self.assertEqual((rc, res), (0, []))
+
     def test_vector_matches_relay(self):
         fetch = load("rn_fetch", HERE / "rn-fetch.py")
         body = rr.fwd_body(KEY, "01JTESTMSG0000000000000000", "demo/claude-session", "claude-code", "", "你好\n x ",

@@ -3,6 +3,8 @@
 #   ./install.sh --name <team-name> [--machine mac] [--yes] [--lang en|zh-CN]
 #   ./install.sh --webhook        enter (or change) the routine's Webhook URL and key, then (re)start the relay
 #   ./install.sh --cloud-prompt   print the invite and the text to send to Grok Bot again
+#   ./install.sh --rotate-key     replace the signing key, restart the relay, print how to copy it to the cloud
+#   ./install.sh --purge-copies   delete the relay's kept copies of forwarded messages (re-forward then says no-copy)
 #   --repo-url https://...       public distribution URL accessible from the Bot's cloud computer
 #   ./install.sh --version      print agent-mesh and pinned Reason Network versions; no installation
 # --lang selects prompt language in every mode. Default: AGENT_MESH_LANG, otherwise en. Diagnostics stay English.
@@ -33,11 +35,13 @@ while [ $# -gt 0 ]; do
     --yes|-y) YES=1; shift ;;
     --webhook) MODE=webhook; shift ;;
     --cloud-prompt) MODE=cloud; shift ;;
+    --rotate-key) MODE=rotate; shift ;;
+    --purge-copies) MODE=purge; shift ;;
     --repo-url) REPO_URL="${2:?public HTTPS repository URL}"; shift 2 ;;
     --version) echo "agent-mesh $PROJECT_VERSION (Reason Network ${VERSION#v})"; exit 0 ;;
     --lang) [ $# -ge 2 ] || { echo "install: --lang needs en or zh-CN" >&2; exit 2; }; DOC_LANG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $1"; sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $1"; sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
 case "$DOC_LANG" in
@@ -52,7 +56,27 @@ current_person() { if [ -f "$CFG" ]; then sed -n 's/^person = "\(.*\)"/\1/p' "$C
 render_prompt() { "$PYTHON" "$HERE/scripts/render_prompt.py" "$@" --lang "$DOC_LANG"; }
 have_webhook() { [ -f "$ENV_FILE" ] && grep -Eq '^WEBHOOK_URL=https://' "$ENV_FILE" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$ENV_FILE"; }
 
-write_env() {   # $1 url, $2 key
+relay_env() {   # NAME=value for each given name set in the env file, parsed like agent_relay.load_env (last wins)
+  "$PYTHON" - "$ENV_FILE" "$@" <<'PY'
+import os, sys
+cfg = {}
+for line in open(sys.argv[1], encoding="utf-8").read().splitlines():
+    line = line.strip()
+    if line and not line.startswith("#") and "=" in line:
+        k, v = line.split("=", 1)
+        cfg[k.strip()] = v.strip().strip('"').strip("'")
+for k in sys.argv[2:]:
+    if k in cfg:
+        v = os.path.expanduser(cfg[k]) if k == "OUTBOUND_KEY_FILE" else cfg[k]
+        print(f"{k}={v}")
+PY
+}
+
+write_env() {   # $1 url, $2 key; keeps the user's optional settings (e.g. DOORBELL_PREVIEW_CHARS=0) from the old file
+  local kept=""
+  [ ! -f "$ENV_FILE" ] || kept="$(relay_env LISTEN_NAME CLOUD_NAME INBOX_NAME CLOUD_MACHINE MAX_WAKES_PER_HOUR \
+    MIN_SECONDS_BETWEEN_WAKES MAX_BATCH MAX_PROXY_PER_HOUR MAX_SPOOL WEBHOOK_MAX_BODY_CHARS DOORBELL_PREVIEW_CHARS \
+    FWD_COPY_DAYS REFWD_MAX_PER_ID REFWD_MAX_PER_HOUR)" || die "cannot read $ENV_FILE; nothing changed"
   ( umask 077; cat > "$ENV_FILE" <<EOF
 # agent-relay config (mode 600). Never paste these values into a chat.
 RN_BIN=$RN
@@ -65,6 +89,7 @@ OUTBOUND_KEY_FILE=$KEY_FILE
 # MAX_WAKES_PER_HOUR=20  MIN_SECONDS_BETWEEN_WAKES=20  MAX_BATCH=10  MAX_PROXY_PER_HOUR=60  MAX_SPOOL=1000
 # WEBHOOK_MAX_BODY_CHARS=3500  DOORBELL_PREVIEW_CHARS=200  FWD_COPY_DAYS=7  REFWD_MAX_PER_ID=2  REFWD_MAX_PER_HOUR=20
 EOF
+    [ -z "$kept" ] || printf '%s\n' "$kept" >> "$ENV_FILE"
   )
 }
 
@@ -129,6 +154,75 @@ cloud_prompt() {
   echo "[GROK-UI] User: approve CopyToBox from [LOCAL] $KEY_FILE to [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key. Afterwards the installing agent runs ./check.sh on [LOCAL]."
 }
 
+# The relay reads the key only at start, so a new key always means a restart. The old key is not kept: rotation is
+# for a key that may have leaked, and the cloud must get the new one either way.
+rotate_key() {
+  [ -n "$(current_person)" ] && [ -s "$KEY_FILE" ] \
+    || die "team or signing key missing; run ./install.sh --name <team-name> first"
+  have_webhook || die "the relay is not configured yet; finish ./install.sh first (a first install creates a fresh key)"
+  # Rotating $KEY_FILE only helps if that is the key the relay actually loads.
+  local src
+  src="$(relay_env OUTBOUND_KEY OUTBOUND_KEY_FILE)" || die "cannot read $ENV_FILE; the key is unchanged"
+  if printf '%s\n' "$src" | grep -Eq '^OUTBOUND_KEY=.'; then
+    die "$ENV_FILE sets OUTBOUND_KEY inline, which the relay prefers over $KEY_FILE; remove that line, then rotate again"
+  fi
+  [ "$(printf '%s\n' "$src" | sed -n 's/^OUTBOUND_KEY_FILE=//p')" = "$KEY_FILE" ] \
+    || die "$ENV_FILE does not load the key from $KEY_FILE (OUTBOUND_KEY_FILE); fix that line, then rotate again"
+  echo "This replaces $KEY_FILE and restarts the relay. Until [BOT-CLOUD] has the new key,"
+  echo "the relay refuses the Bot's replies and the cloud's fetch reports bad signatures."
+  if [ "$YES" != 1 ]; then
+    if [ -t 0 ]; then
+      read -r -p "Rotate the signing key now? [y/N] " a
+      [[ "$a" == [yY]* ]] || die "stopped; the key is unchanged"
+    else
+      echo "This is not a terminal: nothing changed. Run again with --yes to rotate."
+      exit 3
+    fi
+  fi
+  local new="$KEY_FILE.new.$$"
+  if ! ( umask 077; openssl rand -hex 32 > "$new" ) || [ "$(wc -c < "$new")" -lt 64 ]; then
+    rm -f "$new"; die "could not generate a new key; the old key is unchanged"
+  fi
+  chmod 600 "$new"; mv -f "$new" "$KEY_FILE"
+  echo "new signing key written to $KEY_FILE (mode 600)"
+  mkdir -p "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
+  local rc=0
+  start_relay || rc=$?
+  echo "----------------------------------------------------------------"
+  echo "[GROK-UI] User: ask Grok Bot to copy the new key with CopyToBox, and approve the copy:"
+  echo "  source [LOCAL] $KEY_FILE"
+  echo "  destination [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key (replace the old file), then chmod 600 it there."
+  echo "  The key must not appear in the chat."
+  echo "Then run ./check.sh on [LOCAL] and send a test message (README: Verify)."
+  echo "Mail forwarded before now that [BOT-CLOUD] has not fetched keeps the old signature: fetch reports it as"
+  echo "mismatch and it is not redelivered; ask the senders to resend (README: Replacing keys)."
+  echo "If the Webhook URL or key may also have leaked: regenerate the key in [GROK-UI] (or recreate the routine),"
+  echo "then run   ./install.sh --webhook --lang $DOC_LANG   on [LOCAL]."
+  [ "$rc" = 0 ] || die "the relay did not restart; see the log lines above, then run ./install.sh --webhook"
+}
+
+# Copies exist only so the cloud can ask for a lost message again (RN-REFWD). The relay deletes expired ones
+# (FWD_COPY_DAYS) only when later mail passes through, so an idle relay keeps them. Safe while the relay runs: a
+# missing copy is answered with no-copy. The loop catches a copy renamed from .tmp to .json while we delete.
+purge_copies() {
+  local state="$HOME/Library/Application Support/agent-relay"
+  local dir="$state/fwd-copies" files=() removed=0 pass
+  [ ! -L "$state" ] && [ ! -L "$dir" ] || die "refusing to delete through a symlink: $dir; nothing was removed"
+  for pass in 1 2 3 4 5; do
+    files=()
+    if [ -d "$dir" ]; then
+      shopt -s nullglob; files=("$dir"/*.json "$dir"/*.tmp); shopt -u nullglob
+    fi
+    [ "${#files[@]}" != 0 ] || break
+    rm -f -- "${files[@]}"
+    removed=$((removed + ${#files[@]}))
+  done
+  [ "${#files[@]}" = 0 ] || die "copies kept appearing while deleting (mail is arriving); run --purge-copies again"
+  echo "removed $removed kept message copies from $dir"
+  echo "Re-forward requests for those messages now answer no-copy; the sender has to send again."
+  echo "Bodies also stay in the engine database (~/.reason/network/network.db) and on [BOT-CLOUD]; see README: Security and privacy."
+}
+
 # Validate the user's machine in every mode, before downloads or configuration changes.
 [ "$MODE" != full ] || [ -n "$NAME" ] || die "need --name <team-name> (run with --help)"
 [ "$(uname -s)" = Darwin ] || die "[LOCAL] this installer requires macOS (Apple Silicon or Intel)"
@@ -160,6 +254,8 @@ fi
 case "$MODE" in
   webhook) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; webhook_step; exit 0 ;;
   cloud) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; cloud_prompt; exit 0 ;;
+  rotate) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; rotate_key; exit 0 ;;
+  purge) purge_copies; exit 0 ;;
 esac
 
 [ -n "$NAME" ] || die "need --name <team-name> (run with --help)"

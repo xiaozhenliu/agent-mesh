@@ -11,6 +11,9 @@
 #                                         # request to the Mac relay (max 2 per id ever), then REFWD_TIMEOUT (90 s)
 #                                         # more; results carry "refwd". REFWD=0 turns this off.
 #   rn-cloud.sh init-inbox               # (re)register <team-name>/bot-inbox so the Mac can address it
+#   rn-cloud.sh purge <days>             # only when the user asks: stop the engine, then delete received messages
+#                                         # (network.db), inbox/<id>/, inbox/_stray/*.log and threads/*.md older
+#                                         # than <days> (0 = all). Prints one JSON line with the counts.
 # Names: bot-cloud is SEND-only (registered with `listen --wait 0`, which marks its mail read, so nothing
 # should ever be sent to it); bot-inbox is RECEIVE-only (rn-fetch reads its mail from network.db, which keeps
 # messages after they are marked read, so registering it never loses anything).
@@ -107,5 +110,13 @@ PY
       sleep 2
     done
     die "message still queued on the box after 60s; it goes out the next time the box is awake and connected" ;;
-  *) sed -n 2,14p "$0"; exit 2 ;;
+  purge)
+    days="${2:-}"
+    [[ "$days" =~ ^[0-9]{1,5}$ ]] || die "usage: rn-cloud.sh purge <days>   (whole days; 0 = everything)"
+    # rn-fetch takes the inbox lock (no fetch can overlap), then stops the engine and refuses if it still runs;
+    # the daemon restarts on demand with the next who/fetch/send.
+    RN_BIN="$RN" RN_INBOX_DIR="${RN_INBOX_DIR:-/workspace/agent-mesh/inbox}" \
+      RN_THREADS_DIR="${RN_THREADS_DIR:-/workspace/agent-mesh/threads}" \
+      python3 "$BASE/rn-fetch.py" purge "$days" ;;
+  *) sed -n 2,17p "$0"; exit 2 ;;
 esac

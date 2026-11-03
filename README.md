@@ -6,7 +6,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 
 | | |
 |---|---|
-| **Version** | agent-mesh **v0.1.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Version** | agent-mesh **v0.1.1** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
 | **Platform** | Local: not tied to one OS by design (the engine ships macOS / Linux / Windows builds; the relay is pure Python), but only macOS currently has a one-click installer and has been verified · Python 3.9+ |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
@@ -45,7 +45,7 @@ flowchart LR
 - **Reaching the right person (retaining live conversation context)**: Calling `claude -p "..."` from a remote script executes a one-off command, but it **spawns a brand new, blank process every time**. If you already have an active terminal session with extensive project background, conversation history, and pending edits, `claude -p` cannot touch it. agent-mesh addresses your specific live session directly without losing context.
 - **No busy waiting (two-way doorbell wake-up)**: Complex tasks require back-and-forth dialogue (clarifying details, making revisions, and resuming discussions). Without wake-up mechanisms, the cloud must either hang in a busy loop or poll periodically; with agent-mesh, each turn sleeps immediately after sending. A reply rings the "doorbell" to wake the other side (by default the relay waits at least 20 seconds between wake-ups and wakes at most 20 times per hour; whether a local session wakes depends on its [delivery mode](#how-agents-receive-messages)), saving compute and quota on both ends.
 - **Zero public exposure (no server, no public IP)**: Built on Reason Network; messages may pass through iroh public relays. Upstream describes message content as encrypted; this project has not independently audited it. Your local computer opens no inbound port and, as long as it can reach the iroh relays, works inside home or corporate networks without a self-hosted server or relay. With a VPN or proxy, allow `iroh.link`; see [Troubleshooting](#troubleshooting).
-- **Guarded permissions (communication without privilege escalation)**: The channel transmits text messages only and **grants no extra execution privileges**. Your local agent still asks you to confirm sensitive actions, provided it does not auto-approve: for sessions in modes such as `--full-auto`, incoming text acts as a command; see [Security and privacy](#security-and-privacy).
+- **Guarded permissions (communication without privilege escalation)**: The channel transmits text messages only and **grants no extra execution privileges**. Your local agent still asks you to confirm sensitive actions, provided it does not auto-approve: for sessions in modes such as Claude Code's `--dangerously-skip-permissions` or Codex's `--yolo`, incoming text acts as a command. Grok Bot in the cloud is the channel's trust root; if content it reads steers it, it can still send validly signed messages. See [Security and privacy](#security-and-privacy).
 - **When you don't need it**: If the entire task can be finished inside Grok Bot's cloud computer (running scripts, conducting research, writing standalone files), install the needed CLIs directly on the cloud box; you do not need this project.
 
 ## Key highlights
@@ -202,7 +202,7 @@ The last column of `reason-network who` shows the delivery mode:
 
 | Mode | Behavior | Agents |
 |---|---|---|
-| **push** | Wakes an idle session. | Claude Code receives an injected message; Codex uses `codex exec resume`; pi polls through an extension every five seconds. |
+| **push** | Wakes an idle session. | Claude Code receives an injected message; Codex gets it through `codex queue`, which queues it in the open session; pi polls through an extension every five seconds. |
 | **turn** | Normally waits for a tool call or the end of a turn. | dsh with the bridge reports `turn`, but starts a turn within roughly five seconds when idle. |
 | **pull** | Does not wake automatically. | dsh without the bridge must check its inbox. |
 
@@ -210,14 +210,55 @@ Closed sessions disappear from the roster. Messages remain in the inbox while th
 
 ## Security and privacy
 
-- This bridge sends text to a local agent; it does not itself give Grok Bot direct file access or bypass the agent's permissions. The Mac opens no inbound port. Grok Bot's local always-approve and local-network switches are not required.
-- An agent configured to approve automatically may act on incoming text without asking you. Use an appropriately restricted workspace and permissions for these sessions.
-- Signatures prevent impersonation by sessions without the key. Agents running as the same macOS user may still read the keys in `~/.config/agent-relay/`. A project folder is not an access-control boundary.
+### Grok Bot is the trust root
+
+- There are two copies of the signing key, and one of them is on `[BOT-CLOUD]`. Signatures stop sessions without the key from impersonating the Bot; they do not stop a manipulated Bot. If content Grok Bot reads in a web page or document steers it (prompt injection), it can still produce validly signed RN-OUT envelopes and message any of your local sessions as `<team-name>/bot`. Local agents should therefore treat the Bot's messages as outside input, not as instructions from you.
+- Agents running as the same macOS user may still read the keys in `~/.config/agent-relay/`. A project folder is not an access-control boundary.
+
+### Local agent permissions
+
+- This bridge sends text to a local agent; it does not itself give Grok Bot direct file access or bypass the agent's permissions. The receiving session decides whether and how to act. The Mac opens no inbound port. Grok Bot's local always-approve and local-network switches are not required.
+- That holds only if the agent does not approve automatically. Even without auto-approval, actions the session's sandbox and permission settings already allow (such as reading files or editing in the working directory) run without asking you; only actions that need human approval wait for you. The following modes let more actions run without asking, so incoming text acts as a command; start such sessions only in a sandbox folder or isolated environment:
+  - Claude Code: `--dangerously-skip-permissions`, or `--permission-mode bypassPermissions`.
+  - Codex: `--yolo` (that is, `--dangerously-bypass-approvals-and-sandbox`: no prompts and no sandbox); `--sandbox danger-full-access` (no sandbox); `--ask-for-approval never` (never asks: what the sandbox allows runs, the rest fails); and `--approve-for-me`, which hands approvals to automatic review.
+- **Unattended wake-ups**: push sessions wake even when you are away. Reason Network v0.10.7 wakes Codex with `codex queue --thread <id> --message`: the message is queued in that already open session and runs as a new turn with the approval and sandbox settings the session started with; no flag loosens them. Tested with Codex 0.166.0 (`--ask-for-approval on-request --sandbox read-only`, where writing a file needs human approval): when the woken turn needed to write a file, the approval prompt appeared in that session's terminal and waited; nothing ran without confirmation, and after about a minute it had not approved itself. Without auto-approval, actions that need human approval therefore wait at the prompt until you return, while actions the sandbox and permission settings already allow still run; with auto-approval, nobody stops them. Claude Code receives the message directly in the open session; this project has not separately tested its approvals while unattended.
 - To hold incoming messages, set `[inbound] default = "hold"` in `~/.reason/network/config.toml`, then use `reason-network approve` to release them.
+
+### Message bodies are stored in plain text
+
+Message bodies remain in plain text in the following places, so **do not send keys, passwords, tokens or other secrets through this channel**:
+
+| Location | Content | Kept for |
+|---|---|---|
+| `[LOCAL]` `~/.reason/network/network.db`, `[BOT-CLOUD]` `/workspace/agent-mesh/box/state/network.db` | Messages each engine received, kept after they are read | Not deleted by the engine |
+| `[LOCAL]` `~/Library/Application Support/agent-relay/fwd-copies/` | The relay's copies of forwarded bodies, kept for redelivery | After `FWD_COPY_DAYS` (default 7 days) they are no longer redelivered, but they are deleted only when later mail passes through the relay (checked at most hourly); an idle relay keeps them |
+| `[BOT-CLOUD]` `/workspace/agent-mesh/inbox/<id>/full.txt` | Bodies retrieved by `fetch` | Not deleted automatically |
+| `[BOT-CLOUD]` `/workspace/agent-mesh/threads/*.md` | Conversation summaries the routine appends each turn | Not deleted automatically |
+| `[LOCAL]` `~/Library/Application Support/agent-relay/state.json` | Doorbells waiting for the webhook, each with its body preview | Removed once the webhook delivers them; while the webhook keeps failing they stay, and only the oldest are dropped past `MAX_SPOOL`. Changing `DOORBELL_PREVIEW_CHARS` affects later doorbells only; fix the webhook so the backlog goes out |
+| The routine's webhook | A preview of the first 200 characters in each doorbell | Up to Grok Bot; `DOORBELL_PREVIEW_CHARS=0` turns previews off |
+
+The relay log records message ids, lengths and checksums, not bodies. `FWD_COPY_DAYS` and `DOORBELL_PREVIEW_CHARS` are set in `~/.config/agent-relay/env`; restart the relay with `launchctl kickstart -k "gui/$(id -u)/com.local.agent-relay"` for a change to take effect. To clean up:
+
+- On `[LOCAL]`, run `./install.sh --purge-copies` to delete all copies the relay kept. Redelivery requests for those messages then get `no-copy`, and the sender has to send again.
+- For `[BOT-CLOUD]`, ask Grok Bot in `[GROK-UI]` to run `/workspace/agent-mesh/box/rn-cloud.sh purge <days>`. It stops the cloud engine, then deletes received messages (the cloud `network.db`), `inbox/<id>/`, misdirected mail logs in `inbox/_stray/`, and `threads/*.md` older than that many days; `0` deletes all of them. The thread notes give the routine its context, so the Bot no longer remembers earlier conversations afterwards. The cloud clone must first be updated to a version that has this command.
+- The engine manages the local `network.db`; this project offers no partial cleanup for it. `./uninstall.sh --all` removes all of `~/.reason/network`.
+
+### Team members
+
+- After setup, and periodically afterwards, run `reason-network team` and confirm that only your local computer and `cloud` are listed. `./check.sh` checks this too and reports FAIL for any other member. Remove an unknown person or machine with `reason-network remove <person>/<machine>`, then replace the signing key as described below.
 - Team members can see session names, the last working-directory component, repository names, and branches. Avoid starting agents directly in your home directory. Use invite links in the terminal, not a browser.
+
+### Replacing keys
+
+- **Signing key**: on `[LOCAL]`, run `./install.sh --rotate-key --lang en`. It generates a new `outbound.key`, restarts the relay, and prints the CopyToBox steps: in `[GROK-UI]`, have Grok Bot use CopyToBox to copy the new key from `[LOCAL]` `~/.config/agent-relay/outbound.key` to `[BOT-CLOUD]` `/workspace/agent-mesh/box/outbound.key`, approve the copy, and run `chmod 600` on the cloud copy. Until the cloud has the new key, signature checks fail in both directions. Messages forwarded before the rotation that the cloud has not fetched yet keep their old-key signature: after the rotation `fetch` reports them as `mismatch` (bad signature), requests no redelivery, and every scan reports them again. If the old key did not leak, have the Bot fetch pending mail before rotating; otherwise ask the senders to resend, and clean up the old messages with `rn-cloud.sh purge`.
+- **Webhook URL or key**: regenerate the routine's key in `[GROK-UI]`; if the interface cannot, delete and recreate the routine. Then run `./install.sh --webhook --lang en` on `[LOCAL]` and enter the new values.
+- The complete leak response is in the [security policy](SECURITY.md#if-you-suspect-a-credential-leak).
+
+### Network and usage
+
 - The pinned open-source engine runs locally in account-free mode, and in that mode it sends no data to Reason. Traffic may pass through iroh public relays; upstream describes the content as encrypted. This project has not independently audited those relays. `reason-network relay <URL>` selects a self-hosted relay.
 - Each Grok Bot wake-up consumes usage. The relay defaults to at most 20 wake-ups per hour.
-- Report security problems privately as described in the [security policy](SECURITY.md), not in a public issue. It also explains what to do if the signing key, webhook key or an invite link may have leaked.
+- Report security problems privately as described in the [security policy](SECURITY.md), not in a public issue.
 
 ## Troubleshooting
 

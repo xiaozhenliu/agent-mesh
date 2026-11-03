@@ -44,8 +44,10 @@ If you are unsure where a problem belongs, report it privately here anyway and w
 
 The [Security and privacy](README.md#security-and-privacy) section already documents these:
 
+- Grok Bot is the trust root: if content it reads in a web page or document steers it (prompt injection), it can send validly signed messages. Signatures only stop impersonation by sessions without the key.
 - Any program running as the same macOS user can read the keys and webhook key in `~/.config/agent-relay/`.
-- A local agent configured to approve automatically acts on incoming text as if it were a command.
+- A local agent configured to approve automatically (for example Claude Code's `--dangerously-skip-permissions` or Codex's `--yolo`) acts on incoming text as if it were a command, including when it is woken unattended.
+- Message bodies are stored in plain text in both engines' databases, the relay's copies and the cloud inbox; see [Message bodies are stored in plain text](README.md#message-bodies-are-stored-in-plain-text) in the README for retention and cleanup.
 - Traffic may pass through iroh public relays, which this project has not independently audited.
 - Each wake-up consumes Grok Bot usage; the relay only rate-limits it.
 
@@ -67,15 +69,13 @@ Run these on `[LOCAL]` unless marked otherwise.
 **Signing key `outbound.key`**: generate a new key and restart the relay:
 
 ```bash
-( umask 077; openssl rand -hex 32 > ~/.config/agent-relay/outbound.key )
-launchctl kickstart -k "gui/$(id -u)/com.local.agent-relay"
-./check.sh
+./install.sh --rotate-key --lang en
 ```
 
-Then, in `[GROK-UI]`, have Grok Bot use CopyToBox to copy the new key from `[LOCAL]` `~/.config/agent-relay/outbound.key` to `[BOT-CLOUD]` `/workspace/agent-mesh/box/outbound.key` and run `chmod 600` on it, as in step 3 of the [cloud setup prompt](prompts/cloud-setup.md). Until the cloud has the new key, signature checks fail in both directions.
+Then follow the steps it prints: in `[GROK-UI]`, have Grok Bot use CopyToBox to copy the new key from `[LOCAL]` `~/.config/agent-relay/outbound.key` to `[BOT-CLOUD]` `/workspace/agent-mesh/box/outbound.key` and run `chmod 600` on it, as in step 3 of the [cloud setup prompt](prompts/cloud-setup.md). Until the cloud has the new key, signature checks fail in both directions. After the copy, run `./check.sh` and send a test message. Messages forwarded before the rotation that the cloud has not fetched no longer verify, and `fetch` reports them as `mismatch`; they may have been forged with the leaked key, so ask the senders to resend and clean up the old messages as described in [Message bodies are stored in plain text](README.md#message-bodies-are-stored-in-plain-text).
 
 **Webhook URL or key**: in `[GROK-UI]`, regenerate the routine's key, or delete and recreate the routine if the interface does not offer that. Then run `./install.sh --webhook --lang en` on `[LOCAL]` and enter the new values.
 
-**Invite link or code**: run `reason-network team` and confirm that only your own local computer and `cloud` are listed. Remove any unknown person or machine with `reason-network remove`, then replace the signing key as above.
+**Invite link or code**: run `reason-network team` (`./check.sh` checks it too) and confirm that only your own local computer and `cloud` are listed. Remove any unknown person or machine with `reason-network remove <person>/<machine>`, then replace the signing key as above.
 
-**Grok Bot may have been steered into unexpected actions**: pause the routine in `[GROK-UI]` first. To review each incoming message, set `[inbound] default = "hold"` in `~/.reason/network/config.toml` and release messages with `reason-network approve`.
+**Grok Bot may have been steered into unexpected actions**: pause the routine in `[GROK-UI]` first. To review each incoming message, set `[inbound] default = "hold"` in `~/.reason/network/config.toml` and release messages with `reason-network approve`. Clean up message bodies you no longer need as described in [Message bodies are stored in plain text](README.md#message-bodies-are-stored-in-plain-text).

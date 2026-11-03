@@ -11,6 +11,8 @@ stores what arrives in $REASON_NETWORK_HOME/network.db (table messages, kept eve
   rn-fetch.py fetch [--timeout S] [--refwd-timeout S] ID...
                                            wait; then, for ids still missing, ask the Mac relay once to
                                            re-forward its kept copy (RN-REFWD v1, signed) and wait again
+  rn-fetch.py purge DAYS                   delete received messages, inbox folders, stray logs and thread
+                                           notes older than DAYS (0 = all); the engine must be stopped
 With no IDs (scan/wait): every RN-FWD message not yet written to the inbox folder.
 
 Re-forward (fetch only, relay v3.1): Reason Network 0.10.5 can silently drop a message after `send` said
@@ -28,7 +30,7 @@ Env: REASON_NETWORK_HOME, RN_PERSON, RN_INBOX_NAME (default bot-inbox), RN_KEY_F
 for fetch also RN_BIN, RN_CLOUD_NAME (bot-cloud), RN_RELAY_NAME (bot), RN_REFWD (1; 0 = off), RN_REFWD_MAX.
 Standard library only.
 """
-import hashlib, hmac, json, os, re, sqlite3, subprocess, sys, time
+import hashlib, hmac, json, os, re, shutil, sqlite3, subprocess, sys, time
 from pathlib import Path
 
 BASE = Path(os.environ.get("RN_INBOX_DIR", "/workspace/agent-mesh/inbox"))
@@ -272,7 +274,146 @@ def fetch(ids, key, person, inbox, timeout, refwd_timeout):
     return res
 
 
+def inbox_lock(wait):
+    """Exclusive lock shared by scan/wait/fetch and purge, so a purge never overlaps a fetch that is writing the
+    inbox. Python fds are not inherited by child processes, so the engine never ends up holding it."""
+    import fcntl
+    BASE.mkdir(parents=True, exist_ok=True)
+    fh = open(BASE / "_lock", "a")
+    deadline = time.time() + wait
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except BlockingIOError:
+            if time.time() >= deadline:
+                fh.close()
+                raise SystemExit("rn-fetch: another fetch or purge is still running on this box; try again later")
+            time.sleep(1)
+
+
+def header_id(body):
+    """The message id in an RN-FWD header (read like parse() does), or None for ACKs and other rows."""
+    if not body.startswith("RN-FWD v1\n"):
+        return None
+    f = {}
+    for line in body.partition("\n---\n")[0].split("\n")[1:]:
+        k, _, v = line.partition(":")
+        f[k.strip()] = v[1:] if v.startswith(" ") else v
+    return f.get("id") or None
+
+
+def engine_pids(rn_bin):
+    """Running processes of this box's engine binary (Linux /proc); empty where that cannot be checked."""
+    proc = Path("/proc")
+    if not rn_bin or not proc.is_dir():
+        return []
+    target, pids = os.path.realpath(rn_bin), []
+    for p in proc.iterdir():
+        if p.name.isdigit():
+            try:
+                if os.readlink(p / "exe") == target:
+                    pids.append(p.name)
+            except OSError:
+                pass
+    return pids
+
+
+def live_ids(db_path):
+    """Message ids that still have rows in the engine database (to keep their folders)."""
+    db = sqlite3.connect(db_path, timeout=5)
+    try:
+        return {lid for (body,) in db.execute("SELECT body FROM messages") if (lid := header_id(body))}
+    finally:
+        db.close()
+
+
+def purge(days, threads, rn_bin=None):
+    """Deletes plaintext older than `days` (0 = everything, whatever its timestamp): the engine's received
+    messages, inbox folders, stray mail logs and thread notes. Age is decided per message id: an RN-FWD and its
+    later re-forwards share one inbox folder, so all of them go or stay by the newest copy, and an argument-less
+    scan never reports a purged message as new again. _refwd/ counters hold no text and stay, so the re-forward
+    cap per id still holds. Refuses before deleting anything if a folder is a symlink or the engine still runs.
+    Order: take the inbox lock, stop the engine, then read and delete rows in one write transaction (no new mail
+    lands in between), and before removing a folder check again that no row of that id is left. A copy that
+    arrives after that is new mail, and the next scan fetches it again."""
+    everything = days == 0
+    cut = time.time() - days * 86400
+    old = lambda t: everything or t < cut                  # t in seconds
+    linked = [str(p) for p in (BASE, BASE / "_stray", threads) if p.is_symlink()]
+    if linked:
+        raise SystemExit(f"rn-fetch: refusing to purge through symlinked folder(s): {', '.join(linked)}")
+    lock = inbox_lock(int(os.environ.get("RN_PURGE_LOCK_WAIT", "30")))
+    try:
+        if rn_bin:
+            subprocess.run([rn_bin, "stop"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        running = engine_pids(rn_bin)
+        if running:
+            raise SystemExit(f"rn-fetch: the engine is still running (pid {', '.join(running)}); stop it, then purge")
+        n = {"messages": 0, "inbox": 0, "stray": 0, "threads": 0}
+        gone_ids, kept_ids = set(), set()
+        db_path = HOME / "network.db"
+        if db_path.exists():
+            db = sqlite3.connect(db_path, timeout=5, isolation_level=None)
+            try:
+                db.execute("PRAGMA secure_delete = ON")          # freed pages are zeroed, not left readable
+                db.execute("BEGIN IMMEDIATE")                     # writers wait from here until COMMIT
+                rows = [(rid, header_id(body), sent) for rid, body, sent in
+                        db.execute("SELECT id, body, sent_at FROM messages")]
+                newest = {}
+                for _, lid, sent in rows:
+                    if lid is not None:
+                        newest[lid] = max(newest.get(lid, sent), sent)
+                gone_ids = {lid for lid, t in newest.items() if old(t / 1000)}
+                kept_ids = set(newest) - gone_ids
+                doomed = [(rid,) for rid, lid, sent in rows if (lid in gone_ids if lid is not None else old(sent / 1000))]
+                db.executemany("DELETE FROM messages WHERE id = ?", doomed)
+                db.execute("COMMIT")
+                n["messages"] = len(doomed)
+                db.execute("VACUUM")
+                busy = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+                if busy:
+                    raise SystemExit("rn-fetch: rows deleted, but the database was busy, so old pages may remain in "
+                                     "its WAL file; run purge again when nothing else uses the engine")
+            finally:
+                db.close()
+            kept_ids |= live_ids(db_path)                         # a re-forward that landed after COMMIT
+        if BASE.is_dir():
+            for d in BASE.iterdir():
+                if d.name.startswith("_") or d.is_symlink() or not d.is_dir():
+                    continue
+                try:
+                    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+                lid = meta.get("id") if isinstance(meta, dict) else None
+                sent = meta.get("sent_at") if isinstance(meta, dict) else None
+                sent = sent / 1000 if isinstance(sent, (int, float)) else d.lstat().st_mtime
+                if lid in kept_ids or not (lid in gone_ids or old(sent)):
+                    continue
+                shutil.rmtree(d)
+                n["inbox"] += 1
+            for p in (BASE / "_stray").glob("*.log"):
+                if old(p.lstat().st_mtime):
+                    p.unlink()
+                    n["stray"] += 1
+        for p in threads.glob("*.md"):
+            if old(p.lstat().st_mtime):
+                p.unlink()
+                n["threads"] += 1
+        return {"purged": n, "older_than_days": days}
+    finally:
+        lock.close()
+
+
 def main(argv):
+    if argv[:1] == ["purge"]:
+        if len(argv) != 2 or not re.fullmatch(r"[0-9]{1,5}", argv[1]):
+            print("usage: rn-fetch.py purge DAYS   (whole days; 0 = everything)", file=sys.stderr)
+            return 2
+        threads = Path(os.environ.get("RN_THREADS_DIR", "/workspace/agent-mesh/threads"))
+        out(purge(int(argv[1]), threads, os.environ.get("RN_BIN")))
+        return 0
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in ("scan", "wait", "fetch"):
         print(__doc__)
         return 0 if argv and argv[0] in ("-h", "--help") else 1
@@ -288,10 +429,14 @@ def main(argv):
     key = key_file.read_text().strip()
     person = os.environ.get("RN_PERSON") or (Path(os.environ.get("RN_BOX", "/workspace/agent-mesh/box")) / "person").read_text().strip()
     inbox = os.environ.get("RN_INBOX_NAME", "bot-inbox")
-    if cmd == "fetch" and ids:
-        res = fetch(ids, key, person, inbox, timeout, refwd_timeout)
-    else:
-        res = wait(ids, key, person, inbox, timeout if cmd in ("wait", "fetch") else 0)
+    lock = inbox_lock(300)
+    try:
+        if cmd == "fetch" and ids:
+            res = fetch(ids, key, person, inbox, timeout, refwd_timeout)
+        else:
+            res = wait(ids, key, person, inbox, timeout if cmd in ("wait", "fetch") else 0)
+    finally:
+        lock.close()
     for r in res.values():
         out(r)
     st = {r["status"] for r in res.values()}

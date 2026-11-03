@@ -1,6 +1,6 @@
 # agent-mesh
 
-agent-mesh version: 0.1.0 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
+agent-mesh version: 0.1.1 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
 
 > Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. macOS, Reason Network v0.10.7. MIT.
 
@@ -15,7 +15,7 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 - [AGENT-INSTALL.md](AGENT-INSTALL.md): the runbook. Who does each step, exact commands, expected output, what to ask the user, what never to do.
 - [AGENT-INSTALL.zh-CN.md](AGENT-INSTALL.zh-CN.md): the same runbook in Simplified Chinese.
 - [install.sh](install.sh): one command for the Mac side. Stops where the user must act and says what to do.
-- [check.sh](check.sh): read-only self-check.
+- [check.sh](check.sh): read-only self-check, including that the team holds only this machine and cloud.
 - [prompts/routine.md](prompts/routine.md): the Grok Bot routine prompt (install.sh prints it).
 - [prompts/cloud-setup.md](prompts/cloud-setup.md): what the user sends to Grok Bot so it joins from its cloud machine (install.sh prints it filled in).
 - [prompts/routine.zh-CN.md](prompts/routine.zh-CN.md): Simplified Chinese routine prompt.
@@ -31,7 +31,7 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 - [dsh/README.zh-CN.md](dsh/README.zh-CN.md): Simplified Chinese plugin guide.
 - [CONTRIBUTING.md](CONTRIBUTING.md): translation maintenance and offline checks.
 - [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md): Simplified Chinese maintenance guide.
-- [SECURITY.md](SECURITY.md): how to report vulnerabilities privately, scope, and what to do after a credential leak.
+- [SECURITY.md](SECURITY.md): how to report vulnerabilities privately, scope, and what to do after a credential leak (./install.sh --rotate-key replaces the signing key). README Security and privacy covers the trust root, auto-approve modes, unattended wake-ups, plain-text retention and cleanup (./install.sh --purge-copies, rn-cloud.sh purge <days>).
 - [SECURITY.zh-CN.md](SECURITY.zh-CN.md): Simplified Chinese security policy.
 
 ## Code
