@@ -2,6 +2,10 @@
 
 **English** | [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+- Fixed: the relay now treats every HTTP 2xx webhook response as delivered, including 201, 202 and 204. Before, only 200 counted, so an accepted batch stayed in the spool, was POSTed again and spent another wake. Other responses and network errors still keep the batch for retry.
+
 ## v0.1.1 — 2026-11-03
 
 Security hardening release.

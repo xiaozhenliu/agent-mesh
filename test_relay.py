@@ -168,6 +168,48 @@ class Doorbell(unittest.TestCase):
             self.r.flush()
         return [json.loads(b) for b in self.posts]
 
+    def test_all_success_statuses_acknowledge_only_the_sent_batch(self):
+        for status in (200, 201, 202, 204, 299):
+            with self.subTest(status=status):
+                self.setUp()
+                self.r.c["MAX_BATCH"] = 1
+                self.r.s.spool = [self.m("overflow", i="relay-spool-overflow", frm="relay"), self.m("next", i="m2")]
+                self.r.s.overflow_dropped = 3
+                response = FakeResp()
+                response.status = status
+                rr.urllib.request.urlopen = lambda req, timeout=None: (self.posts.append(req.data), response)[1]
+                self.assertEqual(self.r.flush(), 5)
+                self.assertEqual([m["id"] for m in self.r.s.spool], ["m2"])
+                self.assertEqual(self.r.s.overflow_dropped, 0)
+                self.assertEqual(len(self.r.s.wakes), 1)
+                self.assertEqual([m["id"] for m in rr.State().spool], ["m2"])
+                self.r.s.wakes = []
+                self.assertEqual(self.r.flush(), 600)
+                self.assertEqual(self.r.s.spool, [])
+                self.r.flush()
+                self.assertEqual(len(self.posts), 2)
+
+    def test_failed_requests_keep_the_batch_for_retry(self):
+        for failure in (199, 300, 400, 500, rr.urllib.error.HTTPError(
+                CFG["WEBHOOK_URL"], 503, "unavailable", None, None),
+                rr.urllib.error.URLError("offline")):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.r.s.spool = [self.m("pending")]
+                def post(req, timeout=None):
+                    if isinstance(failure, Exception):
+                        raise failure
+                    response = FakeResp()
+                    response.status = failure
+                    return response
+                rr.urllib.request.urlopen = post
+                self.assertEqual(self.r.flush(), 5)
+                self.assertEqual([m["id"] for m in self.r.s.spool], ["m1"])
+                self.assertEqual([m["id"] for m in rr.State().spool], ["m1"])
+                self.assertEqual(len(self.r.s.wakes), 1)
+                if isinstance(failure, rr.urllib.error.HTTPError):
+                    failure.close()
+
     def test_full_text_goes_over_rn_signed_and_exact(self):
         for name, text in {**samples(), "ws": "  leading\n\ntrailing  \n\n", "tags": "<reason-message> &lt; <b>"}.items():
             with self.subTest(name):

@@ -493,7 +493,7 @@ class Relay:
             code = f"error {type(e).__name__}"
         self.log.info("POST %d chars %d bytes sha256=%s code=%s items=[%s]", len(body), len(data),
                       hashlib.sha256(data).hexdigest(), code, ", ".join(str(i["id"]) for i in batch))
-        if code == 200:
+        if isinstance(code, int) and 200 <= code < 300:
             if any(i.get("id") == "relay-spool-overflow" for i in batch):
                 self.s.overflow_dropped = 0      # the overflow notice was delivered; count afresh
             self.s.spool = self.s.spool[len(batch):]
