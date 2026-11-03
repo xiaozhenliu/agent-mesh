@@ -7,26 +7,47 @@ Inbound  (local agents -> Grok Bot): loops `reason-network listen --as bot`. Eac
           webhook is rung with a small doorbell: {id, from, agent, thread, text_len, text_sha256, preview}.
           The routine fetches the full text by id with `rn-cloud.sh fetch` and verifies it.
 Outbound (Grok Bot -> local agents): messages from <team-name>/bot-cloud that carry a valid RN-OUT v1 envelope
-          (HMAC, 15-minute window, unused nonce) are re-sent here as <team-name>/bot, so replies always land on
-          this machine, never on the sleeping cloud box.
+          (HMAC, 15-minute window) are re-sent here as <team-name>/bot, so replies always land on this machine,
+          never on the sleeping cloud box. Each envelope nonce gets a send record (sending, sent, failed, unknown)
+          saved before the engine is called and kept NONCE_KEEP_SECONDS: a nonce already sent is dropped
+          silently, one whose result is unknown is not sent again (one alert), a failed one may be sent again.
+          Refused, failed and unknown sends are reported as durable alerts.
 Re-forward: a copy of every forwarded text is kept for FWD_COPY_DAYS (dir 0700, files 0600). A signed
-          RN-REFWD v1 from bot-cloud or bot-inbox makes the relay send the copy again and ring again, at most
-          REFWD_MAX_PER_ID per message and REFWD_MAX_PER_HOUR overall, answered with a signed RN-REFWD-ACK v1.
+          RN-REFWD v1 from bot-cloud or bot-inbox makes the relay send the copy again, at most REFWD_MAX_PER_ID
+          per message and REFWD_MAX_PER_HOUR overall, answered with a signed RN-REFWD-ACK v1. It rings again
+          only if the request does not carry "caps: got1" (a cloud that sends receipts is still waiting).
           If the first forward fails, the doorbell still rings (flagged forward_failed) and the cloud's fetch
           asks for the copy the same way.
-Notices: the relay's own messages to the routine (refused envelope, spool overflow) are doorbell:false items
-          with the text inline. They never share a POST with doorbells.
+Receipts: every forwarded message stays pending until the cloud reports it done (signed RN-GOT v1 from
+          bot-cloud, bot-inbox or a <team-name>/terminal session; the engine may number it, e.g. terminal-3) or a
+          valid RN-OUT replies to it. Without a "stored"
+          receipt GOT_TIMEOUT_SECONDS after its doorbell went out, the relay forwards the copy again and rings
+          again (field rering); without "done" GOT_DONE_SECONDS after a stored message's doorbell, it rings again.
+          After GOT_MAX_RERINGS re-rings it gives up with an alert. Alerts are kept outside the spool, go out in
+          their own batch (relay-alerts-<ms>) and stay until the routine confirms that batch with a done receipt.
+Notices: the relay's own messages to the routine (refused envelope, spool overflow, a message it could not
+          handle, network.db not readable at startup) are doorbell:false items with the text inline. They never
+          share a POST with doorbells.
+Crash safety: `listen` marks a batch read as soon as it returns. Each message is handled on its own, so one
+          failure never touches the rest of the batch (it is logged and reported in a notice). For inbound mail the
+          copy is kept and the doorbell queued and saved BEFORE the text is forwarded: a relay killed after that
+          still rings, and the cloud's fetch asks for the copy. At startup, and after a listen that timed out or
+          failed, the relay reads the engine's network.db (read-only) for messages to itself that were marked read
+          but never handled, from the later of its first start on this version and FWD_COPY_DAYS ago, and handles
+          them. Messages the engine holds for inbound approval are left to listen.
 
 Standard library only. Config: ~/.config/agent-relay/env (mode 0600). Never logs secrets or message bodies.
 Message formats: README.md, appendix.
 """
-import hashlib, hmac, html, json, logging, logging.handlers, os, re, subprocess, sys, time, urllib.request
+import hashlib, hmac, html, json, logging, logging.handlers, os, re, sqlite3, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 HOME = Path.home()
 ENV_FILE = Path(os.environ.get("AGENT_RELAY_ENV", HOME / ".config/agent-relay/env"))
 STATE_DIR = Path(os.environ.get("AGENT_RELAY_STATE", HOME / "Library/Application Support/agent-relay"))
 LOG_FILE = Path(os.environ.get("AGENT_RELAY_LOG", HOME / "Library/Logs/agent-relay.log"))
+RN_DB = HOME / ".reason/network/network.db"     # the engine's message store; RN_DB in the config is for tests only
+RECONCILE_PAGE = 200                             # network.db rows read per query during recovery
 
 BLOCK = re.compile(r'<reason-message ([^>]*)>\n(.*?)\n</reason-message>', re.S)
 ATTR = re.compile(r'(\w+)="([^"]*)"')
@@ -63,9 +84,14 @@ def load_env():
     for k, d in [("MAX_WAKES_PER_HOUR", 20), ("MIN_SECONDS_BETWEEN_WAKES", 20), ("MAX_BATCH", 10),
                  ("MAX_PROXY_PER_HOUR", 60), ("MAX_SPOOL", 1000), ("WEBHOOK_MAX_BODY_CHARS", 3500),
                  ("DOORBELL_PREVIEW_CHARS", 200), ("FWD_COPY_DAYS", 7), ("REFWD_MAX_PER_ID", 2),
-                 ("REFWD_MAX_PER_HOUR", 20)]:
+                 ("REFWD_MAX_PER_HOUR", 20), ("GOT_TIMEOUT_SECONDS", 900), ("GOT_DONE_SECONDS", 7200),
+                 ("GOT_MAX_RERINGS", 2), ("NONCE_KEEP_SECONDS", 86400)]:
         cfg[k] = int(cfg.get(k, d))
     cfg["WEBHOOK_MAX_BODY_CHARS"] = max(600, cfg["WEBHOOK_MAX_BODY_CHARS"])
+    if cfg["NONCE_KEEP_SECONDS"] <= 0:
+        logging.getLogger("agent-relay").warning("NONCE_KEEP_SECONDS=%d is not positive; using 86400",
+                                                 cfg["NONCE_KEEP_SECONDS"])
+        cfg["NONCE_KEEP_SECONDS"] = 86400
     return cfg
 
 
@@ -78,11 +104,43 @@ def notice_item(mid, text):
     return {"id": mid, "from": "relay", "agent": "agent-relay", "thread": None, "text": text[:2000]}
 
 
+CAPS = "got1"
+SEND_REFUSED = re.compile(r"refused|not on this machine|no session|nobody matches|ambiguous", re.I)
+SEND_UNSURE = re.compile(r"held|error", re.I)
+SEND_ACCEPTED = "→"
 FWD_MAX_BYTES = 60 * 1024          # engine limit is 64 KB per message body; keep room for the header
 FWD_TRAILER = "\n--- RN-FWD END"
 AGENT_ENV = ("REASON_NETWORK_AGENT", "REASON_NETWORK_SESSION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
              "CODEX_THREAD_ID", "CODEX_SESSION_ID", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "COPILOT_CLI",
              "COPILOT_AGENT_SESSION_ID")
+
+
+def send_status(out):
+    """The engine's own words in an `rn send` output, without addresses or quoted names: on a line
+    "→ <address>: <status>" exactly the text after the first ": "; elsewhere the line minus quoted text and minus
+    whole words shaped like an address (they contain "/" or "@"). A bare name is never removed by value, since it
+    may equal one of the engine's own words."""
+    words = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith(SEND_ACCEPTED):
+            words.append(line[len(SEND_ACCEPTED):].strip().partition(": ")[2])
+            continue
+        line = re.sub(r"'[^']*'|\"[^\"]*\"", " ", line)
+        words.append(" ".join(w for w in line.split() if not re.search(r"[/@]", w)))
+    return "\n".join(words)
+
+
+def send_outcome(rc, out):
+    """Result of an `rn send`, judged on send_status() only: "failed" (clearly refused, whatever the exit code),
+    "sent" (exit 0, a "→ <address>:" line, no held/error), else "unknown"."""
+    status = send_status(out)
+    if SEND_REFUSED.search(status):
+        return "failed"
+    accepted = any(l.strip().startswith(SEND_ACCEPTED) for l in out.splitlines())
+    if rc == 0 and accepted and not SEND_UNSURE.search(status):
+        return "sent"
+    return "unknown"
 
 
 def one_line(v):
@@ -102,7 +160,7 @@ def fwd_body(key, mid, frm, agent, thread, text, ts=None):
     n, h = len(text), sha256_hex(text)
     sig = sign_fwd(key, mid, frm, agent, thread, n, h, ts)
     return (f"RN-FWD v1\nid: {mid}\nfrom: {frm}\nagent: {agent}\nthread: {thread}\ntext_len: {n}\n"
-            f"text_sha256: {h}\nts: {ts}\nsig: {sig}\n---\n{text}{FWD_TRAILER}")
+            f"text_sha256: {h}\nts: {ts}\nsig: {sig}\ncaps: {CAPS}\n---\n{text}{FWD_TRAILER}")
 
 
 REFWD_HEAD = "RN-REFWD v1"
@@ -141,6 +199,57 @@ def parse_refwd(text):
 
 def is_refwd(text):
     return (text or "").lstrip().startswith(REFWD_HEAD + "\n") or (text or "").strip() == REFWD_HEAD
+
+
+def has_caps(value):
+    return CAPS in [c.strip() for c in (value or "").split(",")]
+
+
+GOT_HEAD = "RN-GOT v1"
+GOT_ID = re.compile(r"[A-Za-z0-9._-]{1,120}")
+GOT_MAX_IDS = 100
+ALERT_PREFIX = "relay-alerts-"
+ALERT_OVERFLOW = "alerts-overflow"
+ALERT_ITEM_CHARS = 300
+MAX_ALERTS = 200
+
+
+def sign_got(key, stored, done, ts, nonce):
+    return hmac.new(key.encode(), "\n".join(["got1", stored, done, ts, nonce]).encode(), hashlib.sha256).hexdigest()
+
+
+def got_body(key, stored, done, ts=None, nonce=None):
+    stored, done = ",".join(stored), ",".join(done)
+    ts = str(int(time.time())) if ts is None else str(ts)
+    nonce = nonce or os.urandom(12).hex()
+    return (f"{GOT_HEAD}\nstored: {stored}\ndone: {done}\nts: {ts}\nnonce: {nonce}\n"
+            f"sig: {sign_got(key, stored, done, ts, nonce)}")
+
+
+def parse_got(text):
+    """RN-GOT v1 receipt -> fields plus id lists "stored_ids"/"done_ids", {} if malformed, None if not one."""
+    lines = (text or "").strip().splitlines()
+    if not lines or lines[0].strip() != GOT_HEAD:
+        return None
+    f = {}
+    for l in lines[1:]:
+        k, sep, v = l.partition(":")
+        if sep:
+            f[k.strip()] = v.strip()
+    if "stored" not in f or "done" not in f or not all(f.get(k) for k in ("ts", "nonce", "sig")):
+        return {}
+    if not re.fullmatch(r"[0-9a-f]{64}", f["sig"]):
+        return {}
+    ids = {k: f[k].split(",") if f[k] else [] for k in ("stored", "done")}
+    every = ids["stored"] + ids["done"]
+    if not every or len(every) > GOT_MAX_IDS or not all(GOT_ID.fullmatch(i) for i in every):
+        return {}
+    f["stored_ids"], f["done_ids"] = ids["stored"], ids["done"]
+    return f
+
+
+def is_got(text):
+    return (text or "").lstrip().startswith(GOT_HEAD + "\n") or (text or "").strip() == GOT_HEAD
 
 
 def safe_name(mid):
@@ -191,7 +300,7 @@ class Copies:
 
 
 class State:
-    def __init__(self, max_spool=1000):
+    def __init__(self, max_spool=1000, seen_days=8, nonce_keep=86400):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         os.chmod(STATE_DIR, 0o700)
         self.path = STATE_DIR / "state.json"
@@ -199,14 +308,54 @@ class State:
             d = json.loads(self.path.read_text())
         except Exception:
             d = {}
-        self.seen = d.get("seen", [])            # message ids already handled (dedupe)
+        now = time.time()
+        self.seen = d.get("seen", [])            # message ids already handled (dedupe); a list, as in earlier versions
+        self.seen_t = d.get("seen_t")            # message id -> when it was handled; `seen` is kept by this age
+        if not isinstance(self.seen_t, dict):    # first start on this version, or saved by an earlier one
+            self.seen_t = {}
+        for i in self.seen:
+            self.seen_t.setdefault(i, now)
         self.nonces = d.get("nonces", {})        # envelope nonce -> ts (replay guard)
+        self.sends = d.get("sends") if isinstance(d.get("sends"), dict) else {}
+        if "sends" not in d:
+            for n, t in self.nonces.items():
+                if isinstance(t, (int, float)):
+                    self.sends.setdefault(n, {"t": t, "state": "unknown", "id": "", "to": "", "noticed": False})
         self.wakes = d.get("wakes", [])          # timestamps of webhook POSTs
         self.proxies = d.get("proxies", [])      # timestamps of proxied sends
         self.spool = d.get("spool", [])          # items waiting to be POSTed
         self.overflow_dropped = d.get("overflow_dropped", 0)   # dropped since the overflow notice last went out
         self.refwds = d.get("refwds", {})        # message id -> [timestamps of honoured RN-REFWD]
+        self.recv_floor = d.get("recv_floor")    # first start on this version: startup recovery never looks earlier
+        self.pending = d.get("pending") if isinstance(d.get("pending"), dict) else {}
+        self.alerts = d.get("alerts") if isinstance(d.get("alerts"), list) else []
+        self.got_last = d.get("got_last")
+        self.caps_lost = d.get("caps_lost") is True
+        self.got_probe = d.get("got_probe") if isinstance(d.get("got_probe"), dict) else None
+        self.last_batch = d.get("last_batch")
+        self.logged_counts = None
         self.max_spool = max_spool
+        self.seen_days = seen_days
+        self.nonce_keep = nonce_keep
+        stopped = self.stopped_sends()
+        if not isinstance(self.recv_floor, (int, float)):
+            self.recv_floor = now
+            stopped = True
+        if stopped:
+            self.save()
+
+    def stopped_sends(self):
+        """Sends still marked sending were cut off by the last stop: unknown now, each with an alert (before any
+        cleanup by age)."""
+        found = False
+        for n, r in self.sends.items():
+            if isinstance(r, dict) and r.get("state") == "sending":
+                r["state"], r["noticed"], found = "unknown", True, True
+                self.alert(f"unknown:{n}", f"outbound {r.get('id') or 'unknown'} to "
+                                           f"{r.get('to') or 'unknown recipient'} was being sent when the relay "
+                                           f"stopped; result unknown. Check with the recipient; to send anyway, "
+                                           f"change the text.")
+        return found
 
     def trim_spool(self):
         """Never drop silently: past MAX_SPOOL the oldest items go, get logged, and one relay notice says so."""
@@ -218,6 +367,14 @@ class State:
         drop = len(rest) - (cap - 1)
         dropped, rest = rest[:drop], rest[drop:]
         self.overflow_dropped += len(dropped)
+        for i in dropped:
+            p = self.pending.get(str(i.get("id"))) if i.get("doorbell") else None
+            if p is not None:
+                if p["stage"] == "ringing":
+                    p["stage"] = "unacked"
+                p["t"], p["keep"] = time.time(), True
+                if self.got_probe and self.got_probe.get("id") == str(i.get("id")):
+                    self.got_probe = None
         uniq = list(dict.fromkeys(str(i.get("id")) for i in dropped))
         ids = ", ".join(uniq[:20]) + (" ..." if len(uniq) > 20 else "")
         logging.getLogger("agent-relay").warning(
@@ -231,16 +388,60 @@ class State:
 
     def save(self):
         now = time.time()
-        self.seen = self.seen[-2000:]
+        for i in self.seen:
+            self.seen_t.setdefault(i, now)
+        self.seen_t = {i: t for i, t in self.seen_t.items() if now - t < self.seen_days * 86400}
+        self.seen = [i for i in self.seen if i in self.seen_t]
         self.nonces = {n: t for n, t in self.nonces.items() if now - t < 3600}
+        self.sends = {n: r for n, r in self.sends.items() if isinstance(r, dict)
+                      and isinstance(r.get("t"), (int, float)) and now - r["t"] < self.nonce_keep}
         self.wakes = [t for t in self.wakes if now - t < 3600]
         self.proxies = [t for t in self.proxies if now - t < 3600]
         self.refwds = {k: v for k, v in self.refwds.items() if v and now - max(v) < 8 * 86400}
         self.trim_spool()
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.__dict__ | {"path": None, "max_spool": None}, ensure_ascii=False))
+        tmp.write_text(json.dumps(self.__dict__ | {"path": None, "max_spool": None, "seen_days": None,
+                                                   "nonce_keep": None, "logged_counts": None}, ensure_ascii=False))
         os.chmod(tmp, 0o600)
         tmp.replace(self.path)
+        counts, log = (len(self.pending), len(self.alerts)), logging.getLogger("agent-relay")
+        last = self.logged_counts or (None, None)
+        if counts[0] != last[0]:
+            log.info("pending: %d", counts[0])
+        if counts[1] != last[1]:
+            log.info("alerts: %d", counts[1])
+        self.logged_counts = counts
+
+    def alert(self, key, text):
+        """A durable relay alert: kept outside the spool until the routine confirms the batch that carried it.
+        Saved with the caller's next save()."""
+        if any(a["key"] == key for a in self.alerts):
+            return
+        logging.getLogger("agent-relay").warning("ALERT %s: %s", key, text)
+        if sum(1 for a in self.alerts if a["key"] != ALERT_OVERFLOW) >= MAX_ALERTS:
+            o = next((a for a in self.alerts if a["key"] == ALERT_OVERFLOW), None)
+            if o is None:
+                o = {"key": ALERT_OVERFLOW, "text": "", "t": time.time(), "batch": None, "posted": None,
+                     "tries": 0, "n": 0, "sent_n": 0}
+                self.alerts.append(o)
+            o["n"] += 1
+            return
+        self.alerts.append({"key": key, "text": text, "t": time.time(), "batch": None, "posted": None, "tries": 0})
+
+    def drop_alert(self, key):
+        self.alerts = [a for a in self.alerts if a["key"] != key]
+
+    def confirm_alerts(self, batch):
+        kept = []
+        for a in self.alerts:
+            if a.get("batch") != batch:
+                kept.append(a)
+            elif a["key"] == ALERT_OVERFLOW:
+                a["n"], a["sent_n"] = max(0, a.get("n", 0) - a.get("sent_n", 0)), 0
+                if a["n"] > 0:
+                    a.update(batch=None, posted=None, tries=0)
+                    kept.append(a)
+        self.alerts = kept
 
 
 def parse(out):
@@ -279,19 +480,36 @@ def parse_envelope(text):
 class Relay:
     def __init__(self, cfg):
         self.c = cfg
-        self.s = State(cfg["MAX_SPOOL"])
+        self.s = State(cfg["MAX_SPOOL"], cfg.get("FWD_COPY_DAYS", 7) + 1, cfg.get("NONCE_KEEP_SECONDS", 86400))
         self.me = f"{cfg['PERSON']}/{cfg['LISTEN_NAME']}"
         self.cloud = f"{cfg['PERSON']}/{cfg['CLOUD_NAME']}"
         self.inbox = f"{cfg['PERSON']}/{cfg.get('INBOX_NAME', 'bot-inbox')}"
+        self.terminal = re.compile(re.escape(cfg["PERSON"]) + r"/terminal(-[0-9]+)?")
         self.fwd_to = f"{self.inbox}@{cfg.get('CLOUD_MACHINE', 'cloud')}"
         self.log = logging.getLogger("agent-relay")
         self.copies = Copies(cfg.get("FWD_COPY_DAYS", 7))
         self.last_prune = 0
+        self.db_noticed = False
+        if self.got_timeout() <= 0 and any(not p.get("keep") for p in self.s.pending.values()):
+            self.log.info("GOT_TIMEOUT_SECONDS is 0: %d pending message(s) keep being re-rung until done",
+                          len(self.s.pending))
+            self.caps_gone(lost=False)
+            self.s.save()
+
+    def got_timeout(self):
+        return self.c.get("GOT_TIMEOUT_SECONDS", 900)
+
+    def unacked_timeout(self):
+        return self.got_timeout() if self.got_timeout() > 0 else 900
+
+    def probing(self):
+        return self.got_timeout() > 0 and not self.s.caps_lost
 
     # ---- webhook payloads ----
     def payload(self, items):
         if items and all(i.get("doorbell") for i in items):
-            keep = ("id", "from", "agent", "thread", "text_len", "text_sha256", "preview", "refwd", "forward_failed")
+            keep = ("id", "from", "agent", "thread", "text_len", "text_sha256", "preview", "refwd", "rering",
+                    "forward_failed")
             return {"source": "reason-network", "relay_version": 3, "doorbell": True, "to": self.me,
                     "reply_via": self.cloud, "inbox": self.inbox,
                     "messages": [{k: i[k] for k in keep if k in i} for i in items]}
@@ -320,8 +538,7 @@ class Relay:
             return False, f"rn send failed: {type(e).__name__}"
         res = (r.stdout + r.stderr).strip()
         first = res.splitlines()[0] if res else ""
-        bad = re.search(r"refused|held|not on this machine|no session|nobody matches|ambiguous|error", res, re.I)
-        if r.returncode != 0 or bad or "→" not in res:
+        if send_outcome(r.returncode, res) != "sent":
             return False, f"rn send rc={r.returncode}: {first[:60]}"
         self.log.info("forwarded %s (%d chars) to %s: %s", m["id"], len(text), self.fwd_to, first[:120])
         return True, first
@@ -372,12 +589,173 @@ class Relay:
         if not ok:
             self.log.warning("refwd %s attempt %d failed: %s", mid, attempt, why)
             return self.ack(mid, "failed", attempt, why)
-        item = self.doorbell_item(copy)
-        item["refwd"] = attempt
-        self.s.spool.append(item)
-        self.log.info("refwd %s attempt %d requested by %s (%s): re-forwarded, doorbell queued", mid, attempt,
-                      frm, m["id"])
+        p = self.s.pending.get(mid)
+        if has_caps(req.get("caps")):
+            if p and p["stage"] == "unacked" and p["t"] is not None:
+                p["t"] = now
+            self.log.info("refwd %s attempt %d requested by %s (%s): re-forwarded, no doorbell (the cloud is "
+                          "waiting for it)", mid, attempt, frm, m["id"])
+        else:
+            item = self.doorbell_item(copy)
+            item["refwd"] = attempt
+            self.queue_doorbell(item)
+            if p:
+                p["t"] = None
+            self.log.info("refwd %s attempt %d requested by %s (%s): re-forwarded, doorbell queued", mid, attempt,
+                          frm, m["id"])
         self.ack(mid, "resent", attempt)
+
+    def queue_doorbell(self, item):
+        """At most one doorbell per id in the spool: a later one updates refwd/rering/forward_failed in place."""
+        for it in self.s.spool:
+            if it.get("doorbell") and str(it.get("id")) == str(item["id"]):
+                it.update({k: item[k] for k in ("refwd", "rering", "forward_failed") if k in item})
+                return it
+        self.s.spool.append(item)
+        return item
+
+    # ---- receipts from the cloud (RN-GOT v1) and pending messages ----
+    def got(self, m):
+        """Handles an RN-GOT receipt. Never raises; anything invalid is logged and changes nothing."""
+        f, frm = parse_got(m.get("text") or ""), m.get("from", "")
+        if frm not in (self.cloud, self.inbox) and not self.terminal.fullmatch(frm):
+            self.log.warning("receipt %s from %s ignored: sender not allowed", m["id"], frm)
+            return
+        if not f:
+            self.log.warning("receipt %s from %s ignored: malformed", m["id"], frm)
+            return
+        key, now = self.c["OUTBOUND_KEY"], time.time()
+        good = hmac.compare_digest(f["sig"], sign_got(key, f["stored"], f["done"], f["ts"], f["nonce"]))
+        try:
+            fresh = abs(now - int(f["ts"])) < REFWD_FRESH_SECONDS
+        except ValueError:
+            fresh = False
+        if not good or not fresh or f["nonce"] in self.s.nonces:
+            self.log.warning("receipt %s ignored (sig=%s fresh=%s replay=%s)", m["id"], good, fresh,
+                             f["nonce"] in self.s.nonces)
+            return
+        self.s.nonces[f["nonce"]] = now
+        done = list(dict.fromkeys(f["done_ids"]))
+        stored = [i for i in dict.fromkeys(f["stored_ids"]) if i not in done]
+        for mid in done:
+            if mid.startswith(ALERT_PREFIX):
+                self.s.confirm_alerts(mid)
+            self.complete(mid, receipt=True)
+        for mid in stored:
+            p = self.s.pending.get(mid)
+            if p is None:
+                continue
+            p["keep"] = True
+            if p["stage"] != "stored":
+                p["stage"] = "stored"
+                if p["t"] is not None:
+                    p["t"] = now
+        self.s.got_last, self.s.caps_lost, self.s.got_probe = now, False, None
+        self.log.info("receipt %s from %s: stored %d, done %d", m["id"], frm, len(stored), len(done))
+
+    def complete(self, mid, receipt=False):
+        """Proof that mid was handled: a done receipt, or a valid RN-OUT replying to it."""
+        mid = str(mid)
+        self.s.drop_alert(f"abandon:{mid}")
+        if mid not in self.s.pending:
+            return
+        self.drop_pending(mid)
+        if receipt:
+            self.s.spool = [i for i in self.s.spool if not (i.get("doorbell") and str(i.get("id")) == mid)]
+
+    def drop_pending(self, mid):
+        del self.s.pending[mid]
+        if self.s.got_probe and self.s.got_probe.get("id") == mid:
+            self.s.got_probe = None
+
+    def caps_gone(self, lost):
+        for p in self.s.pending.values():
+            p["keep"] = True
+        if lost:
+            self.s.caps_lost = True
+        self.s.got_probe = None
+
+    def check_pending(self):
+        """Re-rings pending messages that timed out and turns receipts off when the cloud stopped sending them.
+        Runs before every flush()."""
+        now, s, changed = time.time(), self.s, False
+        if not self.probing():
+            for mid, p in list(s.pending.items()):
+                if p["stage"] == "unacked" and p["rung"] and not p["keep"]:
+                    self.drop_pending(mid)
+                    changed = True
+                elif p["stage"] == "unacked" and p["rung"] and p["keep"]:
+                    p["stage"] = "stored"
+                    changed = True
+        gp = s.got_probe
+        if gp and gp.get("id") not in s.pending:
+            s.got_probe, gp, changed = None, None, True
+        if self.probing() and gp and gp.get("posted") is not None and now - gp["posted"] > self.got_timeout():
+            self.caps_gone(lost=True)
+            s.alert(f"caps-lost:{gp['id']}",
+                    "The cloud stopped sending receipts (RN-GOT), so the relay no longer re-rings mail that may "
+                    "have been lost on the way; this turns back on with the next receipt. Messages not yet "
+                    "confirmed as handled are still re-rung until they are, or reported one by one.")
+            s.save()
+            return
+        resend, maxr = self.unacked_timeout(), self.c.get("GOT_MAX_RERINGS", 2)
+        for a in list(s.alerts):
+            if a["posted"] is not None and now - a["posted"] > resend and a["tries"] >= maxr:
+                rest = a.get("n", 0) - a.get("sent_n", 0) if a["key"] == ALERT_OVERFLOW else 0
+                self.log.warning("alert %s dropped after %d unacknowledged deliveries%s", a["key"], a["tries"] + 1,
+                                 f"; {rest} added since then kept" if rest > 0 else "")
+                if rest > 0:
+                    a.update(n=rest, sent_n=0, batch=None, posted=None, tries=0)
+                else:
+                    s.alerts.remove(a)
+                changed = True
+        for mid, p in list(s.pending.items()):
+            limit = {"unacked": resend, "stored": self.c.get("GOT_DONE_SECONDS", 7200)}.get(p["stage"])
+            if p["t"] is None or limit is None or now - p["t"] <= limit:
+                continue
+            if p["rerings"] >= maxr:
+                s.alert(f"abandon:{mid}", f"Message {mid} (from {p.get('from', '')}) was re-rung {p['rerings']} "
+                                          f"time(s) and is still not confirmed as handled. Ask the sender to "
+                                          f"resend it, or check it on the cloud computer.")
+                self.drop_pending(mid)
+                s.save()
+                changed = False
+                continue
+            p["rerings"] += 1
+            p["t"] = None
+            if p["stage"] == "unacked" and p["rung"] and not p["keep"] and s.got_probe is None:
+                s.got_probe = {"id": mid, "posted": None}
+            copy = self.copies.get(mid)
+            item = self.doorbell_item(copy) if copy else {"id": mid, "from": p.get("from", ""), "agent": None,
+                                                          "thread": None, "doorbell": True}
+            item["rering"] = p["rerings"]
+            item = self.queue_doorbell(item)
+            s.save()
+            self.log.info("re-ring %s (%s, attempt %d)", mid, p["stage"], p["rerings"])
+            if p["stage"] == "unacked":
+                ok, why = self.forward(copy) if copy else (False, "no copy kept")
+                if not ok:
+                    item["forward_failed"] = why[:80]
+                    self.log.warning("re-ring %s: forward failed (%s); doorbell flagged", mid, why)
+                changed = True
+        if changed:
+            s.save()
+
+    def next_wait(self, wait):
+        """listen's wait: at most until the next pending deadline, receipt check or alert resend, at least 5 s."""
+        now, due = time.time(), [wait, 600]
+        resend = self.unacked_timeout()
+        for p in self.s.pending.values():
+            limit = {"unacked": resend, "stored": self.c.get("GOT_DONE_SECONDS", 7200)}.get(p["stage"])
+            if p["t"] is not None and limit is not None:
+                due.append(p["t"] + limit - now + 1)
+        gp = self.s.got_probe
+        if gp and gp.get("posted") is not None:
+            due.append(gp["posted"] + self.got_timeout() - now + 1)
+        for a in self.s.alerts:
+            if a["posted"] is not None:
+                due.append(a["posted"] + resend - now + 1)
+        return max(5, int(min(due)))
 
     def ack(self, mid, status, attempt, reason=""):
         body = refwd_ack_body(self.c["OUTBOUND_KEY"], mid, status, attempt, reason)
@@ -407,58 +785,194 @@ class Relay:
         now = time.time()
         if not env:
             return self.notice(f"bot-cloud sent {m['id']} without a valid RN-OUT envelope; not forwarded")
-        good = hmac.compare_digest(env["sig"], sign(self.c["OUTBOUND_KEY"], env["to"], env["reply_to"],
-                                                    env["ts"], env["nonce"], env["body"]))
+        if not hmac.compare_digest(env["sig"], sign(self.c["OUTBOUND_KEY"], env["to"], env["reply_to"],
+                                                    env["ts"], env["nonce"], env["body"])):
+            self.log.warning("proxy refused %s: bad signature", m["id"])
+            return self.notice(f"outbound {m['id']} refused: bad signature")
+        if env["reply_to"]:
+            self.complete(env["reply_to"])
+        nonce, to, s = env["nonce"], env["to"], self.s
+        rec = s.sends.get(nonce)
+        if rec is None and nonce in s.nonces:
+            rec = s.sends[nonce] = {"t": s.nonces[nonce], "state": "unknown", "id": "", "to": "", "noticed": False}
+        if rec is not None and now - rec.get("t", now) >= s.nonce_keep:
+            rec = None
+        if rec is not None and rec.get("state") == "sent":
+            self.log.info("duplicate outbound %s dropped (first sent at %s)", m["id"],
+                          time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(rec["t"])))
+            s.drop_alert(f"reject:{nonce}")
+            s.drop_alert(f"failed:{nonce}")
+            return
+        if rec is not None and rec.get("state") != "failed":
+            self.log.warning("duplicate outbound %s not sent: an earlier send with this nonce is %s", m["id"],
+                             rec.get("state"))
+            if not rec.get("noticed"):
+                rec["noticed"] = True
+                s.alert(f"dup-unknown:{nonce}", f"outbound {m['id']} repeats an earlier send to "
+                                                f"{rec.get('to') or 'unknown recipient'} whose result is unknown; not "
+                                                f"resent to avoid a duplicate. Check with the recipient; to send "
+                                                f"anyway, change the text.")
+            return
         try:
             fresh = abs(now - int(env["ts"])) < 900
         except ValueError:
             fresh = False
-        if not good or not fresh or env["nonce"] in self.s.nonces:
-            self.log.warning("proxy refused %s (sig=%s fresh=%s)", m["id"], good, fresh)
-            return self.notice(f"outbound {m['id']} refused: bad signature, stale or replayed")
-        if len(self.s.proxies) >= self.c["MAX_PROXY_PER_HOUR"]:
-            return self.notice(f"outbound {m['id']} refused: over {self.c['MAX_PROXY_PER_HOUR']} sends/hour")
-        to = env["to"]
+        if not fresh:
+            self.log.warning("proxy refused %s: stale", m["id"])
+            return s.alert(f"reject:{nonce}", f"outbound {m['id']} to {to} refused: stale (signed more than 15 "
+                                              f"minutes before it arrived)")
+        if len(s.proxies) >= self.c["MAX_PROXY_PER_HOUR"]:
+            return s.alert(f"reject:{nonce}",
+                           f"outbound {m['id']} refused: over {self.c['MAX_PROXY_PER_HOUR']} sends/hour")
         if to in ("*",) or to.endswith("/*") or to.startswith("repo:") or to in (self.me, self.cloud):
-            return self.notice(f"outbound {m['id']} refused: group or self address '{to}'")
-        self.s.nonces[env["nonce"]] = now
-        self.s.proxies.append(now)
+            return s.alert(f"reject:{nonce}", f"outbound {m['id']} refused: group or self address '{to}'")
+        s.sends[nonce] = {"t": now, "state": "sending", "id": str(m["id"]), "to": to, "noticed": False}
+        s.nonces[nonce] = now
+        s.proxies.append(now)
+        s.save()
         args = ["send", to, "--from", self.me]
         if env["reply_to"]:
             args += ["--reply-to", env["reply_to"]]
         args.append("-")  # body from stdin
-        r = self.rn(*args, stdin=env["body"])
-        result = (r.stdout + r.stderr).strip()
-        self.log.info("proxied %s -> %s rc=%s %s", m["id"], to, r.returncode, result.splitlines()[0] if result else "")
-        if r.returncode != 0 or "refused" in result:
-            self.notice(f"outbound to {to} failed: {result[:500]}")
+        unsure = "it may or may not have been delivered. Check with the recipient; to send anyway, change the text."
+        try:
+            r = self.rn(*args, stdin=env["body"])
+        except OSError as e:
+            self.log.warning("proxy %s -> %s: send %s", m["id"], to, type(e).__name__)
+            state, text = "failed", f"outbound {m['id']} to {to} failed: rn send {type(e).__name__}"
+        except Exception as e:     # e.g. TimeoutExpired: the engine may still have queued it
+            self.log.warning("proxy %s -> %s: send %s", m["id"], to, type(e).__name__)
+            state = "unknown"
+            text = f"outbound {m['id']} to {to} not confirmed, result unknown: rn send {type(e).__name__}; {unsure}"
+        else:
+            result = (r.stdout + r.stderr).strip()
+            first = result.splitlines()[0] if result else ""
+            self.log.info("proxied %s -> %s rc=%s %s", m["id"], to, r.returncode, first)
+            state = send_outcome(r.returncode, result)
+            text = (f"outbound {m['id']} to {to} failed: {result[:500]}" if state == "failed" else
+                    f"outbound {m['id']} to {to} not confirmed, result unknown: rn send rc={r.returncode}: "
+                    f"{first[:200]}; {unsure}")
+        rec = s.sends[nonce]
+        rec["state"] = state
+        if state == "sent":
+            s.drop_alert(f"reject:{nonce}")
+            s.drop_alert(f"failed:{nonce}")
+        elif state == "failed":
+            s.alert(f"failed:{nonce}", text)
+        else:
+            rec["noticed"] = True
+            s.alert(f"unknown:{nonce}", text)
+        s.save()
 
     def notice(self, text):
         self.s.spool.append(notice_item(f"relay-{int(time.time() * 1000)}", text))
 
     # ---- inbound (network -> Grok Bot) ----
     def handle(self, msgs):
+        """`listen` has already marked msgs read: one message failing must never lose the rest of the batch."""
         for m in msgs:
             if m["id"] in self.s.seen:
                 continue
-            self.s.seen.append(m["id"])
-            if is_refwd(m.get("text")):
-                self.refwd(m)           # allowed senders are honoured; anyone else is logged and ignored
-                continue
-            if m["from"] == self.cloud:
-                self.proxy(m)
-                continue
-            if m["from"] == self.me:
-                continue
-            self.keep_copy(m)
-            ok, why = self.forward(m)
-            item = self.doorbell_item(m)
-            if not ok:
-                # ring anyway: the cloud's fetch will ask for the kept copy with a signed RN-REFWD
-                item["forward_failed"] = why[:80]
-                self.log.warning("forward %s failed (%s); doorbell flagged, copy kept for re-forward", m["id"], why)
-            self.s.spool.append(item)
+            self.s.seen.append(m["id"]); self.s.seen_t[m["id"]] = time.time()
+            try:
+                self.handle_one(m)
+            except Exception as e:      # not BaseException: KeyboardInterrupt/SystemExit still stop the relay
+                self.log.exception("could not handle %s from %s", m["id"], m.get("from", ""))
+                self.notice(f"relay could not handle message {m['id']} from {m.get('from', '')}: "
+                            f"{type(e).__name__}. Ask the sender to resend if it mattered; see the relay log on the Mac.")
         self.s.save()
+
+    def handle_one(self, m):
+        if is_refwd(m.get("text")):
+            return self.refwd(m)        # allowed senders are honoured; anyone else is logged and ignored
+        if is_got(m.get("text")):
+            return self.got(m)
+        if m["from"] == self.cloud:
+            return self.proxy(m)
+        if m["from"] == self.me:
+            return
+        self.keep_copy(m)
+        # Queue and save the doorbell (with `seen`) before forwarding: if the relay dies after this point the
+        # doorbell still rings, and the cloud's fetch asks for the kept copy with a signed RN-REFWD.
+        item = self.queue_doorbell(self.doorbell_item(m))
+        if self.got_timeout() > 0:
+            self.s.pending[str(m["id"])] = {"stage": "ringing", "t": None, "rerings": 0, "rung": False,
+                                            "keep": False, "from": m.get("from", "")}
+        self.s.save()
+        ok, why = self.forward(m)
+        if not ok:
+            # ring anyway: the cloud's fetch will ask for the kept copy with a signed RN-REFWD
+            item["forward_failed"] = why[:80]
+            self.log.warning("forward %s failed (%s); doorbell flagged, copy kept for re-forward", m["id"], why)
+
+    # ---- recovery from the engine's network.db (startup, and after a listen that timed out or failed) ----
+    def reconcile(self):
+        """Messages `listen` marked read but the relay never handled (it died first, or listen timed out after
+        marking them) stay in network.db. Hands those sent since max(recv_floor, FWD_COPY_DAYS ago), not in `seen`
+        and not held for inbound approval to handle(), a page at a time. Idempotent; never stops the relay.
+        Only rows already in the table when this call began (rowid <= snapshot) are candidates; later ones are
+        left to the next listen, so mail that keeps arriving cannot keep the relay here (it would never reach
+        flush()), whatever the senders' clocks say."""
+        path = Path(self.c.get("RN_DB") or RN_DB)
+        floor_ms = max(self.s.recv_floor, time.time() - self.c.get("FWD_COPY_DAYS", 7) * 86400) * 1000
+        snap = None                    # max(rowid) when this call began, read with the first page
+        after = None                   # (sent_at, id) of the last row read: keyset paging, no connection kept open
+        found, sample = 0, []          # count, and the first 20 ids for the log
+        while True:
+            try:
+                snap, rows = self.db_page(path, floor_ms, snap, after)
+            except Exception as e:
+                self.log.warning("could not check %s for messages missed during a restart: %s: %s", path,
+                                 type(e).__name__, e)
+                if not self.db_noticed:    # once per process: a failing listen must not turn into a notice loop
+                    self.db_noticed = True
+                    self.notice("relay could not check network.db for messages missed during a restart; anything "
+                                "that arrived just before the relay stopped may not have been forwarded. See the "
+                                "relay log on the Mac.")
+                    self.s.save()
+                return
+            if not rows:
+                break
+            after = (rows[-1][3], rows[-1][0])
+            # sent_at is in milliseconds (the sender's clock), as the cloud's rn-fetch.py also reads it
+            msgs = [{"id": i, "from": frm, "agent": agent, "thread": thread, "text": body}
+                    for i, frm, body, sent, agent, thread in rows if i not in self.s.seen]
+            if msgs:
+                found += len(msgs)
+                sample += [str(m["id"]) for m in msgs[:20 - len(sample)]]
+                self.handle(msgs)
+        if found:
+            self.log.info("network.db: handled %d message(s) that listen had marked read: %s", found,
+                          ", ".join(sample) + (" ..." if found > len(sample) else ""))
+
+    def db_page(self, path, floor_ms, snap, after):
+        """(snap, rows): up to RECONCILE_PAGE rows to this relay, sent at or after floor_ms, with rowid <= snap,
+        after the (sent_at, id) `after`, excluding rows the engine holds for inbound approval (held = 1; no such
+        column: nothing held). snap None: take max(rowid) now, on this connection (the engine's messages table is
+        a plain rowid table, so rows inserted later get a larger rowid)."""
+        db = sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
+        try:
+            cols = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
+            need = {"id", "sender", "body", "sent_at", "recipient"}
+            if not need <= cols:
+                raise LookupError(f"table messages lacks {', '.join(sorted(need - cols))}")
+            agent = "sender_agent" if "sender_agent" in cols else "NULL"
+            thread = "reply_to" if "reply_to" in cols else "NULL"
+            if snap is None:
+                snap = db.execute("SELECT max(rowid) FROM messages").fetchone()[0]
+                if snap is None:
+                    return None, []        # empty table
+            sql = (f"SELECT id, sender, body, sent_at, {agent}, {thread} FROM messages "
+                   "WHERE recipient = ? AND sent_at >= ? AND rowid <= ?")
+            args = [self.me, floor_ms, snap]
+            if "held" in cols:
+                sql += " AND COALESCE(held, 0) = 0"
+            if after is not None:
+                sql += " AND (sent_at > ? OR (sent_at = ? AND id > ?))"
+                args += [after[0], after[0], after[1]]
+            return snap, db.execute(sql + " ORDER BY sent_at, id LIMIT ?", args + [RECONCILE_PAGE]).fetchall()
+        finally:
+            db.close()
 
     def can_wake(self):
         now = time.time()
@@ -470,12 +984,17 @@ class Relay:
         return True, 0
 
     def flush(self):
-        if not self.s.spool:
+        ready = self.ready_alerts()
+        if not self.s.spool and not ready:
             return 600
         ok, wait = self.can_wake()
         if not ok:
             return max(5, int(wait))
-        batch = self.next_batch()
+        use_alerts = bool(ready) and (not self.s.spool or self.s.last_batch == "spool")
+        if use_alerts:
+            batch, chosen, sent_n = self.alert_batch(ready)
+        else:
+            batch = self.next_batch()
         body = json.dumps(self.payload(batch), ensure_ascii=False)
         data = body.encode()
         req = urllib.request.Request(self.c["WEBHOOK_URL"], data=data, method="POST", headers={
@@ -493,15 +1012,71 @@ class Relay:
             code = f"error {type(e).__name__}"
         self.log.info("POST %d chars %d bytes sha256=%s code=%s items=[%s]", len(body), len(data),
                       hashlib.sha256(data).hexdigest(), code, ", ".join(str(i["id"]) for i in batch))
-        if isinstance(code, int) and 200 <= code < 300:
+        self.s.last_batch = "alerts" if use_alerts else "spool"
+        if isinstance(code, int) and 200 <= code < 300 and use_alerts:
+            now = time.time()
+            for a in chosen:
+                if a["posted"] is not None:
+                    a["tries"] += 1
+                a["batch"], a["posted"] = batch[0]["id"], now
+                if a["key"] == ALERT_OVERFLOW:
+                    a["sent_n"] = sent_n
+            self.log.info("woke Grok Bot with %d alert(s) in %s, waiting for its confirmation", len(chosen),
+                          batch[0]["id"])
+        elif isinstance(code, int) and 200 <= code < 300:
             if any(i.get("id") == "relay-spool-overflow" for i in batch):
                 self.s.overflow_dropped = 0      # the overflow notice was delivered; count afresh
             self.s.spool = self.s.spool[len(batch):]
+            self.rung(batch)
             self.log.info("woke Grok Bot with %d item(s)", len(batch))
+        elif use_alerts:
+            self.log.warning("webhook POST failed: %s; %d alert(s) kept", code, len(chosen))
         else:
             self.log.warning("webhook POST failed: %s; %d item(s) kept in spool", code, len(self.s.spool))
         self.s.save()
-        return 5 if self.s.spool else 600
+        return 5 if self.s.spool or self.ready_alerts() else 600
+
+    def rung(self, batch):
+        now, gp = time.time(), self.s.got_probe
+        for it in batch:
+            p = self.s.pending.get(str(it.get("id"))) if it.get("doorbell") else None
+            if p is None:
+                continue
+            if p["stage"] == "ringing":
+                p["stage"] = "unacked"
+            p["t"], p["rung"] = now, True
+            if gp and gp.get("id") == str(it["id"]):
+                gp["posted"] = now
+
+    def ready_alerts(self):
+        now, resend, maxr = time.time(), self.unacked_timeout(), self.c.get("GOT_MAX_RERINGS", 2)
+        return [a for a in self.s.alerts if (a["key"] != ALERT_OVERFLOW or a.get("n", 0) > 0) and (
+            a["posted"] is None or (now - a["posted"] > resend and a["tries"] < maxr))]
+
+    def alert_text(self, a):
+        if a["key"] == ALERT_OVERFLOW:
+            return (f"{a.get('n', 0)} more relay alert(s) were not queued one by one; see the ALERT lines in the "
+                    f"relay log on the Mac.")
+        return a["text"]
+
+    def alert_batch(self, ready):
+        """One notice item relay-alerts-<ms> with as many ready alerts as fit (each cut to 300 characters, the
+        item's text to 2000, the body to WEBHOOK_MAX_BODY_CHARS); at least one, cut further if needed."""
+        bid, limit = f"{ALERT_PREFIX}{int(time.time() * 1000)}", self.c["WEBHOOK_MAX_BODY_CHARS"]
+        texts, chosen = [], []
+        for a in ready:
+            t = "\n".join(texts + [self.alert_text(a)[:ALERT_ITEM_CHARS]])
+            if len(t) > 2000 or self.body_chars([notice_item(bid, t)]) > limit:
+                break
+            texts.append(self.alert_text(a)[:ALERT_ITEM_CHARS])
+            chosen.append(a)
+        if not chosen:
+            t = self.alert_text(ready[0])[:ALERT_ITEM_CHARS]
+            while t and self.body_chars([notice_item(bid, t)]) > limit:
+                t = t[:-10]
+            texts, chosen = [t], [ready[0]]
+        sent_n = next((a.get("n", 0) for a in chosen if a["key"] == ALERT_OVERFLOW), 0)
+        return [notice_item(bid, "\n".join(texts))], chosen, sent_n
 
     def next_batch(self):
         """Spool head plus following items of the same kind (doorbell or notice), in order, up to MAX_BATCH,
@@ -518,21 +1093,34 @@ class Relay:
     def run(self):
         self.log.info("agent-relay up: listening as %s, proxying for %s, forwarding to %s, copies kept %d days",
                       self.me, self.cloud, self.fwd_to, self.c.get("FWD_COPY_DAYS", 7))
-        wait = min(600, self.flush())      # deliver anything restored from the spool before the first listen
+        self.reconcile()                   # messages marked read before a crash, before anything new
+        self.check_pending()
+        wait = self.next_wait(self.flush())   # deliver anything restored from the spool before the first listen
         while True:
             try:
                 r = self.rn("listen", "--as", self.c["LISTEN_NAME"], "--wait", str(wait), timeout=wait + 60)
-                if r.returncode != 0:
+            except subprocess.TimeoutExpired:
+                self.log.warning("listen timed out after %d s; retrying", wait + 60)
+                r = None
+            except Exception:
+                self.log.exception("listen failed")
+                time.sleep(15)
+                r = None
+            if r is None or r.returncode != 0:
+                if r is not None:
                     self.log.warning("listen rc=%s: %s", r.returncode, (r.stderr or r.stdout).strip()[:300])
                     time.sleep(15)
-                else:
+                self.reconcile()           # listen may have marked a batch read before it failed
+            else:
+                try:
                     self.handle(parse(r.stdout))
-            except subprocess.TimeoutExpired:
-                self.log.warning("listen timed out; retrying")
+                except Exception:          # each message is isolated in handle(); this is the final save()
+                    self.log.exception("could not save the handled batch")
+            try:
+                self.check_pending()
             except Exception:
-                self.log.exception("loop error")
-                time.sleep(15)
-            wait = min(600, self.flush())
+                self.log.exception("could not check pending messages")
+            wait = self.next_wait(self.flush())
 
 
 def main():

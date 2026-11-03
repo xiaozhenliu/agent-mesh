@@ -24,7 +24,7 @@ English uses the original filenames (`README.md`, `AGENT-INSTALL.md`, and so on)
 
 ## Check a change offline
 
-These offline checks can run on a development computer or CI, without connecting to `[BOT-CLOUD]` or using `[GROK-UI]`. Run from the distribution root:
+These offline checks can run on a development computer or CI, without connecting to `[BOT-CLOUD]` or using `[GROK-UI]`. This repository's CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same checks on pushes to `main` and on pull requests, on Linux and macOS. Run from the distribution root:
 
 ```bash
 python3 scripts/check_docs.py

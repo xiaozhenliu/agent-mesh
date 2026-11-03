@@ -20,7 +20,8 @@ class Prompts(unittest.TestCase):
         for lang in ("en", "zh-CN"):
             with self.subTest(lang=lang):
                 text = render_prompt("routine", lang)
-                for token in ("complete", "missing", "mismatch", "ack=resent", "no-copy", "limit",
+                for token in ("complete", "handled", "claimed", "uncertain", "orphan: true",
+                              "rn-cloud.sh working <id>", "rn-cloud.sh done <id>", "missing", "mismatch", "ack=resent", "no-copy", "limit",
                               "failed", "null", "skipped", "forward_failed", "RN-REFWD",
                               "handed to the Mac", "<reason-approval", "ask_user",
                               "/workspace/agent-mesh/box/rn-cloud.sh", "/workspace/agent-mesh/threads/"):

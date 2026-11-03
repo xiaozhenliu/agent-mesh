@@ -70,7 +70,7 @@ def check_docs():
     en = (ROOT / "README.md").read_text(encoding="utf-8")
     zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
     vectors = lambda text: set(re.findall(r"\b[0-9a-f]{64}\b", text))
-    if len(vectors(en)) != 4 or vectors(en) != vectors(zh):
+    if len(vectors(en)) != 5 or vectors(en) != vectors(zh):
         errors.append("README: protocol test-vector signatures differ or are missing")
     return errors
 

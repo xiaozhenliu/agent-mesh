@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux (Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.9"
+            os: ubuntu-24.04
+          - python: "3.13"
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Documentation
+        run: python3 scripts/check_docs.py
+      - name: Script unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Relay tests
+        run: python3 test_relay.py
+      - name: Cloud fetch tests
+        run: python3 box/test_rn_fetch.py
+      - name: Shell syntax
+        run: for script in install.sh check.sh uninstall.sh dsh/mac-install.sh box/rn-cloud-setup.sh box/rn-cloud.sh; do bash -n "$script" || exit 1; done
+
+  macos:
+    name: macos (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: runner python3
+            os: macos-latest
+            python: ""
+          - label: Python 3.9
+            os: macos-15-intel
+            python: "3.9"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: matrix.python != ''
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Python version
+        run: python3 --version
+      - name: Script unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Relay tests
+        run: python3 test_relay.py
+      - name: Shell syntax
+        run: for script in install.sh check.sh uninstall.sh; do bash -n "$script" || exit 1; done
+
+  node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+      - name: dsh bridge tests
+        run: node dsh/reason-network-bridge.test.mjs
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck install.sh check.sh uninstall.sh dsh/mac-install.sh box/rn-cloud-setup.sh box/rn-cloud.sh
