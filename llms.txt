@@ -31,6 +31,8 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 - [dsh/README.zh-CN.md](dsh/README.zh-CN.md): Simplified Chinese plugin guide.
 - [CONTRIBUTING.md](CONTRIBUTING.md): translation maintenance and offline checks.
 - [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md): Simplified Chinese maintenance guide.
+- [SECURITY.md](SECURITY.md): how to report vulnerabilities privately, scope, and what to do after a credential leak.
+- [SECURITY.zh-CN.md](SECURITY.zh-CN.md): Simplified Chinese security policy.
 
 ## Code
 

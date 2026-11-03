@@ -2,6 +2,10 @@
 
 **English** | [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+- Added an English and Chinese [security policy](SECURITY.md): private vulnerability reporting, scope and upstream ownership, how reports are handled, and steps after a possible leak of the signing key, webhook key or an invite link. The README's security section and documentation table link to it.
+
 ## v0.1.0 — 2026-11-02
 
 First tagged agent-mesh release. Earlier public commits remain in the repository history.

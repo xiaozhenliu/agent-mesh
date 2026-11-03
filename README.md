@@ -217,6 +217,7 @@ Closed sessions disappear from the roster. Messages remain in the inbox while th
 - Team members can see session names, the last working-directory component, repository names, and branches. Avoid starting agents directly in your home directory. Use invite links in the terminal, not a browser.
 - The pinned open-source engine runs locally in account-free mode, and in that mode it sends no data to Reason. Traffic may pass through iroh public relays; upstream describes the content as encrypted. This project has not independently audited those relays. `reason-network relay <URL>` selects a self-hosted relay.
 - Each Grok Bot wake-up consumes usage. The relay defaults to at most 20 wake-ups per hour.
+- Report security problems privately as described in the [security policy](SECURITY.md), not in a public issue. It also explains what to do if the signing key, webhook key or an invite link may have leaked.
 
 ## Troubleshooting
 
@@ -255,6 +256,7 @@ Then, in `[GROK-UI]`, pause or delete the routine, and on `[BOT-CLOUD]`, remove 
 | Cloud setup | [Prompt](prompts/cloud-setup.md) | [提示词](prompts/cloud-setup.zh-CN.md) |
 | Reply convention | [Template](templates/AGENTS.reason-network.md) | [模板](templates/AGENTS.reason-network.zh-CN.md) |
 | Maintaining translations | [Contributing](CONTRIBUTING.md) | [维护说明](CONTRIBUTING.zh-CN.md) |
+| Security policy | [Security policy](SECURITY.md) | [安全策略](SECURITY.zh-CN.md) |
 
 To choose the language of generated prompts, see [Prompt language](#prompt-language).
 

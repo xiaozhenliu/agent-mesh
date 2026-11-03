@@ -217,6 +217,7 @@ cd ~/agent-mesh
 - 团队成员能看到每个会话的名字、所在目录的最后一级、仓库名和分支。所以别在 `~` 下直接开 agent。团队邀请链接只在终端里用，不要在浏览器里打开。
 - 引擎开源、固定版本，以无账号模式在本机运行，无账号模式下不向 Reason 官方发送数据。消息可能经过 iroh 公共中继，上游将消息内容描述为加密传输；本项目没有独立审计这些中继。用 `reason-network relay <URL>` 可以换成自建中继。
 - 每叫醒一次 Grok Bot 就消耗一次它的用量。relay 默认每小时最多叫醒 20 次。
+- 发现安全问题请按[安全策略](SECURITY.zh-CN.md)私下报告，不要公开提 Issue；怀疑密钥、webhook key 或邀请链接泄露时的处理办法也写在里面。
 
 ## 常见问题
 
@@ -258,6 +259,7 @@ cd ~/agent-mesh
 | 云端接入 | [Prompt](prompts/cloud-setup.md) | [提示词](prompts/cloud-setup.zh-CN.md) |
 | 回复约定 | [Template](templates/AGENTS.reason-network.md) | [模板](templates/AGENTS.reason-network.zh-CN.md) |
 | 翻译维护 | [Contributing](CONTRIBUTING.md) | [维护说明](CONTRIBUTING.zh-CN.md) |
+| 安全策略 | [Security policy](SECURITY.md) | [安全策略](SECURITY.zh-CN.md) |
 
 生成的提示词用哪种语言，见[提示词语言](#提示词语言)。
 
