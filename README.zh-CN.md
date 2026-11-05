@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| **版本** | agent-mesh **v0.2.1** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
+| **版本** | agent-mesh **v0.3.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
 | **支持平台** | 本地：设计上不绑定系统（引擎有 macOS / Linux / Windows 版本，relay 为纯 Python），但目前只有 macOS 提供一键安装并经过验证 · Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
@@ -286,12 +286,13 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 
 ## 卸载
 
-两条 `uninstall.sh` 命令均在 `[LOCAL]` 执行：
+以下命令均在 `[LOCAL]` 执行：
 
 | 命令 | 删除的内容 |
 |---|---|
 | `./uninstall.sh` | relay 服务、状态和消息副本、日志，以及 `~/.config/agent-relay`。 |
-| `./uninstall.sh --all` | 在上面的基础上再执行 `leave --force` 和 `setup --remove`，并删除 `~/.reason/network` 和 reason-network 二进制。 |
+| `./uninstall.sh --all` | 在上面的基础上，先删除 dsh 插件块（如果装了），再执行 `leave --force` 和 `setup --remove`，并删除 `~/.reason/network` 和 reason-network 二进制。 |
+| `dsh/mac-uninstall.sh` | 只卸载 dsh 插件：把 `~/.dsh/cordis.patch.yml` 里 Reason Network 的原块写回去。见[插件指南](dsh/README.zh-CN.md#卸载)。 |
 
 然后在 `[GROK-UI]` 暂停或删除 routine；`[BOT-CLOUD]` 再删除 `/workspace/agent-mesh/`。
 

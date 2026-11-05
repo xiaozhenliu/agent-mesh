@@ -4,6 +4,23 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.3.0 — 2026-11-05
+
+dsh 插件可以干净卸载；DeepSeek Harness 升级导致插件失效时，日志会写明原因。
+
+### 新增
+
+- `dsh/mac-uninstall.sh` 卸载 dsh 插件：只把 `~/.dsh/cordis.patch.yml` 里插件那一块换回 `dsh/mac-install.sh` 保存的 Reason Network 原块，旧安装从最早的备份里取；patch 的其他改动保留。
+- dsh 插件加载时检查 DeepSeek Harness 是否具备所需能力；缺了什么就在日志里写明缺项和恢复方法，不兼容的会话跳过，不再在上面出错。
+
+### 变更
+
+- `./uninstall.sh --all` 在 `setup --remove` 之前删除 dsh 插件块，dsh 不会再指向已删除的引擎；这一步失败时会停下来，不删除 Reason Network。
+
+### 升级说明
+
+relay、云端脚本和 routine 提示词没有变化。用了 dsh 插件的，更新本地仓库后重新运行 `dsh/mac-install.sh <team-name>`，再完全退出并重开 DeepSeek Harness。这样会装上带兼容性检查的插件，并为卸载脚本保存 Reason Network 原块；不重装的话，`dsh/mac-uninstall.sh` 会从最早的备份里取原块。其他部分无需更新。
+
 ## v0.2.1 — 2026-11-03
 
 维护版本，行为没有变化。

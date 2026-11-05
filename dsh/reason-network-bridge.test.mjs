@@ -180,3 +180,38 @@ test('plugin: a session already archived at attach is parked immediately', async
   assert.equal(h.calls.length, 0)
   for (const stop of h.effects) stop?.()
 })
+
+test('compatibility checks name what this dsh lacks', () => {
+  assert.deepEqual(B.missingHost({ on() {}, effect() {}, agents: {} }), [])
+  assert.deepEqual(B.missingHost({}), ['ctx.on', 'ctx.effect', 'ctx.agents'])
+  assert.deepEqual(B.missingAgent({ followup() {}, steer() {}, ctx: { plugin() {} } }), [])
+  assert.deepEqual(B.missingAgent({ followup() {} }), ['agent.steer', 'agent.ctx.plugin'])
+})
+
+test('plugin: an incompatible host fails loudly and points to the uninstaller', async () => {
+  const h = harness([])
+  delete h.ctx.effect
+  await assert.rejects(B.apply(h.ctx, h.cfg), /missing ctx\.effect.*mac-uninstall\.sh/)
+  assert.match(fs.readFileSync(h.logFile, 'utf8'), /ERROR incompatible DeepSeek Harness .*mac-uninstall\.sh/)
+  const m = harness([])
+  m.cfg.mcpLoader = async () => { throw new Error('gone') }
+  await assert.rejects(B.apply(m.ctx, m.cfg), /gone/)
+  assert.match(fs.readFileSync(m.logFile, 'utf8'), /cannot load @deepseek-ai\/dsh-mcp-client: gone; .*mac-uninstall\.sh/)
+})
+
+test('plugin: a session without steer/followup is skipped, others still attach', async () => {
+  const h = harness([])
+  await B.apply(h.ctx, h.cfg)
+  const s1 = h.mk('s1'); delete s1.steer
+  const s3 = h.mk('s3'); delete s3.followup
+  const s4 = h.mk('s4'); delete s4.ctx.plugin
+  const good = h.mk('s2')
+  for (const a of [s1, s3, s4, good]) { h.agents.push(a); await h.handlers['agent/created']({ agent: a }) }
+  assert.deepEqual(h.mounts.map(m => m[0]), ['s2'])
+  assert.ok(!h.hooks.some(x => /s[134]$/.test(x)))
+  const log = fs.readFileSync(h.logFile, 'utf8')
+  assert.match(log, /incompatible session=s1 \(missing agent\.steer\); not attached/)
+  assert.match(log, /incompatible session=s3 \(missing agent\.followup\); not attached/)
+  assert.match(log, /incompatible session=s4 \(missing agent\.ctx\.plugin\); not attached/)
+  for (const stop of h.effects) stop?.()
+})

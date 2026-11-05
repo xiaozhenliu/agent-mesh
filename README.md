@@ -6,7 +6,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 
 | | |
 |---|---|
-| **Version** | agent-mesh **v0.2.1** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Version** | agent-mesh **v0.3.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
 | **Platform** | Local: not tied to one OS by design (the engine ships macOS / Linux / Windows builds; the relay is pure Python), but only macOS currently has a one-click installer and has been verified · Python 3.9+ |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
@@ -283,12 +283,13 @@ The relay log records message ids, lengths and checksums, not bodies. `FWD_COPY_
 
 ## Uninstall
 
-All `uninstall.sh` commands run on `[LOCAL]`:
+All of these commands run on `[LOCAL]`:
 
 | Command | Removes |
 |---|---|
 | `./uninstall.sh` | The relay service, state, message copies, logs, and `~/.config/agent-relay`. |
-| `./uninstall.sh --all` | Everything above; also runs `leave --force` and `setup --remove`, then removes `~/.reason/network` and the engine binary. |
+| `./uninstall.sh --all` | Everything above; also removes the dsh bridge block if present, runs `leave --force` and `setup --remove`, then removes `~/.reason/network` and the engine binary. |
+| `dsh/mac-uninstall.sh` | Only the dsh bridge: puts Reason Network's own block back in `~/.dsh/cordis.patch.yml`. See the [bridge guide](dsh/README.md#uninstall). |
 
 Then, in `[GROK-UI]`, pause or delete the routine, and on `[BOT-CLOUD]`, remove `/workspace/agent-mesh/`.
 

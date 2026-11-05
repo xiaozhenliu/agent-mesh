@@ -290,5 +290,97 @@ class Installation(unittest.TestCase):
             self.assertIn("Alex''s & Team", patch.read_text())
 
 
+    def dsh_installed(self):
+        self.engine()
+        app = self.home / "Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
+        self.tool("app", "echo 'ℹ pass 7'", app)
+        patch = self.home / ".dsh/cordis.patch.yml"
+        patch.parent.mkdir(parents=True)
+        own = "# === reason-network MCP BEGIN ===\nold\n# === reason-network MCP END ===\n"
+        patch.write_text("- before: 1\n" + own + "- after: 2\n")
+        result = self.run_script("dsh/mac-install.sh", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plugin = self.home / ".dsh/plugins/reason-network-bridge.mjs"
+        self.assertTrue(plugin.is_file())
+        patch.write_text(patch.read_text() + "- added later: 3\n")
+        return patch, own, plugin
+
+    def test_dsh_uninstall_puts_back_only_reason_networks_block(self):
+        patch, own, plugin = self.dsh_installed()
+        saved = self.home / ".dsh/backup-reason-network-bridge/reason-network-block.yml"
+        self.assertEqual(saved.read_text(), own)
+        result = self.run_script("dsh/mac-uninstall.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(patch.read_text(), "- before: 1\n" + own + "- after: 2\n- added later: 3\n")
+        self.assertFalse(plugin.exists())
+        self.assertIn("own MCP block is back", result.stdout)
+        again = self.run_script("dsh/mac-uninstall.sh")
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("nothing to change", again.stdout)
+
+    def test_dsh_uninstall_falls_back_to_backups_then_to_setup_hint(self):
+        patch, own, _ = self.dsh_installed()
+        backups = self.home / ".dsh/backup-reason-network-bridge"
+        (backups / "reason-network-block.yml").unlink()
+        newer = own.replace("old", "newer")
+        (backups / "cordis.patch.yml.29991231235959.zzzzzz").write_text(newer)
+        result = self.run_script("dsh/mac-uninstall.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(own, patch.read_text())
+        self.assertNotIn("newer", patch.read_text())
+        self.run_script("dsh/mac-install.sh", "demo")
+        for path in backups.iterdir():
+            path.unlink()
+        result = self.run_script("dsh/mac-uninstall.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("reason-network", patch.read_text())
+        self.assertIn("reason-network setup", result.stdout)
+
+    def test_dsh_uninstall_refuses_ambiguous_markers_and_changes_nothing(self):
+        patch, _, plugin = self.dsh_installed()
+        good = patch.read_text()
+        self.assertEqual(self.run_script("dsh/mac-uninstall.sh", "--bogus").returncode, 2)
+        begin = "# === reason-network-bridge BEGIN (replaces reason-network's MCP block) ===\n"
+        end = "# === reason-network-bridge END ===\n"
+        for broken in (good.replace(end, ""), good.replace(begin, ""),
+                       begin + "- keep: 0\n" + good, good.replace(begin, end + begin)):
+            patch.write_text(broken)
+            result = self.run_script("dsh/mac-uninstall.sh")
+            self.assertNotEqual(result.returncode, 0, broken)
+            self.assertIn("edit the file by hand", result.stderr)
+            self.assertEqual(patch.read_text(), broken)
+            self.assertTrue(plugin.exists())
+
+    def test_dsh_uninstall_keeps_lines_after_a_block_saved_without_newline(self):
+        self.engine()
+        app = self.home / "Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
+        self.tool("app", "echo 'ℹ pass 7'", app)
+        patch = self.home / ".dsh/cordis.patch.yml"
+        patch.parent.mkdir(parents=True)
+        patch.write_text("- before: 1\n# === reason-network MCP BEGIN ===\nold\n# === reason-network MCP END ===")
+        self.assertEqual(self.run_script("dsh/mac-install.sh", "demo").returncode, 0)
+        patch.write_text(patch.read_text() + "- unrelated: 2\n")
+        self.assertEqual(self.run_script("dsh/mac-uninstall.sh").returncode, 0)
+        self.assertEqual(patch.read_text(), "- before: 1\n# === reason-network MCP BEGIN ===\nold\n"
+                                             "# === reason-network MCP END ===\n- unrelated: 2\n")
+
+    def test_uninstall_all_stops_before_removing_the_engine_if_dsh_cleanup_fails(self):
+        patch, _, plugin = self.dsh_installed()
+        patch.write_text(patch.read_text().replace("# === reason-network-bridge END ===\n", ""))
+        result = self.run_script("uninstall.sh", "--all", "-y")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Reason Network was left in place", result.stdout)
+        self.assertTrue((self.home / ".local/bin/reason-network").exists())
+        self.assertTrue((self.home / ".reason/network/config.toml").exists())
+        self.assertTrue(plugin.exists())
+
+    def test_uninstall_all_drops_dsh_bridge_without_restoring(self):
+        patch, _, plugin = self.dsh_installed()
+        result = self.run_script("uninstall.sh", "--all", "-y")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(patch.read_text(), "- before: 1\n- after: 2\n- added later: 3\n")
+        self.assertFalse(plugin.exists())
+        self.assertIn("dsh bridge block", result.stdout)
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Install the reason-network-bridge plugin into DeepSeek Harness (dsh) on this Mac.
 #   dsh/mac-install.sh [<team-name>]    default: read from ~/.reason/network/config.toml
-# Backs up ~/.dsh/cordis.patch.yml and restores it if any step fails. Quit the app completely (⌘Q) and reopen it afterwards.
+# Backs up ~/.dsh/cordis.patch.yml and restores it if any step fails; keeps Reason Network's own block for dsh/mac-uninstall.sh.
+# Quit the app completely (⌘Q) and reopen it afterwards.
 set -eu
 APP_NODE=""
 RN="$HOME/.local/bin/reason-network"
@@ -40,17 +41,21 @@ trap restore EXIT
 echo "== 3. install plugin, rewrite patch (allowPeople: $PERSON)"
 mkdir -p "$HOME/.dsh/plugins" "$HOME/.dsh/logs"; chmod 700 "$HOME/.dsh/logs"
 cp "$SRC/reason-network-bridge.mjs" "$PLUG"; chmod 644 "$PLUG"
-python3 - "$PATCH" "$PLUG" "$RN" "$PERSON" <<'PY'
+python3 - "$PATCH" "$PLUG" "$RN" "$PERSON" "$BK/reason-network-block.yml" <<'PY'
 import sys
-p, plug, rn, person = sys.argv[1:]
+p, plug, rn, person, saved = sys.argv[1:]
 t = open(p).read()
 B, E = "# === reason-network MCP BEGIN ===", "# === reason-network MCP END ==="
-if B not in t:
+own = B in t
+if not own:
  B, E = "# === reason-network-bridge BEGIN (replaces reason-network's MCP block) ===", "# === reason-network-bridge END ==="
 b = t.find(B); e = t.find(E, b)
 assert b >= 0 and e > b, "reason-network MCP block not found in the patch"
+assert t.count(B) == 1 and t.count(E) == 1, "the reason-network block markers appear more than once in the patch"
 e += len(E)
 if t[e:e + 1] == "\n": e += 1
+if own:
+ open(saved, "w").write(t[b:e] if t[b:e].endswith("\n") else t[b:e] + "\n")
 plug, rn, person = (value.replace("'", "''") for value in (plug, rn, person))
 block = (
  "# === reason-network-bridge BEGIN (replaces reason-network's MCP block) ===\n"
@@ -70,3 +75,4 @@ grep -q 'reason-network MCP BEGIN' "$PATCH" && { echo "old block still present";
 
 trap - EXIT
 echo "== done. Quit DeepSeek Harness completely (⌘Q) and reopen it. Log: ~/.dsh/logs/reason-network-bridge.log"
+echo "   To remove the bridge later: dsh/mac-uninstall.sh"

@@ -42,7 +42,7 @@ jobs:
       - name: Cloud fetch tests
         run: python3 box/test_rn_fetch.py
       - name: Shell syntax
-        run: for script in install.sh check.sh uninstall.sh dsh/mac-install.sh box/rn-cloud-setup.sh box/rn-cloud.sh; do bash -n "$script" || exit 1; done
+        run: for script in install.sh check.sh uninstall.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh; do bash -n "$script" || exit 1; done
 
   macos:
     name: macos (${{ matrix.label }})
@@ -96,4 +96,4 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck install.sh check.sh uninstall.sh dsh/mac-install.sh box/rn-cloud-setup.sh box/rn-cloud.sh
+        run: shellcheck install.sh check.sh uninstall.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh

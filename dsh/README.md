@@ -8,6 +8,35 @@ This host plugin lets DeepSeek Harness (dsh) sessions receive Reason Network mes
 
 Reason Network's built-in setup supplies a shared MCP address and requires sessions to check their inbox. This plugin adds a separate address for each session and automatic wake-ups.
 
+How the plugin, sessions, and Reason Network fit together:
+
+```mermaid
+flowchart LR
+    subgraph LOCAL["💻 [LOCAL] local computer"]
+        direction TB
+        subgraph DSH["DeepSeek Harness"]
+            direction TB
+            S1["🤖 Top-level session A<br/>address: folder-dsh"]
+            S2["🤖 Top-level session B<br/>address: other-folder-dsh"]
+            SUB["Subagent<br/>skipped, no address of its own"]
+            PLUG["🔌 reason-network-bridge plugin"]
+        end
+        MCP1["reason-network mcp<br/>REASON_NETWORK_SESSION = A"]
+        MCP2["reason-network mcp<br/>REASON_NETWORK_SESSION = B"]
+        HOOK["reason-network hook dsh<br/>status / poll / post-tool-use"]
+        ENGINE["📡 Reason Network engine"]
+    end
+    TEAM["👥 Other members of the same team<br/>other local agents, Grok Bot"]
+
+    PLUG -->|"one MCP per session"| MCP1 & MCP2
+    S1 <-->|"tool calls: send, who"| MCP1
+    S2 <-->|"tool calls: send, who"| MCP2
+    PLUG -->|"report busy/idle, fetch mail"| HOOK
+    PLUG -->|"inject via followup / steer"| S1 & S2
+    MCP1 & MCP2 & HOOK --> ENGINE
+    ENGINE <--> TEAM
+```
+
 ## Behavior
 
 - Mounts a Reason Network MCP for each top-level session, skipping subagents, with `REASON_NETWORK_SESSION=<dsh-session-id>`. Each gets an address based on the folder name plus `-dsh`, visible in `reason-network who`.
@@ -16,6 +45,25 @@ Reason Network's built-in setup supplies a shared MCP address and requires sessi
 - Archived sessions stop receiving, unmount their MCP, and release the address. Messages remain unread for the next session using the address in that folder. Unarchiving restores reception.
 - Delivers messages only when the sender's person name exactly matches an entry in `allowPeople`. In this setup, that name equals the team name. Without the allowlist, the plugin refuses to load. Rejected messages are logged with id, sender, and the first 200 body characters.
 - Logs to `~/.dsh/logs/reason-network-bridge.log`, mode 600, rotating after 1 MB.
+
+How a message reaches a session:
+
+```mermaid
+flowchart TD
+    MSG["📨 New message for this session in Reason Network"] --> ARCH{"Session archived?"}
+    ARCH -->|"yes"| UNREAD["Not fetched, stays unread<br/>the next session in the folder receives it"]
+    ARCH -->|"no"| STATE{"Session state"}
+    STATE -->|"idle"| POLL["On becoming idle, then every 5 seconds<br/>hook dsh poll"]
+    STATE -->|"busy"| STOP["Near the end of a turn<br/>hook dsh post-tool-use"]
+    STOP -->|"interrupt-marked messages"| ALLOW
+    STOP -->|"other messages"| WAIT["Stay in Reason Network<br/>until the session is idle"]
+    WAIT --> POLL
+    POLL --> ALLOW{"Sender in allowPeople?"}
+    ALLOW -->|"no"| DROP["Not injected<br/>logged with id, sender, first 200 characters"]
+    ALLOW -->|"yes"| HOW{"Session state when fetched"}
+    HOW -->|"idle"| FOLLOW["followup: start a new turn"]
+    HOW -->|"busy"| STEER["steer: add to the current turn"]
+```
 
 ## Install (macOS desktop)
 
@@ -27,7 +75,7 @@ First install the Mac side using the [main guide](../README.md), then run from t
 dsh/mac-install.sh <team-name>
 ```
 
-The script runs tests with the app's runtime, backs up `~/.dsh/cordis.patch.yml` to `~/.dsh/backup-reason-network-bridge/`, copies the plugin to `~/.dsh/plugins/`, and replaces the Reason Network MCP block with the configuration below. It fills `<mac-home>` with the user's actual absolute home path. If a step fails after backup, it restores the patch. **Quit dsh completely (⌘Q) and reopen it**; the desktop app does not hot-reload plugins.
+The script runs tests with the app's runtime, backs up `~/.dsh/cordis.patch.yml` to `~/.dsh/backup-reason-network-bridge/`, copies the plugin to `~/.dsh/plugins/`, saves the original Reason Network MCP block for the uninstaller, and replaces it with the configuration below. It fills `<mac-home>` with the user's actual absolute home path. If a step fails after backup, it restores the patch. **Quit dsh completely (⌘Q) and reopen it**; the desktop app does not hot-reload plugins.
 
 ```yaml
 - insert:
@@ -55,12 +103,27 @@ With `serverName: reason-network` and `command` present, engine setup and upgrad
 - Restart the app completely after changing the plugin file.
 - Incoming messages trigger agent work. Keep `allowPeople` limited to your own identity. dsh's permissions and sandbox settings still apply.
 
-## Roll back
+## If the bridge stops working
 
-Copy the latest backup from `~/.dsh/backup-reason-network-bridge/` to `~/.dsh/cordis.patch.yml`, then quit and reopen the app. To restore the engine's original integration, run `reason-network setup`.
+The bridge replaces the engine's block instead of sitting next to it, because two blocks would mount two `reason-network` MCP servers in every session. The cost: while the bridge is installed, dsh's Reason Network access depends entirely on it. The bridge relies on DeepSeek Harness internals (its bundled MCP client and session events), so a dsh update can break it. When that happens, dsh sessions lose Reason Network entirely, including inbox checks.
+
+On load, the bridge checks that this dsh provides what it needs. If something is missing, it logs `incompatible DeepSeek Harness (missing …)` or `incompatible session=…` to `~/.dsh/logs/reason-network-bridge.log`, together with the recovery step. If the bridge cannot load dsh's MCP client, the log line starts with `cannot load @deepseek-ai/dsh-mcp-client`. Either way, run the uninstaller below to return dsh to the engine's own integration.
+
+## Uninstall
+
+Run from the distribution root:
+
+```bash
+dsh/mac-uninstall.sh
+```
+
+It backs up `~/.dsh/cordis.patch.yml`, then swaps only the bridge block for the Reason Network block saved at install time. Older installations without a saved block use the earliest backup that contains one. It also removes the plugin file. Everything else in the patch, including changes made after installation, is left as is. If the bridge is not exactly one block between its BEGIN and END markers (for example, a marker was edited away or duplicated), it changes nothing and asks you to edit the file by hand. If no saved block is found, it removes the bridge block and asks you to run `reason-network setup`, which also re-checks the other agents. Quit and reopen the app afterwards. dsh then uses one shared address per folder and checks its inbox only when the model asks.
+
+`./uninstall.sh --all` runs `dsh/mac-uninstall.sh --no-restore` before `setup --remove`, so it removes the bridge block without restoring anything. If that step fails, `--all` stops before touching Reason Network. Backups and logs stay in `~/.dsh/backup-reason-network-bridge/` and `~/.dsh/logs/`.
 
 ## Files
 
 - `reason-network-bridge.mjs`: plugin.
 - `reason-network-bridge.test.mjs`: offline tests run before installation. Manually: `ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" dsh/reason-network-bridge.test.mjs`.
 - `mac-install.sh`: installer.
+- `mac-uninstall.sh`: uninstaller.

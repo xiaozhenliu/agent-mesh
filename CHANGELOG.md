@@ -4,6 +4,23 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.0 — 2026-11-05
+
+The dsh bridge can now be removed cleanly and says when a DeepSeek Harness update breaks it.
+
+### Added
+
+- `dsh/mac-uninstall.sh` removes the dsh bridge by swapping only its block in `~/.dsh/cordis.patch.yml` back to Reason Network's own block, saved by `dsh/mac-install.sh`; older installations fall back to the earliest backup. Other changes to the patch are kept.
+- The dsh bridge checks on load that DeepSeek Harness provides what it needs; when something is missing it logs what and how to recover, and skips incompatible sessions instead of failing on them.
+
+### Changed
+
+- `./uninstall.sh --all` removes the dsh bridge block before `setup --remove`, so dsh no longer keeps pointing at a removed engine; if that fails, it stops before removing Reason Network.
+
+### Upgrade notes
+
+The relay, cloud scripts and routine prompt are unchanged. If you use the dsh bridge, update the local repository, run `dsh/mac-install.sh <team-name>` again, then quit and reopen DeepSeek Harness; this installs the checked plugin and saves Reason Network's own block for the uninstaller. Without it, `dsh/mac-uninstall.sh` falls back to the earliest backup. Nothing else needs updating.
+
 ## v0.2.1 — 2026-11-03
 
 Maintenance release with no behavior changes.

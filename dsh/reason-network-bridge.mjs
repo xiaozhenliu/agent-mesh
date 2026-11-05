@@ -44,6 +44,24 @@ const DEFAULTS = {
 
 // ---------- pure helpers (unit-tested) ----------
 
+const RECOVER = "to put Reason Network's own MCP block back, run dsh/mac-uninstall.sh from the agent-mesh release"
+
+/** What the bridge needs from the host; returns the missing pieces (empty when this dsh version is compatible). */
+export function missingHost(ctx) {
+  const miss = []
+  for (const k of ['on', 'effect']) if (typeof ctx?.[k] !== 'function') miss.push(`ctx.${k}`)
+  if (!ctx?.agents) miss.push('ctx.agents')
+  return miss
+}
+
+/** What the bridge needs from each session. */
+export function missingAgent(agent) {
+  const miss = []
+  for (const k of ['followup', 'steer']) if (typeof agent?.[k] !== 'function') miss.push(`agent.${k}`)
+  if (typeof agent?.ctx?.plugin !== 'function') miss.push('agent.ctx.plugin')
+  return miss
+}
+
 /** Merge user config over defaults and validate it. */
 export function resolveConfig(input = {}) {
   const c = { ...DEFAULTS, ...(input ?? {}) }
@@ -174,6 +192,12 @@ const excerpt = s => s.replace(/\s+/g, ' ').trim().slice(0, 200)
 export async function apply(ctx, input) {
   const c = resolveConfig(input)
   const log = makeLogger(c, ctx)
+  const missing = missingHost(ctx)
+  if (missing.length) {
+    const msg = `incompatible DeepSeek Harness (missing ${missing.join(', ')}); bridge inactive; ${RECOVER}`
+    log.error(msg)
+    throw new Error(`${name}: ${msg}`)
+  }
   const runHook = c.hookRunner ?? ((args, cwd) => new Promise(resolve =>
     execFile(c.command, ['hook', 'dsh', ...args], { cwd, timeout: c.hookTimeoutMs, env: process.env }, (err, out) =>
       resolve(err ? '' : String(out).trim()))))
@@ -184,7 +208,7 @@ export async function apply(ctx, input) {
     McpClient = await loadMcp()
     if (typeof McpClient?.apply !== 'function') throw new Error('module has no apply()')
   } catch (e) {
-    log.error(`cannot load @deepseek-ai/dsh-mcp-client: ${e?.message ?? e}; bridge inactive`)
+    log.error(`cannot load @deepseek-ai/dsh-mcp-client: ${e?.message ?? e}; bridge inactive; ${RECOVER}`)
     throw e
   }
 
@@ -296,6 +320,11 @@ export async function apply(ctx, input) {
   async function attach(agent) {
     if (!agent || mounted.has(agent) || !isTopLevel(agent, ctx.agents)) return
     mounted.add(agent)
+    const lacking = missingAgent(agent)
+    if (lacking.length) {
+      log.error(`incompatible session=${agent.id} (missing ${lacking.join(', ')}); not attached; ${RECOVER}`)
+      return
+    }
     // `ready` gates delivery until the MCP is mounted and the session registered (or parked).
     const s = { agent, cwd: cwdOf(agent), busy: agent.status === 'running', delivering: false, parked: false, reconciling: false, fiber: undefined, ready: false }
     live.set(String(agent.id), s)
