@@ -66,6 +66,10 @@ Repair commands below run on `[LOCAL]`; invite retries and `fetch` run on `[BOT-
 - `install.sh` stops because the Mac is already in a team under another name: names cannot change. Only on the user's explicit decision run `./uninstall.sh --all -y`, then start again from stage 1.
 - Anything else: show the user the exact error and the matching README section.
 
+## Update
+
+`[LOCAL]`: for an existing installation, run `./update.sh --plan --lang <en|zh-CN>` (the language the user chose) and show the user its output. When only the relay or the dsh plugin differ, you may run `./update.sh --yes --lang <en|zh-CN>`. Exit code 3 means the update needs the user's answers about the routine and the Bot's cloud computer: ask the user to run `./update.sh --lang <en|zh-CN>` in their own terminal. Do not edit `~/.local/lib/agent-mesh/deployed.json`. First update from v0.3.0 or earlier: run `git pull` once, because older checkouts have no `update.sh`.
+
 ## Removal
 
 `[LOCAL]`: `./uninstall.sh` removes the relay; `./uninstall.sh --all` also removes Reason Network and leaves the team. Both keep this folder. Ask the user before running either. For cloud cleanup, see the guide: the user pauses or deletes the routine in `[GROK-UI]`, then the Bot removes `/workspace/agent-mesh/` on `[BOT-CLOUD]`.

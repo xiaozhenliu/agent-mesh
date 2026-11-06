@@ -1,12 +1,12 @@
 # agent-mesh
 
-agent-mesh version: 0.3.0 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
+agent-mesh version: 0.4.0 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
 
 > Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. macOS, Reason Network v0.10.7. MIT.
 
 If you are an agent asked to install this: read AGENT-INSTALL.md (English) or AGENT-INSTALL.zh-CN.md (Simplified Chinese) and follow it stage by stage. Speak the user's language. Pass --lang en or --lang zh-CN on every installer invocation to select prompts; diagnostics and protocol fields stay English. Never read env or key files.
 
-Execution location labels: [LOCAL] = the user's local computer (Mac), where the installing agent, engine and relay run; [BOT-CLOUD] = Grok Bot's cloud computer (machine name cloud), where the Bot runs /workspace/agent-mesh/box/rn-cloud*.sh; [GROK-UI] = the Grok Bot interface, where the user creates routines and approves CopyToBox. install.sh, check.sh and uninstall.sh run on [LOCAL]. Each computer has its own clone and state. CopyToBox copies the signing key from [LOCAL] to [BOT-CLOUD]; never print its contents. The <team-name>/bot address is the relay on [LOCAL], not a cloud process.
+Execution location labels: [LOCAL] = the user's local computer (Mac), where the installing agent, engine and relay run; [BOT-CLOUD] = Grok Bot's cloud computer (machine name cloud), where the Bot runs /workspace/agent-mesh/box/rn-cloud*.sh; [GROK-UI] = the Grok Bot interface, where the user creates routines and approves CopyToBox. install.sh, check.sh, update.sh and uninstall.sh run on [LOCAL]. Each computer has its own clone and state. CopyToBox copies the signing key from [LOCAL] to [BOT-CLOUD]; never print its contents. The <team-name>/bot address is the relay on [LOCAL], not a cloud process.
 
 ## Install (for agents)
 
@@ -16,6 +16,7 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 - [AGENT-INSTALL.zh-CN.md](AGENT-INSTALL.zh-CN.md): the same runbook in Simplified Chinese.
 - [install.sh](install.sh): one command for the Mac side. Stops where the user must act and says what to do.
 - [check.sh](check.sh): read-only self-check, including that the team holds only this machine and cloud.
+- [update.sh](update.sh): updates an existing installation. Compares the relay, dsh plugin, cloud scripts and routine prompt with what is deployed; updates local parts itself and guides the user through cloud and prompt steps in a terminal. ./update.sh --plan changes nothing; exit 3 means a terminal answer is needed.
 - [prompts/routine.md](prompts/routine.md): the Grok Bot routine prompt (install.sh prints it).
 - [prompts/cloud-setup.md](prompts/cloud-setup.md): what the user sends to Grok Bot so it joins from its cloud machine (install.sh prints it filled in).
 - [prompts/routine.zh-CN.md](prompts/routine.zh-CN.md): Simplified Chinese routine prompt.
@@ -36,7 +37,7 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 
 ## Code
 
-- agent_relay.py: the Mac relay (standard library only). install.sh, uninstall.sh, check.sh.
+- agent_relay.py: the Mac relay (standard library only). install.sh, uninstall.sh, check.sh, update.sh (updates an existing installation; scripts/deploy_state.py keeps the record of what is deployed).
 - box/rn-cloud-setup.sh, box/rn-cloud.sh, box/rn-fetch.py: cloud side.
 - dsh/reason-network-bridge.mjs, dsh/mac-install.sh, dsh/mac-uninstall.sh: optional DeepSeek Harness plugin, its installer and uninstaller.
 - test_relay.py, box/test_rn_fetch.py, dsh/reason-network-bridge.test.mjs: offline tests.

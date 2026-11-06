@@ -77,6 +77,8 @@ dsh/mac-install.sh <team-name>
 
 The script runs tests with the app's runtime, backs up `~/.dsh/cordis.patch.yml` to `~/.dsh/backup-reason-network-bridge/`, copies the plugin to `~/.dsh/plugins/`, saves the original Reason Network MCP block for the uninstaller, and replaces it with the configuration below. It fills `<mac-home>` with the user's actual absolute home path. If a step fails after backup, it restores the patch. **Quit dsh completely (⌘Q) and reopen it**; the desktop app does not hot-reload plugins.
 
+To update an installed bridge, run `dsh/mac-install.sh --plugin-only` (`./update.sh` does this for you). It runs the tests, backs up the installed plugin and replaces only that file; `~/.dsh/cordis.patch.yml` and your bridge settings are left as they are. If any step fails, the previous plugin is restored. Then quit and reopen dsh.
+
 ```yaml
 - insert:
     - id: reason-network-bridge
@@ -125,5 +127,5 @@ It backs up `~/.dsh/cordis.patch.yml`, then swaps only the bridge block for the 
 
 - `reason-network-bridge.mjs`: plugin.
 - `reason-network-bridge.test.mjs`: offline tests run before installation. Manually: `ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" dsh/reason-network-bridge.test.mjs`.
-- `mac-install.sh`: installer.
+- `mac-install.sh`: installer; `--plugin-only` updates only the plugin file.
 - `mac-uninstall.sh`: uninstaller.

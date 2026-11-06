@@ -1,11 +1,17 @@
 """Installation checks with fake tools and a disposable home; never contact real services."""
+import hashlib
+import json
 import os
 import plistlib
+import pty
+import select
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -23,7 +29,8 @@ class Installation(unittest.TestCase):
         self.bin = self.base / "tools"
         self.bin.mkdir()
         for name in ("dirname", "sed", "head", "awk", "tar", "shasum", "openssl", "mkdir",
-                     "chmod", "cp", "date", "grep", "cat", "install", "sleep", "tail", "wc", "mktemp", "rm", "mv"):
+                     "chmod", "cp", "date", "grep", "cat", "install", "sleep", "tail", "wc", "mktemp", "rm", "mv",
+                     "cmp", "ps"):
             found = shutil.which(name)
             if found:
                 (self.bin / name).symlink_to(found)
@@ -41,21 +48,25 @@ class Installation(unittest.TestCase):
     def tool(self, name, body, path=None):
         path = path or self.bin / name
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or path.exists():
+            path.unlink()
         path.write_text("#!/bin/sh\n" + body + "\n")
         path.chmod(0o755)
         return path
 
     def engine(self):
         path = self.home / ".local/bin/reason-network"
-        self.tool("reason-network", 'case "$1" in --version) echo "reason-network $MOCK_VERSION" ;; invite) echo "For a cloud agent of yours send it: fake-invite" ;; *) exit 0 ;; esac', path)
+        self.tool("reason-network", 'case "$1" in --version) echo "reason-network $MOCK_VERSION" ;; '
+                                    'invite) echo "rn invite" >> "$CALL_LOG"; echo "For a cloud agent of yours send it: fake-invite" ;; '
+                                    'setup) echo "rn setup $*" >> "$CALL_LOG" ;; *) exit 0 ;; esac', path)
         cfg = self.home / ".reason/network/config.toml"
         cfg.parent.mkdir(parents=True)
         cfg.write_text('person = "demo"\n')
         return path
 
-    def run_script(self, script="install.sh", *args):
-        return subprocess.run(["/bin/bash", str(ROOT / script), *args], env=self.env,
-                              input="", capture_output=True, text=True, timeout=10)
+    def run_script(self, script="install.sh", *args, root=ROOT, timeout=10):
+        return subprocess.run(["/bin/bash", str(root / script), *args], env=self.env,
+                              input="", capture_output=True, text=True, timeout=timeout)
 
     def calls(self):
         path = self.base / "calls"
@@ -83,10 +94,41 @@ class Installation(unittest.TestCase):
         key = conf / "outbound.key"
         key.write_text("a" * 64 + "\n")
         key.chmod(0o600)
-        log = self.home / "Library/Logs/agent-relay.log"
-        self.tool("launchctl", f'echo "launchctl $*" >> "$CALL_LOG"; '
-                               f'[ "$1" = bootstrap ] && echo "agent-relay up" >> "{log}"; exit 0')
+        self.launchd()
         return key
+
+    def launchd(self):
+        """A launchctl that remembers whether the relay is loaded and which relay file each bootstrap started."""
+        self.state = self.base / "launchd"
+        self.state.mkdir(exist_ok=True)
+        log = self.home / "Library/Logs/agent-relay.log"
+        self.env["MOCK_LAUNCHD"] = str(self.state)
+        self.tool("launchctl", f"""echo "launchctl $*" >> "$CALL_LOG"
+S="$MOCK_LAUNCHD"
+case "$1" in
+  print)
+    case "$2" in
+      */com.local.agent-relay) [ -f "$S/loaded" ] || exit 113; [ -f "$S/dead" ] || echo "state = running" ;;
+    esac ;;
+  bootout) rm -f "$S/loaded" ;;
+  bootstrap)
+    rm -f "$S/dead"
+    if [ -f "$S/fail-bootstrap" ]; then rm -f "$S/fail-bootstrap"; exit 5; fi
+    if [ -f "$S/hang" ]; then rm -f "$S/hang"; : > "$S/hanging"; while [ ! -f "$S/go" ]; do /bin/sleep 0.1; done; fi
+    : > "$S/loaded"
+    python3 -c 'import hashlib, plistlib, sys; p = plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"][1]; print(hashlib.sha256(open(p, "rb").read()).hexdigest())' "$3" >> "$S/started"
+    if [ -f "$S/die" ]; then rm -f "$S/die"; : > "$S/dead"; fi
+    if [ -f "$S/no-up" ]; then rm -f "$S/no-up"; else echo "agent-relay up" >> "{log}"; fi ;;
+esac
+exit 0""")
+        self.tool("sleep", "exit 0")
+
+    def started(self):
+        path = self.state / "started"
+        return path.read_text().split() if path.exists() else []
+
+    def loaded(self):
+        return (self.state / "loaded").exists()
 
     def test_rotate_key_replaces_key_restarts_relay_and_explains_cloud_copy(self):
         key = self.configured()
@@ -381,6 +423,542 @@ class Installation(unittest.TestCase):
         self.assertEqual(patch.read_text(), "- before: 1\n- after: 2\n- added later: 3\n")
         self.assertFalse(plugin.exists())
         self.assertIn("dsh bridge block", result.stdout)
+
+    def relay_files(self):
+        return (self.home / ".local/lib/agent-mesh/agent_relay.py",
+                self.home / "Library/LaunchAgents/com.local.agent-relay.plist")
+
+    def record(self):
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def write_record(self, data):
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        path.write_text(json.dumps(data))
+
+    def mark(self, repo, field, state, lang="en"):
+        subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "mark", field, state, "--lang", lang],
+                       env=self.env, check=True)
+
+    def repo(self):
+        repo = self.base / "repo"
+        shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+        (repo / "check.sh").write_text("#!/bin/bash\necho 'RESULT ok'\n")
+        self.git = self.base / "git"
+        self.git.mkdir()
+        (self.git / "head").write_text("a" * 40 + "\n")
+        (self.git / "upstream").write_text("a" * 40 + "\n")
+        self.env.update(GIT_STATE=str(self.git), PYTHONDONTWRITEBYTECODE="1")
+        self.tool("git", GIT_STUB)
+        return repo
+
+    def installed(self, record=True):
+        self.configured()
+        repo = self.repo()
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if record:
+            for field in ("cloud", "cloud_setup", "prompt"):
+                self.mark(repo, field, "confirmed")
+        (self.base / "calls").unlink()
+        return repo
+
+    def call_lines(self):
+        return self.calls().splitlines()
+
+    def service_changes(self):
+        return [line for line in self.call_lines() if line.startswith(("launchctl bootout", "launchctl bootstrap"))]
+
+    def run_tty(self, root, *args, answers=()):
+        master, slave = pty.openpty()
+        try:
+            os.write(master, "".join(answer + "\n" for answer in answers).encode() + b"\x04")
+            return subprocess.run(["/bin/bash", str(root / "update.sh"), *args], env=self.env, stdin=slave,
+                                  capture_output=True, text=True, timeout=60)
+        finally:
+            os.close(slave)
+            os.close(master)
+
+    def run_tty_until(self, root, *args, answers=(), wait_for="", sig=signal.SIGTERM):
+        master, slave = pty.openpty()
+        try:
+            os.write(master, "".join(answer + "\n" for answer in answers).encode())
+            proc = subprocess.Popen(["/bin/bash", str(root / "update.sh"), *args], env=self.env, stdin=slave,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            seen, deadline = b"", time.time() + 30
+            while wait_for.encode() not in seen and time.time() < deadline:
+                ready, _, _ = select.select([proc.stderr], [], [], 0.5)
+                if ready:
+                    seen += os.read(proc.stderr.fileno(), 4096)
+            proc.send_signal(sig)
+            out, err = proc.communicate(timeout=30)
+            return proc.returncode, out.decode(), (seen + err).decode()
+        finally:
+            os.close(slave)
+            os.close(master)
+
+    def sha(self, path):
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    def test_restart_relay_rolls_back_each_failed_start(self):
+        repo = self.installed()
+        relay, plist = self.relay_files()
+        old_relay, old_plist = relay.read_bytes(), plist.read_bytes()
+        old_hash = hashlib.sha256(old_relay).hexdigest()
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        for flag in ("no-up", "fail-bootstrap", "die"):
+            (self.state / flag).write_text("")
+            result = self.run_script("install.sh", "--restart-relay", root=repo)
+            self.assertNotEqual(result.returncode, 0, flag)
+            self.assertIn("previous relay restored", result.stdout, flag + result.stdout)
+            self.assertEqual(relay.read_bytes(), old_relay, flag)
+            self.assertEqual(plist.read_bytes(), old_plist, flag)
+            self.assertTrue(self.loaded(), flag)
+            self.assertEqual(self.started()[-1], old_hash, flag)
+            self.assertFalse((relay.parent / "rollback").exists(), flag)
+            lines = self.service_changes()
+            self.assertEqual(lines[-2].split()[1], "bootout", flag)
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(relay.read_bytes(), (repo / "agent_relay.py").read_bytes())
+        self.assertEqual(self.started()[-1], self.sha(repo / "agent_relay.py"))
+
+    def test_restart_relay_without_a_backup_changes_nothing(self):
+        repo = self.installed()
+        relay, plist = self.relay_files()
+        old = relay.read_bytes()
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        relay.parent.chmod(0o555)
+        try:
+            result = self.run_script("install.sh", "--restart-relay", root=repo)
+        finally:
+            relay.parent.chmod(0o755)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not save a copy of the current relay; nothing changed", result.stdout)
+        self.assertEqual(relay.read_bytes(), old)
+        self.assertEqual(self.service_changes(), [])
+
+    def test_restart_relay_finishes_or_refuses_a_leftover_switch(self):
+        repo = self.installed()
+        relay, plist = self.relay_files()
+        good = relay.read_bytes()
+        rollback = relay.parent / "rollback"
+
+        def leftover(tamper=False):
+            rollback.mkdir()
+            (rollback / "loaded").write_text("1\n")
+            (rollback / "agent_relay.py").write_bytes(good)
+            (rollback / "agent.plist").write_bytes(plist.read_bytes())
+            sums = "".join(f"{self.sha(rollback / name)}  {name}\n" for name in ("loaded", "agent_relay.py", "agent.plist"))
+            (rollback / "SHA256SUMS").write_text(sums)
+            if tamper:
+                (rollback / "agent_relay.py").write_bytes(b"tampered")
+            relay.write_bytes(b"half-switched")
+            (self.state / "loaded").unlink(missing_ok=True)
+
+        leftover(tamper=True)
+        (relay.parent / "rollback.tmp").mkdir()
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed verification", result.stdout)
+        self.assertEqual(relay.read_bytes(), b"half-switched")
+        self.assertTrue(rollback.exists())
+        for path in rollback.iterdir():
+            path.unlink()
+        rollback.rmdir()
+        leftover()
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("did not finish; restoring the previous relay first", result.stdout)
+        self.assertEqual(self.started()[-2], hashlib.sha256(good).hexdigest())
+        self.assertEqual(relay.read_bytes(), (repo / "agent_relay.py").read_bytes())
+        self.assertFalse(rollback.exists())
+        self.assertFalse((relay.parent / "rollback.tmp").exists())
+
+    def test_restart_relay_interrupted_mid_switch_restores_the_previous_relay(self):
+        repo = self.installed()
+        relay, plist = self.relay_files()
+        old_relay, old_plist = relay.read_bytes(), plist.read_bytes()
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        (self.state / "hang").write_text("")
+        proc = subprocess.Popen(["/bin/bash", str(repo / "install.sh"), "--restart-relay"], env=self.env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 30
+        while not (self.state / "hanging").exists() and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue((self.state / "hanging").exists())
+        self.assertFalse(self.loaded())
+        proc.send_signal(signal.SIGTERM)
+        (self.state / "go").write_text("")
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 143, out + err)
+        self.assertIn("interrupted; restoring the previous relay", out)
+        self.assertEqual((relay.read_bytes(), plist.read_bytes()), (old_relay, old_plist))
+        self.assertTrue(self.loaded())
+        self.assertEqual(self.started()[-1], hashlib.sha256(old_relay).hexdigest())
+        self.assertFalse((relay.parent / "rollback").exists())
+
+    def test_update_finishes_a_switch_killed_after_the_files_moved(self):
+        repo = self.installed()
+        relay, plist = self.relay_files()
+        rollback = relay.parent / "rollback"
+        rollback.mkdir()
+        (rollback / "loaded").write_text("1\n")
+        (rollback / "agent_relay.py").write_bytes(relay.read_bytes())
+        (rollback / "agent.plist").write_bytes(plist.read_bytes())
+        (rollback / "SHA256SUMS").write_text(
+            "".join(f"{self.sha(rollback / name)}  {name}\n" for name in ("loaded", "agent_relay.py", "agent.plist")))
+        (self.state / "loaded").unlink()
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("already up to date", result.stdout)
+        self.assertTrue(self.loaded())
+        self.assertFalse(rollback.exists())
+
+    def test_deploy_state_refuses_confirmations_that_no_longer_match(self):
+        repo = self.installed(record=False)
+        state = [sys.executable, str(repo / "scripts/deploy_state.py")]
+        run = lambda *args: subprocess.run(state + list(args), env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(run("mark", "prompt", "confirmed", "--expect", "0" * 64).returncode, 0)
+        self.assertNotEqual(run("mark", "cloud", "confirmed", "--if-pending").returncode, 0)
+        self.assertIsNone(self.record())
+        self.assertEqual(run("mark", "cloud", "pending").returncode, 0)
+        with open(repo / "box/rn-fetch.py", "a") as stream:
+            stream.write("\n")
+        self.assertNotEqual(run("mark", "cloud", "confirmed", "--if-pending").returncode, 0)
+        self.assertEqual(self.record()["cloud"]["state"], "pending")
+        shown = run("digest", "cloud").stdout.strip()
+        self.assertEqual(run("mark", "cloud", "confirmed", "--expect", shown).returncode, 0)
+        self.assertEqual(self.record()["cloud"], {"hash": shown, "state": "confirmed"})
+
+    def test_update_ignores_a_damaged_unfinished_update_record(self):
+        repo = self.installed()
+        data = self.record()
+        data["txn"] = {"stage": "routine_paused", "need": ["prompt"], "lang": "en", "commit": "x", "target": {}}
+        self.write_record(data)
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("already up to date", result.stdout)
+        self.assertIn("damaged and was ignored", result.stderr)
+        self.assertEqual(self.service_changes(), [])
+
+    def test_installer_records_cloud_and_prompt_as_pending_only(self):
+        self.configured()
+        self.assertEqual(self.run_script("install.sh", "--cloud-prompt").returncode, 0)
+        data = self.record()
+        self.assertEqual((data["cloud"]["state"], data["cloud_setup"]["state"]), ("pending", "pending"))
+        self.assertNotIn("prompt", data)
+        result = self.run_script("install.sh", "--webhook", "--lang", "zh-CN")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = self.record()
+        self.assertEqual((data["prompt"]["state"], data["lang"]), ("pending", "zh-CN"))
+        self.mark(ROOT, "cloud", "confirmed")
+        self.mark(ROOT, "prompt", "confirmed", "zh-CN")
+        self.assertEqual(self.run_script("install.sh", "--cloud-prompt").returncode, 0)
+        self.assertEqual(self.run_script("install.sh", "--webhook", "--lang", "zh-CN").returncode, 0)
+        data = self.record()
+        self.assertEqual((data["cloud"]["state"], data["prompt"]["state"]), ("pending", "pending"))
+        self.assertEqual(self.run_script("uninstall.sh", "-y").returncode, 0)
+        self.assertIsNone(self.record())
+
+    def test_update_reports_up_to_date_without_touching_anything(self):
+        repo = self.installed()
+        for args in (("--no-pull",), ("--no-pull", "--plan")):
+            result = self.run_script("update.sh", *args, root=repo)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("already up to date" if len(args) == 1 else "== plan", result.stdout)
+        self.assertEqual(self.service_changes(), [])
+        self.assertNotIn("rn setup", self.calls())
+        self.assertNotIn("rn invite", self.calls())
+
+    def test_update_relay_only_runs_unattended(self):
+        repo = self.installed()
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        relay, _ = self.relay_files()
+        self.assertEqual(relay.read_bytes(), (repo / "agent_relay.py").read_bytes())
+        self.assertNotIn("[GROK-UI]", result.stdout)
+        self.assertRegex(result.stdout, r"relay\s+updated")
+        self.assertIn("RESULT ok", result.stdout)
+        self.assertNotIn("rn setup", self.calls())
+        self.assertNotIn("rn invite", self.calls())
+
+    def test_update_compares_generated_output(self):
+        repo = self.installed()
+        generator = repo / "scripts/write_launch_agent.py"
+        original = generator.read_text()
+        generator.write_text(original.replace('"ThrottleInterval": 30', '"ThrottleInterval": 31'))
+        self.assertRegex(self.run_script("update.sh", "--no-pull", "--plan", root=repo).stdout, r"relay\s+changed")
+        generator.write_text(original)
+        prompt = repo / "prompts/routine.md"
+        text = prompt.read_text()
+        prompt.write_text(text + "\nA note outside the prompt block.\n")
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("already up to date", result.stdout)
+        fence = text.index("```\n") + 4
+        prompt.write_text(text[:fence] + "Changed. " + text[fence:])
+        self.assertRegex(self.run_script("update.sh", "--no-pull", "--plan", root=repo).stdout, r"routine prompt\s+changed")
+
+    def test_update_plan_and_non_terminal_never_change_the_deployment(self):
+        repo = self.installed(record=False)
+        result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"cloud scripts\s+unknown")
+        self.assertIsNone(self.record())
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIsNone(self.record())
+        self.mark(repo, "cloud_setup", "pending")
+        data = self.record()
+        data["txn"] = {"stage": "routine_paused", "relay_was_loaded": True, "need": ["prompt"], "lang": "en",
+                       "commit": "a" * 40, "target": {}}
+        self.write_record(data)
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        before = path.read_bytes()
+        for args in (("--no-pull", "--plan"), ("--no-pull",)):
+            result = self.run_script("update.sh", *args, root=repo)
+            self.assertEqual(result.returncode, 0 if "--plan" in args else 3, result.stdout + result.stderr)
+            self.assertIn("unfinished update stopped at 'routine_paused'", result.stdout)
+            self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.service_changes(), [])
+        path.write_text("{not json")
+        result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("unreadable", result.stderr)
+
+    def test_update_guided_flow_runs_in_order_and_records_each_step(self):
+        repo = self.installed(record=False)
+        result = self.run_tty(repo, "--no-pull", answers=["y"] * 5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = self.record()
+        for field in ("cloud", "cloud_setup", "prompt"):
+            self.assertEqual(data[field]["state"], "confirmed", field)
+        self.assertNotIn("txn", data)
+        lines = self.service_changes()
+        self.assertEqual(lines[0].split()[1], "bootout")
+        self.assertEqual(lines[-1].split()[1], "bootstrap")
+        self.assertIn("a" * 40, result.stdout)
+        self.assertIn(self.sha(repo / "box/rn-cloud.sh"), result.stdout)
+        self.assertTrue(self.loaded())
+
+    def test_update_stop_restores_the_relay_and_rerun_continues(self):
+        repo = self.installed(record=False)
+        relay, _ = self.relay_files()
+        result = self.run_tty(repo, "--no-pull", answers=["y", "n"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertTrue(self.loaded())
+        self.assertEqual(self.started()[-1], self.sha(relay))
+        self.assertEqual(self.record()["txn"]["stage"], "relay_stopped")
+        self.assertIn("stopped at 'relay_stopped'", result.stdout)
+        result = self.run_tty(repo, "--no-pull", answers=["y"] * 4)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("continuing the update that stopped at 'relay_stopped'", result.stdout)
+        self.assertNotIn("txn", self.record())
+
+    def paused_after_cloud(self):
+        repo = self.installed(record=False)
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", "n"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("The routine is still paused", result.stdout)
+        self.assertTrue(self.loaded())
+        data = self.record()
+        self.assertEqual((data["txn"]["stage"], data["cloud"]["state"]), ("cloud_done", "confirmed"))
+        (self.base / "calls").unlink()
+        return repo
+
+    def test_update_rerun_stops_the_restored_relay_before_continuing(self):
+        repo = self.paused_after_cloud()
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.service_changes()[0].split()[1], "bootout")
+        self.assertIn("still paused", result.stderr)
+        self.assertNotIn("Send this to Grok Bot", result.stdout)
+        self.assertNotIn("txn", self.record())
+
+    def test_update_rerun_redoes_a_step_whose_target_moved(self):
+        repo = self.paused_after_cloud()
+        with open(repo / "box/rn-cloud.sh", "a") as stream:
+            stream.write("\n")
+        result = self.run_tty(repo, "--no-pull", answers=["y"] * 4)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Send this to Grok Bot", result.stdout)
+        self.assertEqual(self.record()["cloud"]["hash"],
+                         subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "digest", "cloud"],
+                                        env=self.env, capture_output=True, text=True).stdout.strip())
+
+    def test_update_terminated_while_waiting_restores_the_relay(self):
+        repo = self.installed(record=False)
+        code, out, err = self.run_tty_until(repo, "--no-pull", answers=["y"], wait_for="Pause the routine")
+        self.assertEqual(code, 143, out + err)
+        self.assertTrue(self.loaded())
+        self.assertEqual(self.record()["txn"]["stage"], "relay_stopped")
+        self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
+
+    def test_update_after_a_kill_reclaims_the_lock_and_continues(self):
+        repo = self.installed()
+        data = self.record()
+        data["txn"] = {"stage": "routine_paused", "relay_was_loaded": True, "need": ["prompt"], "lang": "en",
+                       "commit": "a" * 40, "target": {}}
+        self.write_record(data)
+        (self.state / "loaded").unlink()
+        lock = self.home / ".local/lib/agent-mesh/update.lock"
+        lock.mkdir()
+        (lock / "pid").write_text("999999\n")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("removing the lock", result.stdout)
+        self.assertTrue(self.loaded())
+        self.assertNotIn("txn", self.record())
+        self.assertFalse(lock.exists())
+        lock.mkdir()
+        holder = subprocess.Popen(["/bin/sh", "-c", "sleep 30; :", "update.sh"])
+        try:
+            (lock / "pid").write_text(f"{holder.pid}\n")
+            for ps in ("present", "missing"):
+                if ps == "missing":
+                    (self.bin / "ps").unlink(missing_ok=True)
+                result = self.run_script("update.sh", "--no-pull", root=repo)
+                self.assertEqual(result.returncode, 1, ps)
+                self.assertIn("another ./update.sh is running", result.stderr, ps)
+                self.assertTrue(lock.exists(), ps)
+        finally:
+            holder.kill()
+            holder.wait()
+
+    def test_update_refuses_cloud_changes_the_cloud_cannot_pull(self):
+        repo = self.installed()
+        before = self.record()
+        with open(repo / "box/rn-cloud.sh", "a") as stream:
+            stream.write("\n")
+        (self.git / "boxdirty").write_text(" M box/rn-cloud.sh\n")
+        result = self.run_tty(repo, "--no-pull")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("box/ has uncommitted changes", result.stderr)
+        (self.git / "boxdirty").unlink()
+        (self.git / "upstream").write_text("b" * 40 + "\n")
+        result = self.run_tty(repo, "--no-pull")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("not at its upstream commit", result.stderr)
+        self.assertEqual(self.service_changes(), [])
+        self.assertEqual(self.record(), before)
+        (self.git / "upstream").write_text("a" * 40 + "\n")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "n"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.record()["cloud"], before["cloud"])
+        self.assertTrue(self.loaded())
+
+    def test_update_asks_once_about_steps_the_installer_printed(self):
+        repo = self.installed(record=False)
+        for field in ("cloud", "cloud_setup", "prompt"):
+            self.mark(repo, field, "pending")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = self.record()
+        for field in ("cloud", "cloud_setup", "prompt"):
+            self.assertEqual(data[field]["state"], "confirmed", field)
+        self.assertEqual(self.service_changes(), [])
+        data["prompt"]["state"] = "pending"
+        self.write_record(data)
+        result = self.run_tty(repo, "--no-pull", answers=["n", "y", "y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Replace the prompt saved in the routine", result.stdout)
+        self.assertEqual(self.record()["prompt"]["state"], "confirmed")
+
+    def test_update_pulls_once_and_hands_over_to_the_new_script(self):
+        repo = self.installed()
+        (self.git / "dirty").write_text(" M install.sh\n")
+        result = self.run_script("update.sh", root=repo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("uncommitted changes", result.stderr)
+        self.assertNotIn("git pull", self.calls())
+        (self.git / "dirty").unlink()
+        (self.git / "pull-fail").write_text("")
+        result = self.run_script("update.sh", root=repo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("git pull --ff-only failed", result.stderr)
+        (self.git / "pull-fail").unlink()
+        newer = self.base / "newer-update.sh"
+        newer.write_text('#!/bin/bash\nfor a in "$@"; do echo "NEW-SCRIPT [$a]"; done\n')
+        (self.git / "pull.sh").write_text(f"cp '{newer}' '{repo}/update.sh'\n")
+        (self.git / "upstream").write_text("b" * 40 + "\n")
+        (self.base / "calls").unlink()
+        result = self.run_script("update.sh", "--lang", "zh-CN", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("NEW-SCRIPT [--no-pull]\nNEW-SCRIPT [--lang]\nNEW-SCRIPT [zh-CN]", result.stdout)
+        self.assertEqual(self.calls().count("git pull"), 1)
+        self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
+
+    def test_update_stops_when_the_engine_version_differs(self):
+        repo = self.installed()
+        self.env["MOCK_VERSION"] = "0.12.17"
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("this release requires 0.10.7", result.stderr)
+        self.assertEqual(self.service_changes(), [])
+
+    def test_update_replaces_only_the_dsh_plugin_file(self):
+        repo = self.installed()
+        app = self.home / "Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
+        self.tool("app", "echo 'ℹ pass 7'", app)
+        patch = self.home / ".dsh/cordis.patch.yml"
+        patch.parent.mkdir(parents=True)
+        patch.write_text("# === reason-network MCP BEGIN ===\nold\n# === reason-network MCP END ===\n")
+        self.assertEqual(self.run_script("dsh/mac-install.sh", "demo", root=repo).returncode, 0)
+        patch.write_text(patch.read_text().replace("        allowPeople:", "        pollMs: 2000\n        allowPeople:"))
+        before = patch.read_bytes()
+        with open(repo / "dsh/reason-network-bridge.mjs", "a") as stream:
+            stream.write("\n")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plugin = self.home / ".dsh/plugins/reason-network-bridge.mjs"
+        self.assertEqual(plugin.read_bytes(), (repo / "dsh/reason-network-bridge.mjs").read_bytes())
+        self.assertEqual(patch.read_bytes(), before)
+        self.assertRegex(result.stdout, r"dsh plugin\s+updated")
+        self.assertEqual(self.service_changes(), [])
+
+    def test_dsh_installer_keeps_the_previous_plugin_when_it_fails(self):
+        patch, _, plugin = self.dsh_installed()
+        plugin.write_bytes(b"previous plugin")
+        app = self.home / "Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
+        self.tool("app", "echo 'ℹ fail 1'; exit 1", app)
+        result = self.run_script("dsh/mac-install.sh", "--plugin-only")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(plugin.read_bytes(), b"previous plugin")
+        self.tool("app", "echo 'ℹ pass 7'", app)
+        begin = "# === reason-network-bridge BEGIN (replaces reason-network's MCP block) ===\n"
+        broken = begin + "- extra: 0\n" + patch.read_text()
+        patch.write_text(broken)
+        result = self.run_script("dsh/mac-install.sh", "demo")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(plugin.read_bytes(), b"previous plugin")
+        self.assertEqual(patch.read_text(), broken)
+        result = self.run_script("dsh/mac-install.sh", "--plugin-only")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not hold exactly one bridge block", result.stdout)
+        self.assertEqual(plugin.read_bytes(), b"previous plugin")
+        self.assertEqual(list(plugin.parent.glob(".reason-network-bridge.mjs.*")), [])
+
+
+GIT_STUB = r'''[ "$1" = -C ] && shift 2
+echo "git $*" >> "$CALL_LOG"
+S="$GIT_STATE"
+case "$*" in
+  "rev-parse --is-inside-work-tree") echo true ;;
+  "rev-parse --abbrev-ref @{u}") echo origin/main ;;
+  "rev-parse @{u}") cat "$S/upstream" ;;
+  "rev-parse HEAD") cat "$S/head" ;;
+  "rev-parse --short HEAD") head -c 7 "$S/head"; echo ;;
+  "status --porcelain --untracked-files=no") [ ! -f "$S/dirty" ] || cat "$S/dirty" ;;
+  "status --porcelain -- box") [ ! -f "$S/boxdirty" ] || cat "$S/boxdirty" ;;
+  "pull --ff-only") [ ! -f "$S/pull-fail" ] || exit 1; [ ! -f "$S/pull.sh" ] || /bin/sh "$S/pull.sh"; cp "$S/upstream" "$S/head" ;;
+  *) echo "unexpected git $*" >> "$CALL_LOG"; exit 99 ;;
+esac'''
 
 if __name__ == "__main__":
     unittest.main()

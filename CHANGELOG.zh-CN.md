@@ -4,6 +4,26 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.4.0 — 2026-11-06
+
+`./update.sh` 直接更新已有安装，不必重装。
+
+### 新增
+
+- `./update.sh` 把 relay、dsh 插件、云端脚本和 routine 提示词与已部署的版本比较。relay 和 dsh 插件由它自己更新；云端脚本或提示词变化时，在终端引导你依次停止 relay、暂停 routine、让 Grok Bot 拉取与本地完全相同的提交、粘贴新提示词、恢复 routine、启动 relay。`--plan` 只显示比较结果；中断的更新再次运行时从停下的步骤继续。已确认的版本记录在 `~/.local/lib/agent-mesh/deployed.json`。
+- `./install.sh --restart-relay` 安装当前仓库的 relay 并重启；新 relay 起不来时换回原来的版本。
+- `dsh/mac-install.sh --plugin-only` 只替换已安装的插件文件，保留 `~/.dsh/cordis.patch.yml`。
+
+### 变更
+
+- `install.sh` 每次（重新）启动 relay 前都先备份已安装的 relay，等新 relay 报告已启动；没有启动就换回原来的文件。
+- `install.sh` 把它打印的云端脚本和 routine 提示词记为待确认，由 `./update.sh` 询问是否已应用。`./uninstall.sh` 删除 relay 时一并删除这份记录。
+- `dsh/mac-install.sh` 某一步失败时，除了 patch 也会恢复原来的插件。
+
+### 升级说明
+
+relay、云端脚本和 routine 提示词都没有变化。`update.sh` 是新增的，所以先在本地仓库运行一次 `git pull`，再在终端运行 `./update.sh --lang <en|zh-CN>`。还没有部署记录时，它把云端脚本和提示词视为未知，引导步骤会走一遍，并询问云端是否已按本版本完成初始化（v0.1.0 以来云端初始化无需迁移，正常运行中的安装可以回答是）。此后每次升级都用 `./update.sh`。
+
 ## v0.3.0 — 2026-11-05
 
 dsh 插件可以干净卸载；DeepSeek Harness 升级导致插件失效时，日志会写明原因。

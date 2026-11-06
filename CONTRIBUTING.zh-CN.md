@@ -32,7 +32,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 test_relay.py
 python3 box/test_rn_fetch.py
 node dsh/reason-network-bridge.test.mjs
-for script in install.sh check.sh uninstall.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh; do bash -n "$script" || exit; done
+for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh; do bash -n "$script" || exit; done
 ```
 
 dsh 测试也可以用[插件指南](dsh/README.zh-CN.md)中的 App 自带运行时。安装器测试使用临时 home 和模拟的系统、网络、服务命令，不安装软件或接触真实服务。文档检查覆盖语言配对、相对链接和锚点、提示词占位符和协议向量；不能代替人工核对翻译含义。

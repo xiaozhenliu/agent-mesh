@@ -4,6 +4,26 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.0 — 2026-11-06
+
+`./update.sh` updates an existing installation without reinstalling.
+
+### Added
+
+- `./update.sh` compares the relay, the dsh plugin, the cloud scripts and the routine prompt with what is deployed. It updates the relay and the dsh plugin itself; when the cloud scripts or the prompt change, it guides you in a terminal through stopping the relay, pausing the routine, having Grok Bot pull the exact local commit, pasting the new prompt, resuming the routine and starting the relay. `--plan` shows the comparison only; interrupted updates resume where they stopped. What was confirmed is recorded in `~/.local/lib/agent-mesh/deployed.json`.
+- `./install.sh --restart-relay` installs this checkout's relay and restarts it; if the new relay does not come up, the previous one is restored.
+- `dsh/mac-install.sh --plugin-only` replaces only the installed plugin file and keeps `~/.dsh/cordis.patch.yml`.
+
+### Changed
+
+- Every relay (re)start by `install.sh` now backs up the installed relay first, waits for the new one to report that it is up, and restores the previous files if it does not.
+- `install.sh` records the cloud scripts and the routine prompt it prints as pending; `./update.sh` asks whether they were applied. `./uninstall.sh` removes the record with the relay.
+- `dsh/mac-install.sh` also restores the previous plugin, not only the patch, when a step fails.
+
+### Upgrade notes
+
+The relay, the cloud scripts and the routine prompt are unchanged. `update.sh` is new, so run `git pull` in the local repository once, then `./update.sh --lang <en|zh-CN>` in a terminal. With no record yet, it treats the cloud scripts and the prompt as unknown and runs the guided steps once, and asks whether the cloud side is set up for this version (no cloud setup migration is needed since v0.1.0, so a working installation can answer yes). From then on, `./update.sh` covers every upgrade.
+
 ## v0.3.0 — 2026-11-05
 
 The dsh bridge can now be removed cleanly and says when a DeepSeek Harness update breaks it.

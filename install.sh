@@ -7,6 +7,8 @@
 #   ./install.sh --purge-copies   delete the relay's kept copies of forwarded messages (re-forward then says no-copy)
 #   --repo-url https://...       public distribution URL accessible from the Bot's cloud computer
 #   ./install.sh --version      print agent-mesh and pinned Reason Network versions; no installation
+#   ./install.sh --restart-relay  (used by update.sh) install this checkout's relay and restart it; rolls back on failure
+#   ./install.sh --preflight      (used by update.sh) check this Mac and the existing installation; changes nothing
 # --lang selects prompt language in every mode. Default: AGENT_MESH_LANG, otherwise en. Diagnostics stay English.
 # The team name is also your name inside the team: 1-40 chars, lowercase letters, digits and '-', not your real
 # name. It is fixed once the team exists.
@@ -23,6 +25,7 @@ CONF_DIR="$HOME/.config/agent-relay"; ENV_FILE="$CONF_DIR/env"; KEY_FILE="$CONF_
 LIB_DIR="$HOME/.local/lib/agent-mesh"; RELAY="$LIB_DIR/agent_relay.py"
 LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/agent-relay.log"
+ROLLBACK="$LIB_DIR/rollback"
 CFG="$HOME/.reason/network/config.toml"
 export REASON_NETWORK_NO_PROMPT=1
 
@@ -37,10 +40,12 @@ while [ $# -gt 0 ]; do
     --cloud-prompt) MODE=cloud; shift ;;
     --rotate-key) MODE=rotate; shift ;;
     --purge-copies) MODE=purge; shift ;;
+    --restart-relay) MODE=restart; shift ;;
+    --preflight) MODE=preflight; shift ;;
     --repo-url) REPO_URL="${2:?public HTTPS repository URL}"; shift 2 ;;
     --version) echo "agent-mesh $PROJECT_VERSION (Reason Network ${VERSION#v})"; exit 0 ;;
     --lang) [ $# -ge 2 ] || { echo "install: --lang needs en or zh-CN" >&2; exit 2; }; DOC_LANG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1"; sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
@@ -95,23 +100,130 @@ EOF
   )
 }
 
-write_plist() {
-  "$PYTHON" "$HERE/scripts/write_launch_agent.py" "$RELAY" "$PLIST"
-  plutil -lint "$PLIST" >/dev/null
+record_pending() {
+  "$PYTHON" "$HERE/scripts/deploy_state.py" mark "$1" pending --lang "$DOC_LANG" \
+    || echo "note: could not update $LIB_DIR/deployed.json; ./update.sh will ask about this step"
+}
+
+service() { echo "gui/$(id -u)/$LABEL"; }
+relay_loaded() { launchctl print "$(service)" >/dev/null 2>&1; }
+relay_running() { launchctl print "$(service)" 2>/dev/null | grep 'state = running' >/dev/null; }
+
+log_inode() { "$PYTHON" -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$LOG"; }
+
+log_mark() {
+  LOG_INODE=""; LOG_SIZE=0
+  if [ -f "$LOG" ]; then LOG_INODE="$(log_inode)"; LOG_SIZE="$(wc -c < "$LOG")"; fi
+}
+
+log_since() {
+  [ -f "$LOG" ] || return 0
+  if [ -n "$LOG_INODE" ] && [ "$(log_inode)" = "$LOG_INODE" ]; then
+    tail -c +"$((LOG_SIZE + 1))" "$LOG"
+  else
+    cat "$LOG"
+  fi
+}
+
+bootstrap_and_wait() {
+  log_mark
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" || { echo "launchctl bootstrap failed"; return 1; }
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    if log_since | grep "agent-relay up" >/dev/null; then
+      sleep 3
+      relay_running && return 0
+      echo "the relay reported 'agent-relay up' but is no longer running"
+      return 1
+    fi
+  done
+  echo "relay did not report 'agent-relay up' within 10 s"
+  return 1
+}
+
+save_copy() {
+  [ -f "$2" ] || return 0
+  cp -p "$2" "$1/$3" && cmp -s "$2" "$1/$3" && ( cd "$1" && shasum -a 256 "$3" >> SHA256SUMS )
+}
+
+backup_relay() {
+  local tmp="$ROLLBACK.tmp"
+  rm -rf "$tmp"
+  mkdir -p "$tmp" || return 1
+  if relay_loaded; then echo 1 > "$tmp/loaded"; else echo 0 > "$tmp/loaded"; fi
+  ( cd "$tmp" && shasum -a 256 loaded > SHA256SUMS ) \
+    && save_copy "$tmp" "$RELAY" agent_relay.py && save_copy "$tmp" "$PLIST" agent.plist \
+    && mv "$tmp" "$ROLLBACK"
+}
+
+restore_file() {
+  if [ -f "$ROLLBACK/$1" ]; then
+    cp -p "$ROLLBACK/$1" "$2.restore.$$" && mv -f "$2.restore.$$" "$2"
+  else
+    rm -f "$2"
+  fi
+}
+
+restore_relay() {
+  ( cd "$ROLLBACK" && shasum -a 256 -c --status SHA256SUMS ) \
+    || { echo "the saved copy in $ROLLBACK failed verification; nothing was restored, restore it by hand"; return 1; }
+  launchctl bootout "$(service)" 2>/dev/null || true
+  if relay_loaded; then echo "could not unload the relay service; the previous files stay in $ROLLBACK"; return 1; fi
+  restore_file agent_relay.py "$RELAY" && restore_file agent.plist "$PLIST" \
+    || { echo "could not put the previous files back from $ROLLBACK"; return 1; }
+  if [ "$(cat "$ROLLBACK/loaded")" = 1 ] && [ -f "$PLIST" ]; then
+    bootstrap_and_wait || { echo "the previous relay did not come back up; see $LOG"; return 1; }
+  fi
+  rm -rf "$ROLLBACK"
+}
+
+relay_interrupted() {
+  trap '' INT TERM HUP
+  echo
+  echo "interrupted; restoring the previous relay"
+  restore_relay || echo "the previous relay was not fully restored; see the lines above"
+  exit "$1"
 }
 
 start_relay() {
-  install -m 644 "$HERE/agent_relay.py" "$RELAY"
-  write_plist
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  before=0; [ -f "$LOG" ] && before=$(wc -l < "$LOG")
-  launchctl bootstrap "gui/$(id -u)" "$PLIST"
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    sleep 1
-    if tail -n +"$((before + 1))" "$LOG" 2>/dev/null | grep -q "agent-relay up"; then echo "relay up (log: $LOG)"; return 0; fi
-  done
-  echo "relay did not report 'agent-relay up' within 10 s. Last log lines:"
+  mkdir -p "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
+  if [ -d "$ROLLBACK" ]; then
+    echo "an earlier relay switch did not finish; restoring the previous relay first"
+    restore_relay || return 1
+  fi
+  if ! backup_relay; then
+    rm -rf "$ROLLBACK.tmp" "$ROLLBACK"
+    echo "could not save a copy of the current relay; nothing changed"
+    return 1
+  fi
+  local new_relay="" new_plist=""
+  if ! { new_relay="$(mktemp "$LIB_DIR/.agent_relay.py.XXXXXX")" \
+      && new_plist="$(mktemp "$HOME/Library/LaunchAgents/.$LABEL.XXXXXX")" \
+      && install -m 644 "$HERE/agent_relay.py" "$new_relay" \
+      && "$PYTHON" "$HERE/scripts/write_launch_agent.py" "$RELAY" "$new_plist" \
+      && chmod 644 "$new_plist" && plutil -lint "$new_plist" >/dev/null; }; then
+    rm -f "$new_relay" "$new_plist"
+    rm -rf "$ROLLBACK"
+    echo "could not prepare the new relay; nothing changed"
+    return 1
+  fi
+  trap 'rm -f "$new_relay" "$new_plist"; relay_interrupted 130' INT
+  trap 'rm -f "$new_relay" "$new_plist"; relay_interrupted 143' TERM
+  trap 'rm -f "$new_relay" "$new_plist"; relay_interrupted 129' HUP
+  launchctl bootout "$(service)" 2>/dev/null || true
+  if mv -f "$new_relay" "$RELAY" && mv -f "$new_plist" "$PLIST" && bootstrap_and_wait; then
+    trap - INT TERM HUP
+    rm -rf "$ROLLBACK"
+    echo "relay up (log: $LOG)"
+    return 0
+  fi
+  trap '' INT TERM HUP
+  rm -f "$new_relay" "$new_plist"
+  echo "Last log lines:"
   tail -n 10 "$LOG" "$HOME/Library/Logs/agent-relay.launchd.log" 2>/dev/null || true
+  echo "restoring the previous relay"
+  if restore_relay; then echo "previous relay restored"; else echo "the previous relay was not fully restored; see the lines above"; fi
+  trap - INT TERM HUP
   return 1
 }
 
@@ -120,6 +232,7 @@ webhook_step() {
     || die "team or signing key missing; run ./install.sh --name <team-name> first"
   mkdir -p "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
   if [ "$MODE" = webhook ] || ! have_webhook; then
+    record_pending prompt
     echo "[GROK-UI] User: create a webhook-triggered routine in Grok Bot and paste this prompt. The Bot executes it on [BOT-CLOUD], its cloud computer:"
     echo "----------------------------------------------------------------"
     render_prompt routine
@@ -147,6 +260,8 @@ cloud_prompt() {
   local invite
   invite="$("$RN" invite --me | sed -n 's/^For a cloud agent of yours.*send it: //p')"
   [ -n "$invite" ] || invite="$("$RN" invite --me)"
+  record_pending cloud
+  record_pending cloud_setup
   echo "[GROK-UI] User: send this to Grok Bot as one message. The Bot executes it on [BOT-CLOUD], its cloud computer. The first line is the invite, valid 24 hours while [LOCAL], your Mac, is online:"
   echo "----------------------------------------------------------------"
   echo "$invite"
@@ -258,6 +373,17 @@ case "$MODE" in
   cloud) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; cloud_prompt; exit 0 ;;
   rotate) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; rotate_key; exit 0 ;;
   purge) purge_copies; exit 0 ;;
+  restart|preflight)
+    [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"
+    [ -n "$(current_person)" ] && [ -s "$KEY_FILE" ] || die "team or signing key missing; run ./install.sh --name <team-name> first"
+    have_webhook || die "the relay is not configured yet; run ./install.sh --webhook"
+    if [ "$MODE" = preflight ]; then
+      [ -f "$PLIST" ] || die "the relay login service is missing; run ./install.sh --webhook"
+      exit 0
+    fi
+    chmod 600 "$ENV_FILE"
+    start_relay || die "the relay was not switched; see the lines above"
+    exit 0 ;;
 esac
 
 [ -n "$NAME" ] || die "need --name <team-name> (run with --help)"

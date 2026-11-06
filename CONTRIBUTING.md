@@ -32,7 +32,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 test_relay.py
 python3 box/test_rn_fetch.py
 node dsh/reason-network-bridge.test.mjs
-for script in install.sh check.sh uninstall.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh; do bash -n "$script" || exit; done
+for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh; do bash -n "$script" || exit; done
 ```
 
 The dsh test can also use the app runtime documented in its [guide](dsh/README.md). The installer tests use disposable homes and fake system/network/service commands; they do not install software or contact real services. The documentation checker validates language pairs, relative links and anchors, prompt placeholders, and protocol vectors. It cannot judge translation quality; review both languages for meaning.

@@ -60,6 +60,10 @@
 - Mac 已用另一个名字入队：不能直接改名。仅在用户明确决定后运行 `./uninstall.sh --all -y`，再从第 1 阶段重来。
 - 其他问题：展示原始错误和指南中对应的排错章节。
 
+## 更新
+
+`[LOCAL]`：已有安装时，运行 `./update.sh --plan --lang <en|zh-CN>`（用户所选语言），把输出给用户看。只有 relay 或 dsh 插件不一致时，可以运行 `./update.sh --yes --lang <en|zh-CN>`。退出码 3 表示更新需要用户回答 routine 和 Bot 云电脑的问题：请用户在自己的终端运行 `./update.sh --lang <en|zh-CN>`。不要修改 `~/.local/lib/agent-mesh/deployed.json`。从 v0.3.0 或更早版本第一次更新时，先运行一次 `git pull`，因为旧仓库里还没有 `update.sh`。
+
 ## 卸载
 
 `[LOCAL]`：`./uninstall.sh` 删除 relay；`./uninstall.sh --all` 还会退出团队并删除 Reason Network。两者都保留当前代码目录。执行前询问用户。云端收尾见指南：用户在 `[GROK-UI]` 暂停或删除 routine，再由 Bot 在 `[BOT-CLOUD]` 删除 `/workspace/agent-mesh/`。

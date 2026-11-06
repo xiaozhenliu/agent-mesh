@@ -75,6 +75,8 @@ dsh/mac-install.sh <team-name>
 
 脚本会依次做四件事：用 App 自带的运行时跑一遍单测；把 `~/.dsh/cordis.patch.yml` 备份到 `~/.dsh/backup-reason-network-bridge/`；把插件拷到 `~/.dsh/plugins/`；最后把 patch 里 Reason Network 原来的 MCP 块另存一份留给卸载脚本用，再换成下面这一块，其中 `<mac-home>` 会使用用户实际的 home 绝对路径。任何一步失败都会自动把 patch 恢复原样。装完后要**完全退出 dsh（⌘Q）再重新打开**，因为桌面版不会热加载。
 
+更新已安装的插件时运行 `dsh/mac-install.sh --plugin-only`（`./update.sh` 会替你运行）。它先跑单测，备份已安装的插件，只替换这一个文件；`~/.dsh/cordis.patch.yml` 和你的插件设置保持不变。任何一步失败都会换回原来的插件。之后同样完全退出并重开 dsh。
+
 ```yaml
 - insert:
     - id: reason-network-bridge
@@ -120,5 +122,5 @@ dsh/mac-uninstall.sh
 ## 文件
 - `reason-network-bridge.mjs`：插件本体。
 - `reason-network-bridge.test.mjs`：单测。`mac-install.sh` 安装前会先跑它；也可以手动跑：`ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" dsh/reason-network-bridge.test.mjs`。
-- `mac-install.sh`：安装脚本。
+- `mac-install.sh`：安装脚本；`--plugin-only` 只更新插件文件。
 - `mac-uninstall.sh`：卸载脚本。
