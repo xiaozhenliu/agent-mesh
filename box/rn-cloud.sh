@@ -64,7 +64,7 @@ KEY_FILE="$BASE/outbound.key"             # same secret as OUTBOUND_KEY on the M
 
 is_connected() {     # starts the daemon if needed and waits (<=90s) until the Mac is connected
   for _ in $(seq 1 45); do
-    if "$RN" doctor 2>/dev/null | grep -Eq '[1-9][0-9]* connected'; then return 0; fi
+    if "$RN" doctor 2>/dev/null | grep -E '[1-9][0-9]* connected' >/dev/null; then return 0; fi
     sleep 2
   done
   return 1

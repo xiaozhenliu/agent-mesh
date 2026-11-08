@@ -4,6 +4,22 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.4.1 — 2026-11-08
+
+Mac 明明在线，云端脚本却报告离线的问题已修复。
+
+### 修复
+
+- `box/rn-cloud.sh`：连接检查在 `set -o pipefail` 下用的是 `doctor | grep -q`。`grep` 匹配到第一行就退出，`doctor` 可能因 SIGPIPE 被终止，于是 Mac 已连接，检查却在约 90 秒后判定失败：`send`、`who`、`init-inbox` 报 "the Mac is not connected" 退出，`fetch` 也跳过了重投请求。现在检查会读完 `doctor` 的全部输出；`doctor` 本身失败时仍判定为未连接。
+
+### 变更
+
+- README：卸载一节改为两台电脑和 routine 的分步顺序，说明哪些东西是共用的、卸载前要先检查什么，以及怎样确认已经卸干净。
+
+### 升级说明
+
+relay 和 routine 提示词没有变化，只有云端脚本更新了。先 `git pull`，再在终端运行 `./update.sh --lang <en|zh-CN>`，按引导让 Grok Bot 拉取新提交。
+
 ## v0.4.0 — 2026-11-06
 
 `./update.sh` 直接更新已有安装，不必重装。

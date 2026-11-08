@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| **版本** | agent-mesh **v0.4.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
+| **版本** | agent-mesh **v0.4.1** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
 | **支持平台** | 本地：设计上不绑定系统（引擎有 macOS / Linux / Windows 版本，relay 为纯 Python），但目前只有 macOS 提供一键安装并经过验证 · Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
@@ -290,11 +290,65 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 
 | 命令 | 删除的内容 |
 |---|---|
-| `./uninstall.sh` | relay 服务、状态和消息副本、日志，以及 `~/.config/agent-relay`。 |
+| `./uninstall.sh` | relay 服务、状态和消息副本、日志，以及 `~/.config/agent-relay`（webhook 配置和签名密钥）。 |
 | `./uninstall.sh --all` | 在上面的基础上，先删除 dsh 插件块（如果装了），再执行 `leave --force` 和 `setup --remove`，并删除 `~/.reason/network` 和 reason-network 二进制。 |
 | `dsh/mac-uninstall.sh` | 只卸载 dsh 插件：把 `~/.dsh/cordis.patch.yml` 里 Reason Network 的原块写回去。见[插件指南](dsh/README.zh-CN.md#卸载)。 |
 
-然后在 `[GROK-UI]` 暂停或删除 routine；`[BOT-CLOUD]` 再删除 `/workspace/agent-mesh/`。
+这些脚本只处理 `[LOCAL]`。`[GROK-UI]` 的 routine 和 `[BOT-CLOUD]` 的文件要按下面的顺序手动处理。先选卸载范围：
+
+- **只卸载 relay**：保留团队身份和 Reason Network，以后要重装或换版本时用。
+- **完全卸载**：退出团队，删除两台电脑上的全部状态、密钥和 routine。
+
+### 卸载前检查
+
+1. **`[LOCAL]` 是否还有别的用途共用 Reason Network。** `--all` 会退出团队、解除本机所有 agent 的 Reason Network 接入，并删除引擎。这台电脑如果还用 Reason Network 做别的事，只运行 `./uninstall.sh`。
+2. **`[BOT-CLOUD]` 是否还有别的程序共用 `/workspace/agent-mesh/box`。** 在 `[GROK-UI]` 让 Bot 运行：
+
+   ```bash
+   grep -rlF /workspace/agent-mesh/box /workspace --exclude-dir=agent-mesh 2>/dev/null | head
+   find /workspace -maxdepth 3 -type l -lname '*agent-mesh/box*' 2>/dev/null | head
+   ```
+
+   任何一条有输出，都说明还有别的程序在用这里的引擎状态（`box/state`）或程序（`box/bin`）。这时不要执行完全卸载的第 2、3 步，先把那些依赖迁走。
+3. **没取走的消息。** 卸载后就取不回来了。需要的话，先在 `[GROK-UI]` 让 Bot 运行一次 `/workspace/agent-mesh/box/rn-cloud.sh fetch` 并处理完。
+
+### 只卸载 relay
+
+1. `[GROK-UI]` 暂停 routine。
+2. `[LOCAL]` 运行 `./uninstall.sh`。
+3. `[BOT-CLOUD]` 不用动，团队身份保留。
+
+重新安装时，安装器会生成新的签名密钥。按安装流程把新的 `outbound.key` 复制到 `[BOT-CLOUD]` 之后，再恢复 routine。
+
+### 完全卸载
+
+按顺序执行，前一步成功再做下一步：
+
+1. **`[GROK-UI]` 暂停 routine**，并确认它没有正在运行的轮次。暂停以后，relay 的 POST 不会再叫醒 Bot。
+2. **`[BOT-CLOUD]` 退出团队。** 必须在 `[LOCAL]` 卸载之前做：`leave` 要求至少有一个队友在线，才会广播"这台机器已退出"。这时 `[LOCAL]` 的引擎还在线，能收到这条通知。在 `[GROK-UI]` 让 Bot 运行：
+
+   ```bash
+   export REASON_NETWORK_HOME=/workspace/agent-mesh/box/state REASON_NETWORK_MACHINE=cloud REASON_NETWORK_NO_PROMPT=1
+   /workspace/agent-mesh/box/bin/reason-network leave
+   /workspace/agent-mesh/box/bin/reason-network stop
+   ```
+
+   `leave` 报 "no teammate is online" 时，先让 `[LOCAL]` 上线再试。确实联系不上 `[LOCAL]` 时改用 `leave --force`：云端照样退出，只是 `[LOCAL]` 收不到通知。完全卸载接下来会在 `[LOCAL]` 运行 `--all`，本地也会退出团队，所以不影响结果。
+3. **`[BOT-CLOUD]` 删除整个 `/workspace/agent-mesh` 目录。** 云端的签名密钥、机器身份、收件正文和会话记录都在这个目录里，会一并删除。
+4. **`[LOCAL]` 运行 `./uninstall.sh --all`。**
+5. **`[GROK-UI]` 删除 routine。** 只暂停的话，webhook 地址和 key 仍然有效，删除之后才失效。
+6. **`[LOCAL]` 收尾。** 下面这些脚本不会删除，需要的话手动处理：
+   - 当前代码目录；
+   - 如果你在 shell 启动文件里加过 `~/.local/bin` 的 PATH 行，删掉它；
+   - dsh 插件的备份和日志：`~/.dsh/backup-reason-network-bridge/`、`~/.dsh/logs/reason-network-bridge.log`。
+
+   最后重开各个 agent 会话。
+
+### 确认已卸载干净
+
+- `[LOCAL]`：`launchctl print gui/$(id -u)/com.local.agent-relay` 报错（服务不存在）；`~/.local/lib/agent-mesh`、`~/.config/agent-relay`、`~/Library/Application Support/agent-relay` 都不存在。完全卸载时，`~/.local/bin/reason-network` 和 `~/.reason/network` 也不存在。
+- `[BOT-CLOUD]`（完全卸载）：`/workspace/agent-mesh` 不存在。
+- `[GROK-UI]`（完全卸载）：routine 列表里已经没有这个 routine。
 
 ## 升级
 

@@ -66,4 +66,4 @@
 
 ## 卸载
 
-`[LOCAL]`：`./uninstall.sh` 删除 relay；`./uninstall.sh --all` 还会退出团队并删除 Reason Network。两者都保留当前代码目录。执行前询问用户。云端收尾见指南：用户在 `[GROK-UI]` 暂停或删除 routine，再由 Bot 在 `[BOT-CLOUD]` 删除 `/workspace/agent-mesh/`。
+`[LOCAL]`：`./uninstall.sh` 删除 relay；`./uninstall.sh --all` 还会退出团队并删除 Reason Network。两者都保留当前代码目录。执行前询问用户。按指南[卸载](README.zh-CN.md#卸载)一节的顺序进行：先检查两台电脑上有没有别的用途共用 Reason Network 或 `/workspace/agent-mesh/box`；完全卸载时，用户先在 `[GROK-UI]` 暂停 routine，Bot 在 `[BOT-CLOUD]` 退出团队并删除 `/workspace/agent-mesh`，然后在 `[LOCAL]` 运行 `./uninstall.sh --all`，最后用户删除 routine。

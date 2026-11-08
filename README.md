@@ -6,7 +6,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 
 | | |
 |---|---|
-| **Version** | agent-mesh **v0.4.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Version** | agent-mesh **v0.4.1** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
 | **Platform** | Local: not tied to one OS by design (the engine ships macOS / Linux / Windows builds; the relay is pure Python), but only macOS currently has a one-click installer and has been verified · Python 3.9+ |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
@@ -287,11 +287,65 @@ All of these commands run on `[LOCAL]`:
 
 | Command | Removes |
 |---|---|
-| `./uninstall.sh` | The relay service, state, message copies, logs, and `~/.config/agent-relay`. |
+| `./uninstall.sh` | The relay service, state, message copies, logs, and `~/.config/agent-relay` (webhook settings and signing key). |
 | `./uninstall.sh --all` | Everything above; also removes the dsh bridge block if present, runs `leave --force` and `setup --remove`, then removes `~/.reason/network` and the engine binary. |
 | `dsh/mac-uninstall.sh` | Only the dsh bridge: puts Reason Network's own block back in `~/.dsh/cordis.patch.yml`. See the [bridge guide](dsh/README.md#uninstall). |
 
-Then, in `[GROK-UI]`, pause or delete the routine, and on `[BOT-CLOUD]`, remove `/workspace/agent-mesh/`.
+These scripts only handle `[LOCAL]`. The routine in `[GROK-UI]` and the files on `[BOT-CLOUD]` are handled by hand, in the order below. First choose how much to remove:
+
+- **Relay only**: keeps the team identity and Reason Network, for a later reinstall or version change.
+- **Full uninstall**: leaves the team and removes all state, keys and the routine on both computers.
+
+### Before you uninstall
+
+1. **Does anything else on `[LOCAL]` use Reason Network?** `--all` leaves the team, disconnects every agent on this computer from Reason Network, and removes the engine. If this computer uses Reason Network for anything else, run only `./uninstall.sh`.
+2. **Does anything else on `[BOT-CLOUD]` use `/workspace/agent-mesh/box`?** In `[GROK-UI]`, ask the Bot to run:
+
+   ```bash
+   grep -rlF /workspace/agent-mesh/box /workspace --exclude-dir=agent-mesh 2>/dev/null | head
+   find /workspace -maxdepth 3 -type l -lname '*agent-mesh/box*' 2>/dev/null | head
+   ```
+
+   Any output means another program still uses the engine state (`box/state`) or binary (`box/bin`) here. Do not run steps 2 and 3 of the full uninstall until those dependencies have moved.
+3. **Messages not yet fetched** are lost after uninstalling. If you need them, first ask the Bot in `[GROK-UI]` to run `/workspace/agent-mesh/box/rn-cloud.sh fetch` once and handle the results.
+
+### Relay only
+
+1. `[GROK-UI]`: pause the routine.
+2. `[LOCAL]`: run `./uninstall.sh`.
+3. `[BOT-CLOUD]`: nothing to do; the team identity stays.
+
+A reinstall generates a new signing key. Copy the new `outbound.key` to `[BOT-CLOUD]` as the install steps describe, then resume the routine.
+
+### Full uninstall
+
+Run the steps in order; go on only after the previous one succeeds:
+
+1. **`[GROK-UI]`: pause the routine** and confirm no run is in progress. After this, the relay's POSTs no longer wake the Bot.
+2. **`[BOT-CLOUD]`: leave the team.** Do this before uninstalling `[LOCAL]`: `leave` broadcasts "this machine left" only while at least one teammate is online, and the `[LOCAL]` engine is still running to receive it. In `[GROK-UI]`, ask the Bot to run:
+
+   ```bash
+   export REASON_NETWORK_HOME=/workspace/agent-mesh/box/state REASON_NETWORK_MACHINE=cloud REASON_NETWORK_NO_PROMPT=1
+   /workspace/agent-mesh/box/bin/reason-network leave
+   /workspace/agent-mesh/box/bin/reason-network stop
+   ```
+
+   If `leave` reports "no teammate is online", bring `[LOCAL]` online and try again. If `[LOCAL]` really cannot be reached, use `leave --force`: the cloud still leaves, but `[LOCAL]` does not hear about it. That does not matter for a full uninstall, because the next steps run `--all` on `[LOCAL]`, which leaves the team there too.
+3. **`[BOT-CLOUD]`: delete the whole `/workspace/agent-mesh` directory.** The cloud's signing key, machine identity, received bodies and thread notes all live there and go with it.
+4. **`[LOCAL]`: run `./uninstall.sh --all`.**
+5. **`[GROK-UI]`: delete the routine.** A paused routine keeps its webhook URL and key valid; deleting it revokes them.
+6. **`[LOCAL]`: clean up.** The scripts leave these in place; handle them by hand if needed:
+   - this code folder;
+   - the `~/.local/bin` PATH line, if you added one to your shell startup file;
+   - the dsh bridge backup and log: `~/.dsh/backup-reason-network-bridge/` and `~/.dsh/logs/reason-network-bridge.log`.
+
+   Then reopen your agent sessions.
+
+### Check that it is gone
+
+- `[LOCAL]`: `launchctl print gui/$(id -u)/com.local.agent-relay` fails (no such service); `~/.local/lib/agent-mesh`, `~/.config/agent-relay` and `~/Library/Application Support/agent-relay` do not exist. After a full uninstall, `~/.local/bin/reason-network` and `~/.reason/network` do not exist either.
+- `[BOT-CLOUD]` (full uninstall): `/workspace/agent-mesh` does not exist.
+- `[GROK-UI]` (full uninstall): the routine is no longer listed.
 
 ## Upgrade
 

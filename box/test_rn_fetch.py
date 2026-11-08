@@ -874,6 +874,12 @@ with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write(json.dumps({"args": args, "body": body}) + "\n")
 if args[:1] == ["doctor"]:
     print("peers: 0 connected" if os.environ.get("FAKE_OFFLINE") else "peers: 1 connected")
+    if os.environ.get("FAKE_DOCTOR_TAIL"):
+        sys.stdout.flush()
+        time.sleep(0.3)
+        for i in range(20000):
+            print("diagnostic line", i)
+    sys.exit(int(os.environ.get("FAKE_DOCTOR_RC", "0")))
 elif args[:1] == ["listen"]:
     print("No messages.")
 elif args[:1] == ["send"]:
@@ -1066,6 +1072,17 @@ class Cloud(unittest.TestCase):
         self.assertEqual((f["stored_ids"], f["done_ids"]), ([], ["relay-alerts-123"]))
         self.assertNotEqual(self.cloud("done").returncode, 0)
         self.assertNotEqual(self.cloud("working").returncode, 0)
+
+    def test_connection_check_reads_all_doctor_output(self):
+        self.env["FAKE_DOCTOR_TAIL"] = "1"
+        p = self.cloud("who")
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_connection_check_fails_when_doctor_fails(self):
+        self.env["FAKE_DOCTOR_RC"] = "7"
+        p = self.cloud("who")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("the Mac is not connected", p.stderr)
 
     def test_fetch_sends_a_receipt_only_while_the_mac_is_connected(self):
         self.put_fwd("A", "question")

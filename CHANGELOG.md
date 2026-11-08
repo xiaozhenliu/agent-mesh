@@ -4,6 +4,22 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.1 — 2026-11-08
+
+The cloud script no longer reports the Mac offline when it is connected.
+
+### Fixed
+
+- `box/rn-cloud.sh`: the connection check used `doctor | grep -q` under `set -o pipefail`. When `grep` stopped at the first match, `doctor` could be killed by SIGPIPE and the check failed for about 90 seconds although the Mac was connected, so `send`, `who` and `init-inbox` stopped with "the Mac is not connected" and `fetch` skipped re-forward requests. The check now reads all of the `doctor` output; a failing `doctor` still counts as not connected.
+
+### Changed
+
+- README: the uninstall section now gives an ordered plan for both computers and the routine, says what is shared and must be checked first, and how to confirm that everything is gone.
+
+### Upgrade notes
+
+The relay and the routine prompt are unchanged; only the cloud script changed. Run `git pull`, then `./update.sh --lang <en|zh-CN>` in a terminal, and follow its guided steps to have Grok Bot pull the new commit.
+
 ## v0.4.0 — 2026-11-06
 
 `./update.sh` updates an existing installation without reinstalling.

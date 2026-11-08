@@ -72,4 +72,4 @@ Repair commands below run on `[LOCAL]`; invite retries and `fetch` run on `[BOT-
 
 ## Removal
 
-`[LOCAL]`: `./uninstall.sh` removes the relay; `./uninstall.sh --all` also removes Reason Network and leaves the team. Both keep this folder. Ask the user before running either. For cloud cleanup, see the guide: the user pauses or deletes the routine in `[GROK-UI]`, then the Bot removes `/workspace/agent-mesh/` on `[BOT-CLOUD]`.
+`[LOCAL]`: `./uninstall.sh` removes the relay; `./uninstall.sh --all` also removes Reason Network and leaves the team. Both keep this folder. Ask the user before running either. Follow the order in the guide's [Uninstall](README.md#uninstall) section: check first whether anything else on either computer shares Reason Network or `/workspace/agent-mesh/box`; for a full uninstall the user pauses the routine in `[GROK-UI]`, the Bot leaves the team and removes `/workspace/agent-mesh` on `[BOT-CLOUD]`, then `./uninstall.sh --all` runs on `[LOCAL]`, and finally the user deletes the routine.
