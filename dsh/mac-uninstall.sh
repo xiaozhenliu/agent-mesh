@@ -52,7 +52,12 @@ if restore == "1":
             block += "" if block.endswith("\n") else "\n"
             break
 tmp = p + ".reason-network-bridge.tmp"
-with open(tmp, "w") as f:
+if os.path.islink(tmp) or (os.path.lexists(tmp) and not os.path.isfile(tmp)):
+    sys.exit(tmp + ": is a symlink or not a regular file; remove it by hand")
+if os.path.lexists(tmp):
+    os.unlink(tmp)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+with os.fdopen(fd, "w") as f:
     f.write(t[:cut[0]] + block + t[cut[1]:])
 shutil.copymode(p, tmp)
 os.replace(tmp, p)

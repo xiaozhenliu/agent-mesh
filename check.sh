@@ -56,6 +56,14 @@ fi
 
 # relay
 env="$HOME/.config/agent-relay/env"; key="$HOME/.config/agent-relay/outbound.key"
+names="$(dirname "$0")/scripts/relay_names.py"
+NAME=bot
+if [ -f "$env" ] && ! name="$(python3 "$names" env "$env" 2>&1)"; then
+  bad "relay names in env are not derived from one name" "$name; make LISTEN_NAME/CLOUD_NAME/INBOX_NAME <name>, <name>-cloud, <name>-inbox (README: Install)"
+else
+  [ ! -f "$env" ] || NAME="${name:-bot}"
+  if [ "$NAME" = bot ]; then ok "relay name: bot (default)"; else ok "relay name: $NAME"; fi
+fi
 if [ -f "$env" ]; then
   [ "$(stat -f %Lp "$env" 2>/dev/null)" = "600" ] && ok "env file mode 600" || bad "env file not mode 600" "chmod 600 $env"
   grep -Eq '^WEBHOOK_URL=https://' "$env" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$env" && ok "webhook configured" || bad "webhook not configured" "run ./install.sh --webhook"
@@ -73,7 +81,18 @@ fi
 
 # sessions
 if [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then
-  echo "$who" | grep -Eq "^\s+bot\s+cli\s" && ok "relay listening as $PERSON/bot" || skip "relay session" "appears a few seconds after the relay starts"
+  registered="$(python3 "$names" registered "$NAME" 2>&1)"; rc=$?
+  if [ "$rc" = 3 ]; then
+    skip "relay session" "the engine has no session database yet"
+  elif [ "$rc" != 0 ]; then
+    skip "relay session" "cannot read the engine's session table: $registered"
+  elif [ -n "$registered" ] && [ "$registered" != "$NAME" ]; then
+    bad "relay registered under another name: $PERSON/$registered" "another session took $NAME; the relay gets no mail for $PERSON/$NAME (README: Troubleshooting)"
+  elif [ -n "$registered" ] && echo "$who" | grep -Eq "^\s+$NAME\s+cli\s"; then
+    ok "relay listening as $PERSON/$NAME"
+  else
+    skip "relay session" "appears a few seconds after the relay starts"
+  fi
   n=$(echo "$who" | grep -Ec 'claude-code|codex|pi |dsh')
   [ "$n" -gt 0 ] && ok "$n agent session(s) on the roster" || skip "agent sessions" "open a Claude Code / Codex session, then rerun"
 fi

@@ -115,9 +115,9 @@ dsh/mac-install.sh <team-name>
 dsh/mac-uninstall.sh
 ```
 
-脚本会先备份 `~/.dsh/cordis.patch.yml`，然后只把插件那一块换回安装时保存的 Reason Network 原块。旧版本安装时没有单独保存原块的，就从最早一份含原块的备份里取。脚本同时删除插件文件。patch 里的其他内容，包括安装之后你自己做的修改，都不会动。如果插件配置不是恰好一组 BEGIN/END 标记（比如标记被删掉或重复了），脚本什么都不改，提示你手动编辑。如果哪里都找不到原块，脚本只删除插件那一块，并提示你运行 `reason-network setup`，它会顺带重新检查其他 agent 的接入。完成后完全退出并重开 App。之后 dsh 回到每个文件夹共用一个地址、只在模型主动查看时才收信的状态。
+脚本会先备份 `~/.dsh/cordis.patch.yml`，然后只把插件那一块换回安装时保存的 Reason Network 原块。旧版本安装时没有单独保存原块的，就从最早一份含原块的备份里取。脚本同时删除插件文件。patch 里的其他内容，包括安装之后你自己做的修改，都不会动。如果插件配置不是恰好一组 BEGIN/END 标记（比如标记被删掉或重复了），脚本什么都不改，提示你手动编辑。它的临时文件 `cordis.patch.yml.reason-network-bridge.tmp` 是符号链接或不是普通文件时，脚本同样什么都不改。如果哪里都找不到原块，脚本只删除插件那一块，并提示你运行 `reason-network setup`，它会顺带重新检查其他 agent 的接入。完成后完全退出并重开 App。之后 dsh 回到每个文件夹共用一个地址、只在模型主动查看时才收信的状态。
 
-`./uninstall.sh --all` 会在 `setup --remove` 之前运行 `dsh/mac-uninstall.sh --no-restore`，只删除插件那一块，不写回原块。这一步失败时，`--all` 会停下来，不会动 Reason Network。备份和日志分别保留在 `~/.dsh/backup-reason-network-bridge/` 和 `~/.dsh/logs/`。
+`./uninstall.sh --level identity` 和 `--level all` 会在 `setup --remove` 之前运行 `dsh/mac-uninstall.sh --no-restore`，只删除插件那一块，不写回原块。这一步失败时，它们会停下来，不会动 Reason Network。`identity` 级别保留 `~/.dsh/backup-reason-network-bridge/` 里的备份和插件日志 `~/.dsh/logs/reason-network-bridge.log`；`all` 级别把两者都删除。`--level program` 不动 dsh。
 
 ## 文件
 - `reason-network-bridge.mjs`：插件本体。

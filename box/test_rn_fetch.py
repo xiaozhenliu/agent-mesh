@@ -3,6 +3,7 @@
 v0.10.5 src/store.rs) and the relay's own RN-FWD encoder (../agent_relay.py), plus the RN-REFWD re-forward flow
 against a fake reason-network binary. Run: python3 test_rn_fetch.py"""
 import importlib.util, json, os, sqlite3, subprocess, sys, tempfile, time, unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -21,6 +22,8 @@ rr = load("agent_relay", HERE.parent / "agent_relay.py")
 SCHEMA = """CREATE TABLE messages (id TEXT PRIMARY KEY, sender TEXT NOT NULL, sender_agent TEXT, sender_repo TEXT,
 recipient TEXT NOT NULL, via TEXT, reply_to TEXT, body TEXT NOT NULL, wake INTEGER NOT NULL, sent_at INTEGER NOT NULL,
 read_at INTEGER, held INTEGER NOT NULL DEFAULT 0);"""
+SESSIONS = """CREATE TABLE sessions (name TEXT PRIMARY KEY, key TEXT NOT NULL, agent TEXT, cwd TEXT, repo TEXT,
+branch TEXT, doing TEXT, tier TEXT, last_seen INTEGER NOT NULL);"""
 
 
 class T(unittest.TestCase):
@@ -32,7 +35,8 @@ class T(unittest.TestCase):
         self.db.executescript("PRAGMA journal_mode=WAL;" + SCHEMA)
         self.n = 0
         self.env = dict(os.environ, REASON_NETWORK_HOME=str(self.d / "state"), RN_PERSON="demo",
-                        RN_INBOX_NAME="bot-inbox", RN_KEY_FILE=str(self.d / "key"), RN_INBOX_DIR=str(self.d / "inbox"))
+                        RN_INBOX_NAME="bot-inbox", RN_KEY_FILE=str(self.d / "key"), RN_INBOX_DIR=str(self.d / "inbox"),
+                        RN_BOX=str(self.d / "box"))
 
     def put(self, body, to="demo/bot-inbox", read=False):
         self.n += 1
@@ -266,7 +270,7 @@ if args[:1] == ["send"] and body.startswith("RN-REFWD v1"):
     if mode != "silent":
         put(rr.refwd_ack_body(key, f["id"], "resent" if mode == "resend" else "no-copy", 1), "b")
     db.commit()
-print("→ demo/bot: queued")
+print(f"→ {args[1]}: queued" if args[:1] == ["send"] else "→ demo/bot: queued")
 '''
 
 
@@ -334,6 +338,68 @@ class Refwd(T):
         body = fetch.refwd_body(KEY, "01JTESTMSG0000000000000000", ts=1700000000, nonce="00" * 12)
         f = rr.parse_refwd(body)
         self.assertEqual(f["sig"], rr.sign_refwd(KEY, f["id"], f["ts"], f["nonce"]))
+
+
+class SendStatus(unittest.TestCase):
+    """Receipts and re-forward requests are judged on the engine's status words, never on the recipient's name."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        (self.d / "state").mkdir()
+        db = sqlite3.connect(self.d / "state" / "network.db")
+        db.executescript("CREATE TABLE outbox (id TEXT);")
+        db.close()
+        self.mod = load("rn_fetch_status", HERE / "rn-fetch.py")
+        self.mod.HOME, self.mod.BASE = self.d / "state", self.d / "inbox"
+        env = mock.patch.dict(os.environ, {"RN_RELAY_NAME": "error", "RN_BIN": str(self.d / "rn"),
+                                           "RN_CLOUD_NAME": "bot-cloud", "RN_REFWD_MAX": "1000",
+                                           "RN_BOX": str(self.d / "box")})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def run_with(self, rc, out):
+        calls = []
+        def run(args, **kw):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, rc, out, "")
+        with mock.patch.object(self.mod.subprocess, "run", run):
+            errors = self.mod.send_got([], ["a"], KEY, "demo")
+            attempt, why = self.mod.request_refwd("m", KEY, "demo")
+        self.assertEqual([c[2] for c in calls], ["demo/error", "demo/error"])
+        return errors, why
+
+    def test_recipient_names_do_not_make_a_send_fail(self):
+        for out in ("→ demo/error: queued", "→ demo/held-x: queued\nmessage id 01JX",
+                    "→ demo/error: queued: not connected to cloud right now; it goes out as soon as it is"):
+            with self.subTest(out=out), mock.patch("sys.stderr"):
+                self.assertEqual(self.run_with(0, out), ([], None))
+
+    def test_refusals_holds_errors_and_failures_still_fail(self):
+        for rc, out in ((0, "→ demo/x: refused: these two agents have exchanged a lot of messages"),
+                        (0, "→ demo/x: queued: held for approval"), (1, 'Error: nobody matches "x"'),
+                        (0, "→ demo/x: queued (error: x)"), (2, "→ demo/x: queued"), (0, "queued")):
+            with self.subTest(rc=rc, out=out), mock.patch("sys.stderr"):
+                errors, why = self.run_with(rc, out)
+                self.assertEqual(len(errors), 1)
+                self.assertTrue(why)
+
+    def test_send_status_needs_no_credentials_lock_or_engine(self):
+        log = self.d / "engine.log"
+        engine = self.d / "rn"
+        engine.write_text("#!/bin/sh\necho called >> " + str(log) + "\n")
+        engine.chmod(0o755)
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("RN_", "REASON_NETWORK"))}
+        env.update(RN_BIN=str(engine), RN_INBOX_DIR=str(self.d / "inbox"), RN_KEY_FILE=str(self.d / "no-key"),
+                   RN_BOX=str(self.d / "no-box"), REASON_NETWORK_HOME=str(self.d / "no-home"))
+        for out, want in (("→ sheldon/bot: queued\nmessage id 01JX\n", "queued\nmessage id 01JX"),
+                          ("→ sheldon/bot: queued: held for approval", "queued: held for approval"),
+                          ("Error: no session called 'held/x'", "Error: no session called")):
+            p = subprocess.run([sys.executable, str(HERE / "rn-fetch.py"), "send-status"], input=out, env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual((p.returncode, p.stdout, p.stderr), (0, want + "\n", ""))
+            self.assertEqual(p.stdout.strip(), self.mod.send_status(out))
+        self.assertFalse((self.d / "inbox").exists())
+        self.assertFalse(log.exists())
 
 
 GOT_VECTOR_SIG = "26666d313c6c3dae158d5f8b3a6228f2be554c6ec58401662647f51aca361518"
@@ -881,7 +947,15 @@ if args[:1] == ["doctor"]:
             print("diagnostic line", i)
     sys.exit(int(os.environ.get("FAKE_DOCTOR_RC", "0")))
 elif args[:1] == ["listen"]:
-    print("No messages.")
+    who = args[args.index("--as") + 1]
+    name = json.loads(os.environ.get("FAKE_REGISTER", "{}")).get(who, who)
+    if name != "-":
+        db = sqlite3.connect(os.path.join(os.environ["REASON_NETWORK_HOME"], "network.db"))
+        db.execute("INSERT OR REPLACE INTO sessions (name, key, last_seen) VALUES (?, ?, ?)",
+                   (name, "cli:" + who, int(time.time() * 1000)))
+        db.commit()
+        db.close()
+    print(os.environ.get("FAKE_LISTEN_OUT") or f"No messages. You are demo/{name}.")
 elif args[:1] == ["send"]:
     mode = os.environ.get("FAKE_SEND", "ok")
     if mode == "queued":                       # never leaves the box's outbox
@@ -896,7 +970,7 @@ elif args[:1] == ["send"]:
                          start_new_session=True)
         while not os.path.exists(ready):
             time.sleep(0.05)
-    print("-> demo/bot: queued")
+    print(f"→ {args[1]}: queued" + (": held for approval" if mode == "held" else ""))
 '''
 
 
@@ -917,7 +991,7 @@ class Cloud(unittest.TestCase):
         engine.write_text(FAKE_ENGINE.replace("#!/usr/bin/env python3", "#!" + sys.executable, 1))
         engine.chmod(0o755)
         db = sqlite3.connect(self.box / "state" / "network.db")
-        db.executescript(SCHEMA + "CREATE TABLE outbox (id TEXT);")
+        db.executescript(SCHEMA + SESSIONS + "CREATE TABLE outbox (id TEXT);")
         db.close()
         tools = self.d / "tools"
         tools.mkdir()
@@ -928,7 +1002,8 @@ class Cloud(unittest.TestCase):
         self.log = self.d / "rn.log"
         self.env = dict(os.environ, PATH=f"{tools}{os.pathsep}{os.environ['PATH']}", RN_CLOUD_BASE=str(self.box),
                         RN_INBOX_DIR=str(self.inbox), FAKE_LOG=str(self.log))
-        for k in ("RN_PERSON", "RN_KEY_FILE", "REASON_NETWORK_HOME", "RN_DONE_LOCK_WAIT", "RN_CLAIM_LEASE"):
+        for k in ("RN_PERSON", "RN_KEY_FILE", "REASON_NETWORK_HOME", "RN_DONE_LOCK_WAIT", "RN_CLAIM_LEASE",
+                  "RN_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME", "AGENT_RELAY_NAME", "RN_BOX"):
             self.env.pop(k, None)
 
     def cloud(self, *args, body=""):
@@ -939,10 +1014,16 @@ class Cloud(unittest.TestCase):
         calls = [json.loads(l) for l in self.log.read_text().splitlines()] if self.log.exists() else []
         return [c for c in calls if c["args"][:1] == ["send"]]
 
-    def put_fwd(self, mid, text):
+    def engine_calls(self):
+        return [json.loads(l)["args"] for l in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def listened(self):
+        return [a[a.index("--as") + 1] for a in self.engine_calls() if a[:1] == ["listen"]]
+
+    def put_fwd(self, mid, text, to="demo/bot-inbox"):
         db = sqlite3.connect(self.box / "state" / "network.db")
         db.execute("INSERT INTO messages (id, sender, recipient, body, wake, sent_at) VALUES (?,?,?,?,1,?)",
-                   (f"01CL{mid}", "demo/terminal", "demo/bot-inbox", rr.fwd_body(KEY, mid, "demo/other", "codex", "",
+                   (f"01CL{mid}", "demo/terminal", to, rr.fwd_body(KEY, mid, "demo/other", "codex", "",
                                                                            text).strip(), int(time.time() * 1000)))
         db.commit()
         db.close()
@@ -993,6 +1074,31 @@ class Cloud(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         r = json.loads(p.stdout.splitlines()[0])
         self.assertEqual((r["id"], r["status"]), ("A", "uncertain"))
+
+    def test_status_words_in_the_team_name_do_not_fail_a_send(self):
+        (self.box / "person").write_text("sheldon\n")
+        p = self.cloud("send", "sheldon/other", "A", body="reply text")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("→ sheldon/bot: queued", p.stdout)
+        self.assertIn("handed to the Mac", p.stdout)
+        self.assertTrue((self.inbox / "A" / "done").exists())
+        self.assertEqual([s["args"][1] for s in self.engine_sends()], ["sheldon/bot"])
+
+    def test_held_still_fails_the_send(self):
+        (self.box / "person").write_text("sheldon\n")
+        self.env["FAKE_SEND"] = "held"
+        p = self.cloud("send", "sheldon/other", body="reply text")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("did not accept", p.stderr)
+        self.assertNotIn("handed to the Mac", p.stdout)
+
+    def test_send_fails_when_the_output_cannot_be_classified(self):
+        (self.box / "rn-fetch.py").unlink()
+        p = self.cloud("send", "demo/other", body="reply text")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("could not classify the engine output", p.stderr)
+        self.assertNotIn("handed to the Mac", p.stdout)
+        self.assertEqual(len(self.engine_sends()), 1)
 
     def test_send_still_queued_after_60s_is_not_done(self):
         self.env["FAKE_SEND"] = "queued"
@@ -1097,6 +1203,186 @@ class Cloud(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertNotIn("got", json.loads(p.stdout.splitlines()[0]))
         self.assertEqual(len([c for c in self.engine_sends() if c["body"].startswith("RN-GOT v1")]), 1)
+
+    def test_without_box_relay_the_names_are_the_defaults(self):
+        p = self.cloud("who")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.listened(), ["bot-inbox"])
+        self.assertEqual(self.cloud("send", "demo/other", body="hi").returncode, 0)
+        (s,) = self.engine_sends()
+        self.assertEqual(s["args"], ["send", "demo/bot", "--from", "demo/bot-cloud", "-"])
+
+    def test_box_relay_names_every_session(self):
+        (self.box / "relay").write_text("alice\n")
+        for cmd in ("who", "init-inbox"):
+            self.log.unlink(missing_ok=True)
+            p = self.cloud(cmd)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual(self.listened(), ["alice-inbox"])
+        self.assertIn("demo/alice-inbox registered", p.stdout)
+        self.log.unlink()
+        self.put_fwd("A", "question", to="demo/alice-inbox")
+        p = self.cloud("fetch", "A")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.listened(), ["alice-inbox", "alice-cloud", "alice-inbox"])
+        (s,) = self.engine_sends()
+        self.assertEqual(s["args"], ["send", "demo/alice", "-"])
+        self.log.unlink()
+        p = self.cloud("send", "demo/other", "A", body="reply")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (s,) = self.engine_sends()
+        self.assertEqual(s["args"], ["send", "demo/alice", "--from", "demo/alice-cloud", "-"])
+
+    def test_agent_relay_name_changes_only_the_send_target(self):
+        (self.box / "relay").write_text("alice\n")
+        self.env["AGENT_RELAY_NAME"] = "x@m"
+        p = self.cloud("send", "demo/other", body="reply")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (s,) = self.engine_sends()
+        self.assertEqual(s["args"], ["send", "demo/x@m", "--from", "demo/alice-cloud", "-"])
+        self.assertEqual(self.listened(), ["alice-cloud", "alice-inbox"])
+
+    def test_a_damaged_box_relay_stops_before_any_engine_call(self):
+        for text in ("", "\n", "Bot\n", "a--b\n", "terminal\n", "a" * 35 + "\n"):
+            with self.subTest(text=text):
+                (self.box / "relay").write_text(text)
+                for cmd in (("who",), ("fetch", "A"), ("done", "A")):
+                    p = self.cloud(*cmd)
+                    self.assertNotEqual(p.returncode, 0)
+                    self.assertIn("relay is damaged", p.stderr)
+                self.assertNotEqual(self.cloud("send", "demo/other", body="x").returncode, 0)
+                self.assertEqual(self.engine_calls(), [])
+                self.assertFalse(self.inbox.exists())
+
+    def test_invalid_session_name_overrides_stop_before_any_engine_call(self):
+        for k, v in (("RN_INBOX_NAME", "Inbox"), ("RN_CLOUD_NAME", "a--cloud"), ("RN_CLOUD_NAME", "c" * 41)):
+            with self.subTest(k=k, v=v):
+                env = dict(self.env)
+                self.env[k] = v
+                p = self.cloud("who")
+                self.env = env
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn("invalid session name", p.stderr)
+                self.assertEqual(self.engine_calls(), [])
+        self.env.update(RN_INBOX_NAME="lab-inbox", RN_CLOUD_NAME="lab-cloud")
+        self.assertEqual(self.cloud("send", "demo/other", body="x").returncode, 0)
+        self.assertEqual(self.listened(), ["lab-cloud", "lab-inbox"])
+
+    def test_registration_must_show_exactly_the_expected_name(self):
+        (self.box / "relay").write_text("alice\n")
+        cases = (({"alice-inbox": "alice-inbox-2"}, "", "who", "registered alice-inbox-2 instead of demo/alice-inbox"),
+                 ({"alice-inbox": "alice-inbox-2"}, "from demo/terminal: an unread message body", "who",
+                  "registered alice-inbox-2 instead of demo/alice-inbox"),
+                 ({"alice-inbox": "-"}, "", "who", "registered nothing instead of demo/alice-inbox"),
+                 ({"alice-cloud": "alice-cloud-2"}, "", "fetch", "registered alice-cloud-2 instead of demo/alice-cloud"))
+        for register, listen_out, cmd, want in cases:
+            with self.subTest(register=register, listen_out=listen_out):
+                self.env.update(FAKE_REGISTER=json.dumps(register), FAKE_LISTEN_OUT=listen_out)
+                p = self.cloud(cmd, "A") if cmd == "fetch" else self.cloud(cmd)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn(want, p.stderr)
+                self.assertIn("another session may use this name", p.stderr)
+                self.assertNotIn(listen_out or "unused", p.stdout + p.stderr)
+
+    def test_an_old_registration_does_not_count(self):
+        (self.box / "relay").write_text("alice\n")
+        db = sqlite3.connect(self.box / "state" / "network.db")
+        db.execute("INSERT INTO sessions (name, key, last_seen) VALUES ('alice-inbox', 'cli:alice-inbox', 1)")
+        db.commit()
+        db.close()
+        self.env["FAKE_REGISTER"] = json.dumps({"alice-inbox": "-"})
+        p = self.cloud("who")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("registered nothing instead of demo/alice-inbox", p.stderr)
+        self.env.pop("FAKE_REGISTER")
+        self.assertEqual(self.cloud("who").returncode, 0)
+
+    def test_registration_check_fails_when_the_session_table_cannot_be_read(self):
+        db = sqlite3.connect(self.box / "state" / "network.db")
+        db.execute("DROP TABLE sessions")
+        db.commit()
+        db.close()
+        self.env["FAKE_REGISTER"] = json.dumps({"bot-inbox": "-"})
+        p = self.cloud("who")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("registered nothing", p.stderr)
+
+
+class Names(T):
+    """rn-fetch.py takes its session names from RN_*_NAME, else from $RN_BOX/relay, else bot."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(self.db.close)
+        self.box = self.d / "box"
+        self.box.mkdir()
+        self.env.pop("RN_INBOX_NAME")
+        self.mod = load("rn_fetch_names", HERE / "rn-fetch.py")
+
+    def names(self, **env):
+        keep = {k: v for k, v in os.environ.items() if k not in ("RN_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME")}
+        with mock.patch.dict(os.environ, dict(keep, RN_BOX=str(self.box), **env), clear=True):
+            return self.mod.names()
+
+    def test_box_relay_is_read_when_a_name_is_not_given(self):
+        self.assertEqual(self.names(), ("bot", "bot-cloud", "bot-inbox"))
+        (self.box / "relay").write_text("alice\n")
+        self.assertEqual(self.names(), ("alice", "alice-cloud", "alice-inbox"))
+        self.assertEqual(self.names(RN_INBOX_NAME="lab-inbox"), ("alice", "alice-cloud", "lab-inbox"))
+
+    def test_all_three_given_skip_the_file_even_when_it_is_damaged(self):
+        (self.box / "relay").write_text("Bad--name\n")
+        given = dict(RN_RELAY_NAME="x@m", RN_CLOUD_NAME="y", RN_INBOX_NAME="z")
+        self.assertEqual(self.names(**given), ("x@m", "y", "z"))
+        with self.assertRaises(SystemExit):
+            self.names(RN_RELAY_NAME="x@m", RN_CLOUD_NAME="y")
+
+    def test_damaged_or_empty_file_stops(self):
+        for text in ("", "\n", " alice\n", "alice \n", "Bot", "a--b", "terminal-3", "a" * 35):
+            with self.subTest(text=text):
+                (self.box / "relay").write_text(text)
+                with self.assertRaises(SystemExit) as e:
+                    self.names()
+                self.assertIn("is damaged", str(e.exception))
+
+    def test_scan_reads_the_inbox_named_in_box_relay(self):
+        (self.box / "relay").write_text("alice\n")
+        self.put(self.fwd("a1", "for alice"), to="demo/alice-inbox")
+        self.put(self.fwd("b1", "for bot"), to="demo/bot-inbox")
+        rc, res = self.run_fetch("scan")
+        self.assertEqual(rc, 0, res)
+        self.assertEqual([(r["id"], r["status"]) for r in res], [("a1", "complete")])
+
+    def test_damaged_file_stops_scan_and_done_but_not_send_status(self):
+        (self.box / "relay").write_text("\n")
+        for args in (("scan",), ("wait", "--timeout", "1", "x"), ("fetch", "--timeout", "1", "x"), ("done", "A")):
+            with self.subTest(args=args):
+                p = subprocess.run([sys.executable, str(HERE / "rn-fetch.py"), *args], env=self.env,
+                                   capture_output=True, text=True, timeout=60)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn("is damaged", p.stderr)
+        self.assertFalse((self.d / "inbox").exists())
+        p = subprocess.run([sys.executable, str(HERE / "rn-fetch.py"), "send-status"], env=self.env,
+                           input="→ demo/alice: queued", capture_output=True, text=True, timeout=60)
+        self.assertEqual((p.returncode, p.stdout), (0, "queued\n"))
+
+    def test_receipts_and_refwd_go_to_the_names_in_box_relay(self):
+        (self.box / "relay").write_text("alice\n")
+        calls = []
+
+        def run(args, **kw):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, f"→ {args[2]}: queued", "")
+        self.mod.HOME, self.mod.BASE = self.d / "state", self.d / "inbox"
+        self.db.execute("CREATE TABLE outbox (id TEXT)")
+        self.db.commit()
+        keep = {k: v for k, v in os.environ.items() if k not in ("RN_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME")}
+        env = dict(keep, RN_BOX=str(self.box), RN_BIN=str(self.d / "rn"), RN_REFWD_MAX="1000")
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(self.mod.subprocess, "run", run):
+            self.assertEqual(self.mod.send_got([], ["a"], KEY, "demo"), [])
+            self.mod.request_refwd("m", KEY, "demo")
+        self.assertEqual([c[1:5] for c in calls], [["send", "demo/alice", "-"],
+                                                   ["send", "demo/alice", "--from", "demo/alice-cloud"]])
 
 
 if __name__ == "__main__":

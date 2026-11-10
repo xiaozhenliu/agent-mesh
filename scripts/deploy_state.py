@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import relay_names
 from render_prompt import ROOT, render_prompt
 from write_launch_agent import launch_agent_bytes
 
@@ -35,15 +36,47 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def digest(field, lang):
+def env_path():
+    return home() / ".config/agent-relay/env"
+
+
+def relay_name(fallback=None):
+    if fallback and relay_names.problem(fallback):
+        raise ValueError(relay_names.problem(fallback))
+    name = relay_names.from_env(env_path())
+    if name is None:
+        return fallback or relay_names.DEFAULT
+    if fallback and fallback != name:
+        raise ValueError(f"{env_path()} uses the Bot address name {name}, not {fallback}")
+    return name
+
+
+def recorded_name(data):
+    value = data.get("relay_name")
+    return value if isinstance(value, str) and relay_names.problem(value) is None else None
+
+
+def name_status(data, fallback=None):
+    current = relay_name(fallback)
+    recorded = recorded_name(data)
+    if recorded is None:
+        return "unknown"
+    return "ok" if recorded == current else f"changed {recorded} {current}"
+
+
+def digest(field, lang, relay=None):
     if field == "cloud":
         parts = [sha((ROOT / "box" / name).read_bytes()) for name in ("rn-cloud.sh", "rn-fetch.py")]
         return sha("\n".join(parts).encode())
     if field == "cloud_setup":
         return sha((ROOT / "box/rn-cloud-setup.sh").read_bytes())
     if field == "prompt":
-        return sha(render_prompt("routine", lang).encode("utf-8"))
+        return sha(prompt_text(lang, relay).encode("utf-8"))
     raise ValueError(f"unknown field: {field}")
+
+
+def prompt_text(lang, relay=None):
+    return render_prompt("routine", lang, relay_name=relay_name(relay))
 
 
 def load(warn=True):
@@ -144,11 +177,18 @@ def cmd_status(args):
         print(f"{field} {remote_status(data, field, args.lang)}")
     txn = txn_of(data, warn=True)
     print(f"txn {txn['stage'] if txn else '-'}")
+    status = name_status(data)
+    print(f"name {status}" if status.startswith("changed ") else f"name {status} {relay_name()}")
 
 
 def cmd_mark(args):
     data = load(warn=False)
-    value = {"hash": digest(args.field, args.lang), "state": args.state}
+    status = name_status(data, args.relay_name)
+    if status.startswith("changed "):
+        _, recorded, current = status.split()
+        raise SystemExit(f"update: the Bot address name changed from {recorded} (recorded when this Mac was "
+                         f"installed) to {current}; renaming is not supported, nothing was recorded")
+    value = {"hash": digest(args.field, args.lang, args.relay_name), "state": args.state}
     old = entry(data, args.field)
     if args.expect and args.expect != value["hash"]:
         raise SystemExit(f"update: this checkout changed after {args.field} was shown; nothing was recorded, "
@@ -157,9 +197,19 @@ def cmd_mark(args):
         raise SystemExit(f"update: the {args.field} record changed after it was shown; nothing was recorded, "
                          "run ./update.sh again")
     data[args.field] = value
+    if status == "unknown":
+        data["relay_name"] = relay_name(args.relay_name)
     if args.field == "prompt":
         data["lang"] = args.lang
     save(data)
+
+
+def cmd_check_name(args):
+    print(name_status(load(warn=False), args.relay_name))
+
+
+def cmd_show_prompt(args):
+    sys.stdout.write(prompt_text(args.lang, args.relay_name))
 
 
 def cmd_lang(_args):
@@ -225,7 +275,15 @@ def main(argv=None):
     p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
     p.add_argument("--expect")
     p.add_argument("--if-pending", action="store_true")
+    p.add_argument("--relay-name")
     p.set_defaults(run=cmd_mark)
+    p = sub.add_parser("check-name")
+    p.add_argument("--relay-name")
+    p.set_defaults(run=cmd_check_name)
+    p = sub.add_parser("show-prompt")
+    p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
+    p.add_argument("--relay-name")
+    p.set_defaults(run=cmd_show_prompt)
     sub.add_parser("lang").set_defaults(run=cmd_lang)
     p = sub.add_parser("txn-start")
     p.add_argument("--lang", required=True, choices=("en", "zh-CN"))
@@ -242,7 +300,10 @@ def main(argv=None):
     p.set_defaults(run=cmd_txn_set)
     sub.add_parser("txn-clear").set_defaults(run=cmd_txn_clear)
     args = parser.parse_args(argv)
-    args.run(args)
+    try:
+        args.run(args)
+    except ValueError as error:
+        raise SystemExit(str(error))
 
 
 if __name__ == "__main__":

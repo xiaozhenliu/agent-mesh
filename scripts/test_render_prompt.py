@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shlex
 import subprocess
@@ -5,6 +6,9 @@ import sys
 import unittest
 
 from render_prompt import ROOT, render_prompt
+
+ROUTINE_V041 = {"en": "4f8c6ff1996cc1432a8079302597f67d5a8fef0d5579d10807e31e8ce4fdad96",
+                "zh-CN": "65c9e2ac143736c720a937868bad2e9ca43c369e875ab5b4ffcb370bbfd8fb23"}
 
 
 class Prompts(unittest.TestCase):
@@ -40,6 +44,39 @@ class Prompts(unittest.TestCase):
             self.assertIn("rn-cloud-setup.sh '<invite-link>' demo", text)
             self.assertNotIn("<mac-user>", text)
             self.assertNotIn("<repo-url>", text)
+
+    def test_default_relay_name_renders_the_routine_users_already_saved(self):
+        for lang, digest in ROUTINE_V041.items():
+            text = render_prompt("routine", lang, relay_name="bot")
+            self.assertEqual(hashlib.sha256(text.encode("utf-8")).hexdigest(), digest, lang)
+
+    def test_custom_relay_name_replaces_every_bot_address(self):
+        for lang in ("en", "zh-CN"):
+            routine = render_prompt("routine", lang, relay_name="alice")
+            setup = render_prompt("cloud-setup", lang, team_name="demo", mac_home="/Users/demo",
+                                  repo_url="https://example.invalid/repo.git", relay_name="alice")
+            for text in (routine, setup):
+                self.assertNotIn("<relay-name>", text)
+                self.assertNotIn("/bot", text)
+            self.assertIn("<team-name>/alice-cloud", routine)
+            self.assertIn("<team-name>/alice-inbox", routine)
+            self.assertIn("<team-name>/alice ", routine)
+            self.assertIn("'<invite-link>' demo alice", setup)
+            self.assertIn("box/relay", setup)
+        self.assertIn("地址含 alice 就把 relay", render_prompt("routine", "zh-CN", relay_name="alice"))
+        self.assertIn("A alice address", render_prompt("routine", relay_name="alice"))
+
+    def test_invalid_relay_names_are_refused(self):
+        for bad in ("Bot", "a;rm", "a--b", "terminal", "", "x" * 35, "a b"):
+            for template in ("routine", "cloud-setup"):
+                with self.assertRaises(ValueError, msg=bad):
+                    render_prompt(template, relay_name=bad)
+            result = subprocess.run([sys.executable, str(ROOT / "scripts/render_prompt.py"), "cloud-setup",
+                                     "--relay-name", bad], capture_output=True, text=True)
+            self.assertEqual((result.returncode, result.stdout), (1, ""), bad)
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/render_prompt.py"), "routine", "--lang", "zh-CN",
+                                 "--relay-name", "alice"], capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout, render_prompt("routine", "zh-CN", relay_name="alice"))
 
     def test_actual_mac_home_does_not_assume_users_directory(self):
         home = "/Volumes/People/Alex & Team"

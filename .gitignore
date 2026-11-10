@@ -18,6 +18,10 @@ outbound.key*
 **/state/
 box/bin/
 box/person
+box/.person.*
+box/relay
+box/relay.damaged-*
+box/.relay.*
 *.db
 *.db-wal
 *.db-shm

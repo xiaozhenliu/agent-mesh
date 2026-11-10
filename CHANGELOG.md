@@ -4,6 +4,40 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.0 — 2026-11-09
+
+Relay and cloud-script fixes, a choosable Bot address name and a tiered uninstaller.
+
+### Fixed
+
+- Relay: the webhook POST no longer follows HTTP redirects. A 3xx answer counts as a failed POST and is retried like any other failure; the log asks for the final address. `WEBHOOK_URL` must be the final address: if the relay log shows `webhook POST failed: 30x`, copy the webhook URL again from the routine and run `./install.sh --webhook`.
+- Relay: RN-OUT recipient addresses are checked against an allow-list. `to` must be `<person>/<session>[@<machine>]`, each part lowercase letters, digits and hyphens starting with a letter or digit, and a non-empty `reply_to` must be a plain message id. Anything else is refused before sending, with an alert; the nonce stays free, so a corrected envelope can be sent.
+- Relay: when a nonce that was refused or failed is tried again and the result is unknown, the earlier refusal or failure alert is withdrawn and the unknown alert says it replaces it, so the Bot no longer gets "may resend" and "do not resend" for the same message (#15).
+- Relay: a `done` receipt also withdraws a doorbell still queued for a message whose pending entry an RN-OUT reply had already ended, so the Bot is not woken once more (#17).
+- Cloud scripts: send results are judged on the engine's status words only. A recipient or team name containing words such as `held` or `error` (for example a team called `sheldon`) no longer makes a queued receipt, re-forward request or `rn-cloud.sh send` count as failed. For receipts and re-forward requests, an `rn send` that exits 0 without a `→` line now counts as failed, as the relay already required (#18).
+- Installer: team and machine names with repeated hyphens (such as `a--b`) are refused before anything is downloaded. The engine merged the hyphens, so the team ended up with another name than the one the installer and the prompts used (#25).
+- `box/rn-cloud-setup.sh` can run again on a cloud that already joined the team: when the full invite link shows the same team and the cloud is already `<team-name>/cloud`, it skips `join` instead of stopping there. A short invite code cannot show this; the engine then decides as before, and the error names the cause.
+
+### Added
+
+- `box/rn-fetch.py send-status` prints only the status words of an `rn send` output read on stdin; `rn-cloud.sh send` uses it.
+- `install.sh --relay-name <name>` chooses the Bot address name: the relay listens as `<team-name>/<name>`, the cloud uses `<name>-cloud` and `<name>-inbox`. Default `bot`; 1–34 lowercase letters and digits joined by single hyphens, not `terminal`. The name cannot be changed, also not for an unfinished installation. The installer refuses a name already used in the team, writes the relay settings atomically, and checks that the engine registered exactly that address; `check.sh` reports the name and the registration; `update.sh` and the deployment record refuse a changed name. The routine and cloud setup prompts take the name; with `bot` the routine prompt is byte-for-byte the same as in v0.4.1. On the cloud, `rn-cloud-setup.sh` records the name in `box/relay`, and `rn-cloud.sh` and `rn-fetch.py` read it (`bot` without the file; an empty or damaged file stops them) and check after each registration that the engine used exactly that name.
+- Regression test for a relay stopped after the engine accepted an RN-OUT and before the result was saved: after the restart the send is reported once as unknown and not sent again (#14).
+- `box/rn-cloud-uninstall.sh` and the prompt `prompts/cloud-uninstall.md`: the uninstaller fills in the cloud script and embeds it, with its SHA-256 checksum, in the prompt for Grok Bot. On `[BOT-CLOUD]` the script checks the team, the cloud's machine name, `box/person` and `box/relay`, and that the Mac is online; `check` changes nothing and prints a `PROOF` value made with the deployment's signing key; `apply <code>` runs only with the code the Mac shows for a matching `PROOF`, leaves the team and removes the cloud's identity, key and names. It looks for other programs that use `box/` first (`SHARED:` lines, `accept-shared` only with the user's consent) and, at level `all`, lists the user's own files before removing `inbox/`, `threads/` and the clone; it keeps the clone when Git cannot list everything or a local branch, tag or `HEAD` has commits that no remote branch has. References to `agent-mesh/box` anywhere under `/workspace`, also relative ones, and files too large to check count as shared. A cloud identity whose engine is missing ends with `INCOMPLETE` instead of `DONE`.
+
+### Changed
+
+- `./uninstall.sh` is now a tiered uninstaller for both computers. Without options it only lists what is installed, including the team, the Bot address names, the queue, the dsh bridge and deployments it did not install; `--plan` shows what each level removes and keeps. `--level program` removes only the relay program and keeps the identity, settings, signing key, queue and logs, so `./install.sh --restart-relay` brings it back without touching the cloud. `--level identity` also leaves the team on both computers and removes keys and identity; `--level all` (`--all`) also removes logs, the engine, the dsh backups and the cloud's data. The deeper levels run only in a terminal, ask for the team name (`delete <team-name>` for `all`), stop before changing anything when names disagree or a path is unsafe, never touch other relays or login services (`--plan` shows the `I accept` gate; processes are shown without arguments), never stop a `com.local.agent-relay` service loaded from another home, and run the cloud step before this Mac leaves the team. A symlinked dsh temporary file stops them before dsh is touched, and `dsh/mac-uninstall.sh` no longer writes through one. `--residual` cleans up the cloud after an older `--all`; `--cloud-prompt` repeats the cloud step.
+- `./uninstall.sh` without options no longer removes anything, and `-y` works only with `--level program`: `./uninstall.sh -y` and `./uninstall.sh --all -y` now stop with a usage error.
+
+### Upgrade notes
+
+The relay and the cloud scripts changed; the routine prompt is unchanged. Run `git pull`, then `./update.sh --lang <en|zh-CN>` in a terminal, and follow its guided steps. Until the cloud scripts are updated, the old cloud classification stays in effect, including for team names that contain `held`. Check that `WEBHOOK_URL` is the final address before updating the relay.
+
+The uninstaller changed: scripts or notes that run `./uninstall.sh -y` or `./uninstall.sh --all -y` need `--level program --yes` or a run of `--level identity` / `--level all` in a terminal; see the README's Uninstall section. Run `git pull` before uninstalling an older installation.
+
+Existing installations keep the Bot address name `bot` and need no migration. The cloud setup script changed, so `update.sh` asks once whether the cloud side is set up for this version: answer yes. The next `./install.sh --webhook` adds the three name lines to the relay settings without changing their values. An installation with another Bot address name cannot go back to an earlier version: older cloud scripts ignore `box/relay` and send to `<team-name>/bot`. Renaming is not supported in any case; a different name needs a full uninstall and a new install.
+
 ## v0.4.1 — 2026-11-08
 
 The cloud script no longer reports the Mac offline when it is connected.

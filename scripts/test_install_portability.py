@@ -1,5 +1,7 @@
 """Installation checks with fake tools and a disposable home; never contact real services."""
+import base64
 import hashlib
+import io
 import json
 import os
 import plistlib
@@ -10,12 +12,14 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
 from render_prompt import ROOT, render_prompt
+from test_render_prompt import ROUTINE_V041
 from write_launch_agent import write_launch_agent
 
 
@@ -56,9 +60,17 @@ class Installation(unittest.TestCase):
 
     def engine(self):
         path = self.home / ".local/bin/reason-network"
-        self.tool("reason-network", 'case "$1" in --version) echo "reason-network $MOCK_VERSION" ;; '
-                                    'invite) echo "rn invite" >> "$CALL_LOG"; echo "For a cloud agent of yours send it: fake-invite" ;; '
-                                    'setup) echo "rn setup $*" >> "$CALL_LOG" ;; *) exit 0 ;; esac', path)
+        self.who = self.base / "who"
+        self.who.mkdir(exist_ok=True)
+        (self.who / "all.json").write_text(json.dumps(EMPTY_DIRECTORY))
+        self.env["MOCK_WHO"] = str(self.who)
+        self.tool("reason-network", '[ "$1" = --version ] || echo "rn $*" >> "$CALL_LOG"\n'
+                                    'case "$1" in --version) echo "reason-network $MOCK_VERSION" ;; '
+                                    'invite) echo "For a cloud agent of yours send it: fake-invite" ;; '
+                                    'who) [ ! -f "$MOCK_WHO/fail" ] || exit 1; '
+                                    'if [ "$*" = "who --all --json" ]; then cat "$MOCK_WHO/all.json"; '
+                                    'elif [ -f "$MOCK_WHO/text" ]; then cat "$MOCK_WHO/text"; fi ;; '
+                                    '*) exit 0 ;; esac', path)
         cfg = self.home / ".reason/network/config.toml"
         cfg.parent.mkdir(parents=True)
         cfg.write_text('person = "demo"\n')
@@ -84,13 +96,16 @@ class Installation(unittest.TestCase):
         self.assertNotIn("curl", self.calls())
         self.assertNotIn("bootstrap", self.calls())
 
-    def configured(self):
+    def configured(self, relay=None):
         """An installed engine plus a configured relay: env with a webhook, and the current key."""
         self.engine()
         conf = self.home / ".config/agent-relay"
         conf.mkdir(parents=True)
-        (conf / "env").write_text("WEBHOOK_URL=https://example.invalid/hook\nWEBHOOK_KEY=0123456789\n"
+        (conf / "env").write_text(f"RN_BIN={self.home}/.local/bin/reason-network\nPERSON=demo\n"
+                                  "WEBHOOK_URL=https://example.invalid/hook\nWEBHOOK_KEY=0123456789\n"
                                   "OUTBOUND_KEY_FILE=~/.config/agent-relay/outbound.key\n")
+        if relay:
+            self.set_names(relay)
         key = conf / "outbound.key"
         key.write_text("a" * 64 + "\n")
         key.chmod(0o600)
@@ -103,22 +118,23 @@ class Installation(unittest.TestCase):
         self.state.mkdir(exist_ok=True)
         log = self.home / "Library/Logs/agent-relay.log"
         self.env["MOCK_LAUNCHD"] = str(self.state)
+        (self.state / "register.py").write_text(REGISTER)
         self.tool("launchctl", f"""echo "launchctl $*" >> "$CALL_LOG"
 S="$MOCK_LAUNCHD"
 case "$1" in
   print)
     case "$2" in
-      */com.local.agent-relay) [ -f "$S/loaded" ] || exit 113; [ -f "$S/dead" ] || echo "state = running" ;;
+      */com.local.agent-relay) [ -f "$S/loaded" ] || exit 113; [ ! -s "$S/loaded" ] || echo "	path = $(cat "$S/loaded")"; [ -f "$S/dead" ] || echo "state = running" ;;
     esac ;;
   bootout) rm -f "$S/loaded" ;;
   bootstrap)
     rm -f "$S/dead"
     if [ -f "$S/fail-bootstrap" ]; then rm -f "$S/fail-bootstrap"; exit 5; fi
     if [ -f "$S/hang" ]; then rm -f "$S/hang"; : > "$S/hanging"; while [ ! -f "$S/go" ]; do /bin/sleep 0.1; done; fi
-    : > "$S/loaded"
+    printf '%s' "$3" > "$S/loaded"
     python3 -c 'import hashlib, plistlib, sys; p = plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"][1]; print(hashlib.sha256(open(p, "rb").read()).hexdigest())' "$3" >> "$S/started"
     if [ -f "$S/die" ]; then rm -f "$S/die"; : > "$S/dead"; fi
-    if [ -f "$S/no-up" ]; then rm -f "$S/no-up"; else echo "agent-relay up" >> "{log}"; fi ;;
+    if [ -f "$S/no-up" ]; then rm -f "$S/no-up"; else echo "agent-relay up" >> "{log}"; python3 "$S/register.py"; fi ;;
 esac
 exit 0""")
         self.tool("sleep", "exit 0")
@@ -273,6 +289,252 @@ exit 0""")
             self.assertIn(error, result.stderr)
             self.assertNotIn("curl", self.calls())
 
+    def test_names_the_engine_would_change_are_refused_before_downloads(self):
+        for args in (("--name", "a--b"), ("--name", "demo", "--machine", "m--1"), ("--name", "x" * 41),
+                     ("--name", "demo-")):
+            result = self.run_script("install.sh", *args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertIn("none repeated", result.stderr, args)
+        self.assertEqual(self.run_script("install.sh", "--name", "x" * 40).returncode, 73)
+        self.tool("sha256sum", "exit 0")
+        self.env.update(MOCK_OS="Linux", MOCK_ARCH="x86_64")
+        (self.base / "calls").unlink()
+        for person in ("a--b", "x" * 41, "-a"):
+            result = self.run_script("box/rn-cloud-setup.sh", "fake-invite", person)
+            self.assertNotEqual(result.returncode, 0, person)
+            self.assertIn("invalid team/person name", result.stderr, person)
+        self.assertNotIn("curl", self.calls())
+
+    def cloud_box(self):
+        """A cloud directory with this checkout's rn-cloud-setup.sh, a fake download and a fake engine."""
+        self.box = self.base / "workspace" / "box"
+        self.box.mkdir(parents=True)
+        shutil.copy(ROOT / "box/rn-cloud-setup.sh", self.box / "rn-cloud-setup.sh")
+        self.mock = self.base / "mock"
+        self.mock.mkdir()
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+            item = tarfile.TarInfo("reason-network")
+            item.mode, item.size = 0o755, len(CLOUD_ENGINE)
+            tar.addfile(item, io.BytesIO(CLOUD_ENGINE.encode()))
+        (self.mock / "e.tgz").write_bytes(archive.getvalue())
+        for name in ("cut", "gzip"):
+            found = shutil.which(name)
+            if found and not (self.bin / name).exists():
+                (self.bin / name).symlink_to(found)
+        self.tool("curl", 'echo "curl $*" >> "$CALL_LOG"; out=""; prev=""\n'
+                          'for a in "$@"; do [ "$prev" != -o ] || out="$a"; prev="$a"; done\n'
+                          'case "$*" in *.sha256*) echo "fakesum  e.tgz" > "$out" ;; *) cat "$MOCK_BOX/e.tgz" > "$out" ;; esac')
+        self.tool("sha256sum", 'echo "fakesum  $1"')
+        real_sed, real_mv = shutil.which("sed"), shutil.which("mv")
+        self.tool("sed", f'[ "$1" != -i ] || exit 0\nexec "{real_sed}" "$@"')
+        self.tool("mv", f'eval "last=\\${{$#}}"\n'
+                        f'if [ -f "$MOCK_BOX/fail-mv" ] && [ "$last" = "$RN_CLOUD_BASE/person" ]; then exit 1; fi\n'
+                        f'exec "{real_mv}" "$@"')
+        self.env.update(MOCK_OS="Linux", MOCK_ARCH="x86_64", RN_CLOUD_BASE=str(self.box), MOCK_BOX=str(self.mock))
+
+    def cloud_state(self, team=None, rows=()):
+        (self.box / "state").mkdir(exist_ok=True)
+        db = sqlite3.connect(self.box / "state" / "network.db")
+        db.executescript(SESSIONS)
+        if team is not None:
+            db.execute("INSERT OR REPLACE INTO kv VALUES ('team', ?)", (team,))
+        for name, key in rows:
+            db.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?, 'cli', '/', NULL, NULL, NULL, 'pull', 1)",
+                       (name, key))
+        db.commit()
+        db.close()
+
+    def joined_before(self, team=None, me="demo  cloud"):
+        self.cloud_state(json.dumps({"id": team or TEAM_ID, "name": "demo"}))
+        (self.mock / "joined").write_text("")
+        (self.mock / "team").write_text(f"team demo · relay: n0 public relays\n  demo  mac    direct 4ms\n"
+                                        f"  {me}  this machine\n")
+
+    def setup(self, *args):
+        return subprocess.run(["/bin/bash", str(self.box / "rn-cloud-setup.sh"), *args], env=self.env, input="",
+                              capture_output=True, text=True, timeout=30)
+
+    def names_files(self):
+        return {f.name: f.read_text() for f in self.box.iterdir() if f.is_file() and f.name != "rn-cloud-setup.sh"}
+
+    def test_cloud_setup_writes_the_relay_name_then_the_team_name(self):
+        self.cloud_box()
+        result = self.setup(invite(), "demo")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.names_files(), {"relay": "bot\n", "person": "demo\n"})
+        self.assertIn("Bot address: demo/bot (this cloud uses bot-cloud and bot-inbox)", result.stdout)
+        moves = [l for l in self.calls().splitlines() if "rn join" in l]
+        self.assertEqual(len(moves), 1)
+        shutil.rmtree(self.box / "state")
+        (self.mock / "joined").unlink()
+        for f in ("relay", "person"):
+            (self.box / f).unlink()
+        result = self.setup(invite(), "demo", "alice")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.names_files(), {"relay": "alice\n", "person": "demo\n"})
+        self.assertIn("Bot address: demo/alice", result.stdout)
+
+    def test_cloud_setup_order_relay_before_person(self):
+        self.cloud_box()
+        self.tool("mv", 'echo "mv ${3:-$2}" >> "$CALL_LOG"\n' f'exec "{shutil.which("mv")}" "$@"')
+        result = self.setup(invite(), "demo", "alice")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        moves = [l.rsplit("/", 1)[-1] for l in self.calls().splitlines() if l.startswith("mv ")]
+        self.assertEqual(moves, ["relay", "person"])
+        self.assertEqual([f.name for f in self.box.iterdir() if f.name.startswith(".")], [])
+
+    def test_cloud_setup_rerun_in_the_same_team_skips_join(self):
+        self.cloud_box()
+        for link in (invite(), invite().rsplit("#", 1)[1], "  " + invite() + "\n"):
+            with self.subTest(link=link[:20]):
+                self.joined_before()
+                (self.base / "calls").unlink(missing_ok=True)
+                result = self.setup(link, "demo", "alice")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("already joined this team as demo/cloud; the invite is not used", result.stdout)
+                self.assertNotIn("rn join", self.calls())
+                self.assertEqual(self.names_files()["relay"], "alice\n")
+
+    def test_cloud_setup_in_a_team_with_the_same_name_but_another_id_stops(self):
+        self.cloud_box()
+        self.joined_before(team=OTHER_TEAM_ID)
+        result = self.setup(invite(), "demo", "alice")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("rn join", self.calls())
+        self.assertIn("different team", result.stderr)
+        self.assertIn("already in team 'demo'", result.stderr)
+        self.assertEqual(self.names_files(), {})
+
+    def test_cloud_setup_joined_as_someone_else_stops_without_join(self):
+        self.cloud_box()
+        for me in ("demo  laptop", "eve   cloud"):
+            with self.subTest(me=me):
+                self.joined_before(me=me)
+                result = self.setup(invite(), "demo")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("review the existing deployment", result.stderr)
+                self.assertNotIn("rn join", self.calls())
+                self.assertEqual(self.names_files(), {})
+
+    def test_cloud_setup_that_cannot_confirm_the_team_lets_the_engine_decide(self):
+        self.cloud_box()
+        cases = (("short code", "apple-river-stone-cloud", None),
+                 ("bad base64", invite().replace("#tincan1", "#tincan1!!"), None),
+                 ("cut off", invite(cut=10), None),
+                 ("no id", invite(), json.dumps({"name": "demo"})),
+                 ("bad json", invite(), "{"),
+                 ("no team rows", invite(), "team-output"))
+        for label, link, team in cases:
+            with self.subTest(label):
+                self.joined_before()
+                if team == "team-output":
+                    (self.mock / "team").write_text("something else\n")
+                elif team is not None:
+                    self.cloud_state(team)
+                (self.base / "calls").unlink(missing_ok=True)
+                result = self.setup(link, "demo", "alice")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("rn join", self.calls())
+                self.assertIn("could not confirm", result.stderr)
+                self.assertIn("already in team 'demo'", result.stderr)
+                self.assertEqual(self.names_files(), {})
+
+    def test_cloud_setup_with_an_unreadable_database_lets_the_engine_decide(self):
+        self.cloud_box()
+        self.joined_before()
+        (self.box / "state" / "network.db").write_bytes(b"not a database" * 100)
+        result = self.setup(invite(), "demo")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not confirm", result.stderr)
+
+    def test_cloud_setup_never_renames(self):
+        self.cloud_box()
+        (self.box / "person").write_text("demo\n")
+        (self.box / "relay").write_text("alice\n")
+        result = self.setup(invite(), "demo", "bob")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("uses the Bot address name alice; renaming is not supported", result.stderr)
+        self.assertNotIn("curl", self.calls())
+        self.assertEqual(self.names_files(), {"relay": "alice\n", "person": "demo\n"})
+
+    def test_cloud_setup_on_an_older_setup_needs_proof_for_a_custom_name(self):
+        self.cloud_box()
+        (self.box / "person").write_text("demo\n")
+        for rows in ((), (("alice-inbox", "cli:someone-else"),)):
+            with self.subTest(rows=rows):
+                self.cloud_state(rows=rows)
+                result = self.setup(invite(), "demo", "alice")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cannot be proven", result.stderr)
+                self.assertNotIn("curl", self.calls())
+                self.assertNotIn("relay", self.names_files())
+        self.joined_before()
+        result = self.setup(invite(), "demo", "bot")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.names_files()["relay"], "bot\n")
+        (self.box / "relay").unlink()
+        self.cloud_state(rows=(("alice-inbox", "cli:alice-inbox"),))
+        result = self.setup(invite(), "demo", "alice")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.names_files()["relay"], "alice\n")
+
+    def test_cloud_setup_repairs_a_damaged_relay_file_only_with_proof(self):
+        self.cloud_box()
+        for text in ("", "Bot\n", "a--b\n"):
+            with self.subTest(text=text):
+                for f in self.box.glob("relay*"):
+                    f.unlink()
+                (self.box / "person").write_text("demo\n")
+                (self.box / "relay").write_text(text)
+                shutil.rmtree(self.box / "state", ignore_errors=True)
+                self.joined_before()
+                result = self.setup(invite(), "demo", "alice")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cannot be proven", result.stderr)
+                self.assertNotIn("uses the Bot address name", result.stderr)
+                self.assertIn("box/relay is damaged", result.stderr)
+                self.assertEqual((self.box / "relay").read_text(), text)
+                self.assertEqual(list(self.box.glob("relay.damaged-*")), [])
+                self.cloud_state(rows=(("alice-inbox", "cli:alice-inbox"),))
+                result = self.setup(invite(), "demo", "alice")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.box / "relay").read_text(), "alice\n")
+                (backup,) = self.box.glob("relay.damaged-*")
+                self.assertEqual(backup.read_text(), text)
+        for f in self.box.glob("relay*"):
+            f.unlink()
+        (self.box / "relay").write_text("\n")
+        result = self.setup(invite(), "demo", "bot")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.box / "relay").read_text(), "bot\n")
+        self.assertEqual(len(list(self.box.glob("relay.damaged-*"))), 1)
+
+    def test_cloud_setup_interrupted_between_the_two_files_can_run_again(self):
+        self.cloud_box()
+        (self.mock / "fail-mv").write_text("")
+        result = self.setup(invite(), "demo", "alice")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not write", result.stderr)
+        self.assertEqual(self.names_files(), {"relay": "alice\n"})
+        self.assertEqual([f.name for f in self.box.iterdir() if f.name.startswith(".")], [])
+        (self.mock / "fail-mv").unlink()
+        (self.mock / "team").write_text("team demo · relay: n0 public relays\n  demo  cloud  this machine\n")
+        self.cloud_state(json.dumps({"id": TEAM_ID, "name": "demo"}))
+        result = self.setup(invite(), "demo", "alice")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.names_files(), {"relay": "alice\n", "person": "demo\n"})
+
+    def test_cloud_setup_invalid_relay_names_stop_before_any_download(self):
+        self.cloud_box()
+        for name in ("Bot", "a--b", "terminal", "terminal-2", "x" * 35, "a/b"):
+            with self.subTest(name=name):
+                result = self.setup(invite(), "demo", name)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid Bot address name", result.stderr)
+        self.assertNotIn("curl", self.calls())
+        self.assertEqual(self.names_files(), {})
+
     def test_cloud_runtime_on_mac_fails_before_accessing_cloud_paths(self):
         result = self.run_script("box/rn-cloud.sh", "who")
         self.assertNotEqual(result.returncode, 0)
@@ -406,23 +668,14 @@ exit 0""")
         self.assertEqual(patch.read_text(), "- before: 1\n# === reason-network MCP BEGIN ===\nold\n"
                                              "# === reason-network MCP END ===\n- unrelated: 2\n")
 
-    def test_uninstall_all_stops_before_removing_the_engine_if_dsh_cleanup_fails(self):
+    def test_legacy_uninstall_all_yes_is_refused_and_changes_nothing(self):
         patch, _, plugin = self.dsh_installed()
-        patch.write_text(patch.read_text().replace("# === reason-network-bridge END ===\n", ""))
+        before = patch.read_text()
         result = self.run_script("uninstall.sh", "--all", "-y")
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("Reason Network was left in place", result.stdout)
-        self.assertTrue((self.home / ".local/bin/reason-network").exists())
-        self.assertTrue((self.home / ".reason/network/config.toml").exists())
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(patch.read_text(), before)
         self.assertTrue(plugin.exists())
-
-    def test_uninstall_all_drops_dsh_bridge_without_restoring(self):
-        patch, _, plugin = self.dsh_installed()
-        result = self.run_script("uninstall.sh", "--all", "-y")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(patch.read_text(), "- before: 1\n- after: 2\n- added later: 3\n")
-        self.assertFalse(plugin.exists())
-        self.assertIn("dsh bridge block", result.stdout)
+        self.assertTrue((self.home / ".reason/network/config.toml").exists())
 
     def relay_files(self):
         return (self.home / ".local/lib/agent-mesh/agent_relay.py",
@@ -452,8 +705,8 @@ exit 0""")
         self.tool("git", GIT_STUB)
         return repo
 
-    def installed(self, record=True):
-        self.configured()
+    def installed(self, record=True, relay=None):
+        self.configured(relay)
         repo = self.repo()
         result = self.run_script("install.sh", "--restart-relay", root=repo)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -469,11 +722,11 @@ exit 0""")
     def service_changes(self):
         return [line for line in self.call_lines() if line.startswith(("launchctl bootout", "launchctl bootstrap"))]
 
-    def run_tty(self, root, *args, answers=()):
+    def run_tty(self, root, *args, answers=(), script="update.sh"):
         master, slave = pty.openpty()
         try:
             os.write(master, "".join(answer + "\n" for answer in answers).encode() + b"\x04")
-            return subprocess.run(["/bin/bash", str(root / "update.sh"), *args], env=self.env, stdin=slave,
+            return subprocess.run(["/bin/bash", str(root / script), *args], env=self.env, stdin=slave,
                                   capture_output=True, text=True, timeout=60)
         finally:
             os.close(slave)
@@ -661,8 +914,10 @@ exit 0""")
         self.assertEqual(self.run_script("install.sh", "--webhook", "--lang", "zh-CN").returncode, 0)
         data = self.record()
         self.assertEqual((data["cloud"]["state"], data["prompt"]["state"]), ("pending", "pending"))
-        self.assertEqual(self.run_script("uninstall.sh", "-y").returncode, 0)
-        self.assertIsNone(self.record())
+        result = self.run_script("uninstall.sh", "--level", "program", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(any(path.exists() for path in self.relay_files()))
+        self.assertEqual(self.record()["prompt"]["state"], "pending")
 
     def test_update_reports_up_to_date_without_touching_anything(self):
         repo = self.installed()
@@ -944,6 +1199,373 @@ exit 0""")
         self.assertEqual(plugin.read_bytes(), b"previous plugin")
         self.assertEqual(list(plugin.parent.glob(".reason-network-bridge.mjs.*")), [])
 
+
+    def env_file(self):
+        return self.home / ".config/agent-relay/env"
+
+    def set_names(self, relay, extra=""):
+        env = self.env_file()
+        keep = [line for line in env.read_text().splitlines()
+                if not line.startswith(("LISTEN_NAME=", "CLOUD_NAME=", "INBOX_NAME="))]
+        names = [f"LISTEN_NAME={relay}", f"CLOUD_NAME={relay}-cloud", f"INBOX_NAME={relay}-inbox"]
+        env.write_text("\n".join(keep + names) + "\n" + extra)
+
+    def fresh(self):
+        self.engine()
+        self.launchd()
+        self.env["AGENT_MESH_REGISTER_WAIT"] = "2"
+        real_sed = shutil.which("sed")
+        if subprocess.run([real_sed, "--version"], capture_output=True).returncode == 0:
+            self.tool("sed", f'if [ "$1" = -i ] && [ "$2" = "" ]; then shift 2; exec "{real_sed}" -i "$@"; fi\n'
+                             f'exec "{real_sed}" "$@"')
+
+    def sessions(self, rows):
+        path = self.home / ".reason/network/network.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(path)
+        db.executescript(SESSIONS)
+        for name, key, last_seen in rows:
+            db.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?, 'cli', '/', NULL, NULL, NULL, 'pull', ?)",
+                       (name, key, last_seen))
+        db.commit()
+        db.close()
+        return path
+
+    def webhook(self, root=ROOT):
+        master, slave = pty.openpty()
+        try:
+            proc = subprocess.Popen(["/bin/bash", str(root / "install.sh"), "--webhook"], env=self.env, stdin=slave,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            os.write(master, b"https://example.invalid/hook\n")
+            out_fd, err_fd = proc.stdout.fileno(), proc.stderr.fileno()
+            got = {out_fd: b"", err_fd: b""}
+            open_fds, sent, deadline = set(got), False, time.time() + 60
+            while open_fds and time.time() < deadline:
+                ready, _, _ = select.select(list(open_fds) + [master], [], [], 0.2)
+                for fd in ready:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except OSError:
+                        chunk = b""
+                    if fd == master:
+                        continue
+                    if not chunk:
+                        open_fds.discard(fd)
+                    got[fd] += chunk
+                if not sent and b"(not echoed): " in got[err_fd]:
+                    os.write(master, b"0123456789\n\x04")
+                    sent = True
+            proc.wait(timeout=10)
+            proc.stdout.close()
+            proc.stderr.close()
+            return subprocess.CompletedProcess(proc.args, proc.returncode, got[out_fd].decode(), got[err_fd].decode())
+        finally:
+            os.close(slave)
+            os.close(master)
+
+    def rn_calls(self):
+        return [line for line in self.call_lines() if line.startswith("rn ")]
+
+    def state_cmd(self, *args, root=ROOT):
+        return subprocess.run([sys.executable, str(root / "scripts/deploy_state.py"), *args], env=self.env,
+                              capture_output=True, text=True)
+
+    def test_relay_name_fresh_install_seeds_the_env_and_records_the_name(self):
+        self.fresh()
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "alice", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        env = self.env_file()
+        lines = env.read_text().splitlines()
+        for line in ("LISTEN_NAME=alice", "CLOUD_NAME=alice-cloud", "INBOX_NAME=alice-inbox"):
+            self.assertEqual(lines.count(line), 1, line)
+        self.assertFalse([line for line in lines if line.startswith(("WEBHOOK_URL=", "WEBHOOK_KEY="))])
+        self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+        self.assertIn("<team-name>/alice-cloud", result.stdout)
+        self.assertIn("<team-name>/alice ", result.stdout)
+        self.assertNotIn("<relay-name>", result.stdout)
+        self.assertIn("rn who --all --json", self.rn_calls())
+        data = self.record()
+        self.assertEqual(data["relay_name"], "alice")
+        self.assertEqual(data["prompt"]["hash"], self.state_cmd("digest", "prompt").stdout.strip())
+        self.assertEqual(self.state_cmd("show-prompt").stdout, render_prompt("routine", "en", relay_name="alice"))
+
+        result = self.webhook()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("relay registered as demo/alice", result.stdout)
+        lines = env.read_text().splitlines()
+        for line in ("LISTEN_NAME=alice", "CLOUD_NAME=alice-cloud", "INBOX_NAME=alice-inbox",
+                     "WEBHOOK_URL=https://example.invalid/hook"):
+            self.assertEqual(lines.count(line), 1, line)
+        for register, said in (("alice-2", "registered as alice-2 instead of demo/alice"),
+                               ("-", "registered as nothing instead of demo/alice")):
+            self.env["MOCK_REGISTER"] = register
+            result = self.webhook()
+            self.assertNotEqual(result.returncode, 0, register)
+            self.assertIn(said, result.stderr, register)
+        db = self.sessions([("alice", "cli:alice", 1)])
+        con = sqlite3.connect(db)
+        con.execute("DELETE FROM sessions WHERE name = 'alice-2'")
+        con.commit()
+        con.close()
+        result = self.webhook()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("registered as nothing instead", result.stderr)
+        db.unlink()
+        result = self.webhook()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("registered as nothing (no engine database", result.stderr)
+
+    def test_relay_name_cannot_be_changed_even_before_the_install_finished(self):
+        self.fresh()
+        self.assertEqual(self.run_script("install.sh", "--name", "demo", "--relay-name", "alice", "--yes").returncode, 0)
+        env, record = self.env_file(), self.home / ".local/lib/agent-mesh/deployed.json"
+        before = (env.read_bytes(), record.read_bytes())
+        (self.base / "calls").unlink()
+        for args in (("--name", "demo", "--relay-name", "bob", "--yes"), ("--webhook", "--relay-name", "bob"),
+                     ("--cloud-prompt", "--relay-name", "bob")):
+            result = self.run_script("install.sh", *args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertIn("Renaming is not supported", result.stderr, args)
+            self.assertEqual((env.read_bytes(), record.read_bytes()), before, args)
+            self.assertEqual(self.rn_calls(), [], args)
+        result = self.run_script("install.sh", "--cloud-prompt", "--relay-name", "alice")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Bot address: demo/alice (cloud sessions alice-cloud, alice-inbox)", result.stdout)
+        self.set_names("bob")
+        result = self.run_script("install.sh", "--webhook")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("installed with the Bot address name 'alice', but", result.stderr)
+        self.assertIn("now gives 'bob'", result.stderr)
+        env.unlink()
+        for args in ((), ("--relay-name", "bob")):
+            result = self.run_script("install.sh", "--name", "demo", "--yes", *args)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertIn("is gone", result.stderr, args)
+            self.assertIn("--relay-name alice", result.stderr, args)
+            self.assertFalse(env.exists(), args)
+
+    def test_relay_name_on_an_install_without_name_keys_is_bot(self):
+        self.configured()
+        result = self.run_script("install.sh", "--cloud-prompt", "--relay-name", "bot")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("rn-cloud-setup.sh '<invite-link>' demo bot.", result.stdout)
+        self.assertIn("Bot address: demo/bot (cloud sessions bot-cloud, bot-inbox)", result.stdout)
+        self.assertNotIn("<relay-name>", result.stdout)
+        result = self.run_script("install.sh", "--cloud-prompt", "--relay-name", "alice")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("uses the Bot address name 'bot'. Renaming is not supported", result.stderr)
+        self.assertEqual(self.record()["relay_name"], "bot")
+
+    def test_invalid_relay_names_stop_before_any_download(self):
+        for name in ("Bot", "a--b", "terminal", "terminal-3", "x" * 35, "a_b"):
+            result = self.run_script("install.sh", "--name", "demo", "--relay-name", name)
+            self.assertNotEqual(result.returncode, 0, name)
+            self.assertIn("--relay-name: the Bot address name", result.stderr, name)
+        self.assertNotIn("curl", self.calls())
+
+    def test_relay_name_taken_in_the_team_stops_before_setup(self):
+        self.fresh()
+        row = {"address": "demo/alice-inbox", "name": "alice-inbox", "person": "demo", "machine": "laptop",
+               "agent": "cli", "cwd": "~", "repo": None, "branch": None, "status": "offline", "since": 1,
+               "doing": None, "tier": "pull", "unread": 0, "is_me": False}
+        listing = self.who / "all.json"
+        args = ("install.sh", "--name", "demo", "--relay-name", "alice", "--yes")
+        for content, said in ((json.dumps(dict(EMPTY_DIRECTORY, sessions=[row])),
+                               "demo/alice-inbox (machine laptop, offline) already exists"),
+                              ("not json", "could not check the session names"),
+                              ('{"sessions": [{}]}', "could not check the session names")):
+            listing.write_text(content)
+            result = self.run_script(*args)
+            self.assertNotEqual(result.returncode, 0, content)
+            self.assertIn(said, result.stderr, content)
+            self.assertIn("rn who --all --json", self.rn_calls(), content)
+            self.assertFalse([line for line in self.rn_calls() if line.startswith("rn setup")], content)
+            self.assertFalse(self.env_file().exists(), content)
+        listing.write_text(json.dumps(EMPTY_DIRECTORY))
+        (self.who / "fail").write_text("")
+        result = self.run_script(*args)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("who --all --json failed", result.stderr)
+        (self.who / "fail").unlink()
+        self.sessions([("alice-2", "cli:alice", 1000)])
+        result = self.run_script(*args)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already registered the relay key for alice as alice-2", result.stderr)
+        self.assertFalse([line for line in self.rn_calls() if line.startswith("rn setup")])
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "bob", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_relay_names_not_derived_from_one_name_stop_without_showing_secrets(self):
+        repo = self.installed()
+        env = self.env_file()
+        env.write_text(env.read_text() + "LISTEN_NAME=x\n")
+        for script, args, root in (("install.sh", ("--webhook",), ROOT), ("update.sh", ("--no-pull", "--plan"), repo)):
+            result = self.run_script(script, *args, root=root)
+            out = result.stdout + result.stderr
+            self.assertNotEqual(result.returncode, 0, script)
+            self.assertIn("not derived from one Bot address name: x, bot-cloud, bot-inbox", out, script)
+            self.assertNotIn("0123456789", out, script)
+            self.assertNotIn("example.invalid", out, script)
+        self.assertEqual(self.service_changes(), [])
+
+    def test_env_writes_replace_the_whole_file_or_nothing(self):
+        self.fresh()
+        real = (self.bin / "mv").resolve()
+        self.tool("mv", f'case "$*" in */agent-relay/env) [ ! -f "$MOCK_LAUNCHD/fail-mv" ] || exit 1 ;; esac\n'
+                        f'exec "{real}" "$@"')
+        conf = self.env_file().parent
+        args = ("install.sh", "--name", "demo", "--relay-name", "alice", "--yes")
+        (self.state / "fail-mv").write_text("")
+        result = self.run_script(*args)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not write", result.stderr)
+        self.assertFalse(self.env_file().exists())
+        self.assertEqual(list(conf.glob(".env.*")), [])
+        (conf / ".env.Ab12Cd").write_text("leftover")
+        (self.state / "fail-mv").unlink()
+        result = self.run_script(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("LISTEN_NAME=alice", self.env_file().read_text())
+        self.assertEqual(list(conf.glob(".env.*")), [])
+        before = self.env_file().read_bytes()
+        (self.state / "fail-mv").write_text("")
+        result = self.webhook()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not write", result.stderr)
+        self.assertEqual(self.env_file().read_bytes(), before)
+        self.assertEqual(list(conf.glob(".env.*")), [])
+        (self.state / "fail-mv").unlink()
+        result = self.webhook()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("WEBHOOK_URL=https://example.invalid/hook", self.env_file().read_text())
+
+    def test_update_prints_the_prompt_that_deploy_state_hashes(self):
+        repo = self.installed(relay="alice")
+        data = self.record()
+        self.assertEqual(data["relay_name"], "alice")
+        data["prompt"]["state"] = "pending"
+        self.write_record(data)
+        result = self.run_tty(repo, "--no-pull", answers=["n", "y", "y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        shown = self.state_cmd("show-prompt", root=repo).stdout
+        self.assertIn("<team-name>/alice-cloud", shown)
+        self.assertIn("this one (en):\n" + "-" * 64 + "\n" + shown + "\n" + "-" * 64 + "\n", result.stdout)
+        self.assertEqual(self.record()["prompt"]["hash"], self.state_cmd("digest", "prompt", root=repo).stdout.strip())
+
+    def test_update_accepts_records_from_before_the_name_was_recorded(self):
+        repo = self.installed()
+        old = self.record()
+        old.pop("relay_name")
+        old["prompt"]["hash"] = ROUTINE_V041["en"]
+        self.write_record(old)
+        result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"routine prompt\s+unchanged")
+        self.assertRegex(result.stdout, r"address name\s+unknown\s+bot")
+        self.assertEqual(self.state_cmd("status", "--lang", "en", "--python", sys.executable, root=repo).stdout.splitlines()[-1], "name unknown bot")
+        self.set_names("alice")
+        result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"address name\s+unknown\s+alice")
+        self.mark(repo, "cloud", "confirmed")
+        self.assertEqual(self.record()["relay_name"], "alice")
+        self.assertRegex(self.run_script("update.sh", "--no-pull", "--plan", root=repo).stdout,
+                         r"address name\s+ok\s+alice")
+        self.set_names("bob")
+        before = self.record()
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("now gives 'bob'. Renaming is not supported", result.stderr)
+        self.assertIn("nothing was changed", result.stderr)
+        result = self.run_script("install.sh", "--webhook", root=repo)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("now gives 'bob'", result.stderr)
+        result = self.state_cmd("mark", "prompt", "pending", root=repo)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("changed from alice", result.stderr)
+        self.assertEqual(self.record(), before)
+        self.assertEqual(self.service_changes(), [])
+
+    def test_check_reports_the_relay_name_and_its_registration(self):
+        self.configured(relay="alice")
+        text = self.who / "text"
+        now = int(time.time() * 1000)
+
+        def check():
+            return self.run_script("check.sh").stdout
+
+        out = check()
+        self.assertIn("PASS  relay name: alice", out)
+        self.assertIn("SKIP  relay session (the engine has no session database yet)", out)
+        text.write_text("  alice  cli  ~/work  idle\n  repo-claude  claude-code  ~/repo  idle\n")
+        db = self.sessions([("alice", "cli:alice", now)])
+        self.assertIn("PASS  relay listening as demo/alice", check())
+        text.write_text("  repo-claude  claude-code  ~/repo  idle\n")
+        self.assertIn("SKIP  relay session (appears a few seconds", check())
+        for who in ("  alice  cli  ~/work  idle\n", ""):
+            text.write_text(who)
+            self.sessions([("alice-2", "cli:alice", now + 1)])
+            self.assertIn("FAIL  relay registered under another name: demo/alice-2", check(), who)
+        db.unlink()
+        self.sessions([("bob", "cli:bob", now)])
+        self.assertIn("SKIP  relay session (appears a few seconds", check())
+        env = self.env_file()
+        env.write_text(env.read_text() + "LISTEN_NAME=x\n")
+        out = check()
+        self.assertIn("FAIL  relay names in env are not derived from one name", out)
+        self.assertNotIn("0123456789", out)
+        env.unlink()
+        self.assertIn("PASS  relay name: bot (default)", check())
+
+
+TEAM_ID = "5f0c2a9be14d4c7aa3d1e2f30415a6b7"
+OTHER_TEAM_ID = "0123456789abcdef0123456789abcdef"
+
+
+def invite(team=TEAM_ID, cut=None):
+    data = bytes.fromhex(team) + bytes(range(16)) + bytes([4]) + b"demo" + bytes([0, 0, 0]) + bytes(range(32))
+    ticket = "tincan1" + base64.urlsafe_b64encode(data[:cut]).decode().rstrip("=")
+    return f"join my Reason Network team as demo: https://reason.network/join/#{ticket}"
+
+
+CLOUD_ENGINE = """#!/bin/sh
+echo "rn $*" >> "$CALL_LOG"
+case "$1" in
+  join) if [ -f "$MOCK_BOX/joined" ]; then echo "Error: already in team 'demo' (with demo/mac); leave it first"; exit 1; fi
+        : > "$MOCK_BOX/joined"; echo "joined team demo as demo/cloud" ;;
+  team) [ ! -f "$MOCK_BOX/team" ] || cat "$MOCK_BOX/team" ;;
+  doctor) echo "peers: 1 connected" ;;
+esac
+exit 0
+"""
+
+
+EMPTY_DIRECTORY = {"team": "demo", "person": "demo", "machine": "mac", "machines": [], "sessions": []}
+
+SESSIONS = """CREATE TABLE IF NOT EXISTS sessions (name TEXT PRIMARY KEY, key TEXT NOT NULL, agent TEXT NOT NULL,
+cwd TEXT NOT NULL, repo TEXT, branch TEXT, doing TEXT, tier TEXT NOT NULL, last_seen INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);"""
+
+REGISTER = f'''import os, sqlite3, sys, time
+from pathlib import Path
+home = Path(os.environ["HOME"])
+name = os.environ.get("MOCK_REGISTER", "")
+if name == "-":
+    sys.exit(0)
+listen = "bot"
+env = home / ".config/agent-relay/env"
+if env.exists():
+    for line in env.read_text().splitlines():
+        if line.startswith("LISTEN_NAME="):
+            listen = line.split("=", 1)[1]
+db = home / ".reason/network/network.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+con = sqlite3.connect(db)
+con.executescript("""{SESSIONS}""")
+con.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?, 'cli', '/', NULL, NULL, NULL, 'pull', ?)",
+            (name or listen, "cli:" + listen, int(time.time() * 1000)))
+con.commit()
+'''
 
 GIT_STUB = r'''[ "$1" = -C ] && shift 2
 echo "git $*" >> "$CALL_LOG"

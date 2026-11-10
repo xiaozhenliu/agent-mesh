@@ -24,15 +24,16 @@ Speak to the user in their language. Keep status updates short. Run commands fro
 3. If `$HOME/.local/bin` is not in PATH, prefix later Bash/zsh commands with `export PATH="$HOME/.local/bin:$PATH";`. Before persisting it, identify the user's actual shell: use `~/.zshrc` for zsh, the startup file actually read by Bash, or `fish_add_path "$HOME/.local/bin"` for fish; do not always edit zsh configuration. Check the path, version, and default state directory of any existing Reason Network installation. Report incompatibility before proceeding; do not overwrite another installation or immediately uninstall it. If the repository directory exists, review its origin and local changes first; the local directory can be chosen freely.
 4. Ask the user, in one message:
    - Which of Claude Code, Codex, pi, DeepSeek Harness they use. Anything else is out of scope; say so.
-   - A **team name**, which is also their name inside the team: 1-40 ASCII lowercase letters, digits, or `-`, with no leading/trailing hyphen; not their real name; cannot be changed later.
+   - A **team name**, which is also their name inside the team: 1-40 ASCII lowercase letters, digits, or `-`, with no leading/trailing or repeated hyphen; not their real name; cannot be changed later.
+   - A **Bot address name**, default `bot`: lowercase letters and digits joined by single `-`, at most 34 characters, not `terminal`; cannot be changed later.
    - Whether their Grok Bot can create a webhook-triggered routine and use CopyToBox (both required).
    - That the Mac will stay awake (System Settings: prevent sleep on power; a closed lid stops everything).
 
 ## Stage 1: local installation ([LOCAL] installing agent)
 
-1. `cd` into the public distribution and run `./install.sh --name <team-name> --lang en`.
+1. `cd` into the public distribution and run `./install.sh --name <team-name> --relay-name <relay-name> --lang en`.
    It installs Reason Network, creates the team, prints the `reason-network setup --dry-run` plan and exits with code 3 because nothing can be confirmed without a terminal.
-2. Show the plan to the user and ask "OK to apply?". On yes, run `./install.sh --name <team-name> --yes --lang en`.
+2. Show the plan to the user and ask "OK to apply?". On yes, run `./install.sh --name <team-name> --relay-name <relay-name> --yes --lang en`.
    It applies setup, generates the signing key, prints the routine prompt and exits 0 at the webhook step.
 3. Give the user, verbatim, the text the script printed between the dashed lines, with this instruction: "In `[GROK-UI]`, create a routine triggered by a webhook and paste this as its prompt. The panel then shows a Webhook URL and a key. Open a terminal on `[LOCAL]`, your local computer, run `./install.sh --webhook --lang en` in this repository folder and paste both there. Tell me when it says `relay up`." Use the selected language in that command too. The Bot will execute the routine prompt on `[BOT-CLOUD]`; the local installing agent must not run its commands.
 4. Wait for the user. Then run `./check.sh`: everything under relay must be PASS. `cloud machine` may still be SKIP.
@@ -46,7 +47,7 @@ Speak to the user in their language. Keep status updates short. Run commands fro
 ## Stage 3: sessions and smoke test
 
 1. **`[LOCAL]` User:** close and reopen any Claude Code or Codex session that was open before stage 1; Codex asks once, choose "Trust all and continue".
-2. **`[LOCAL]` Installing agent:** run `reason-network send <team-name>/bot "test 1"`. Here `bot` is the relay address on the Mac. Expected within 30 seconds: the local `~/Library/Logs/agent-relay.log` gains a `forwarded` line and a `POST … code=200` line. Grok Bot wakes, retrieves the body and replies on `[BOT-CLOUD]`; the reply may reach the user's local session or be collected with `reason-network listen --as terminal --wait 120` on `[LOCAL]`.
+2. **`[LOCAL]` Installing agent:** run `reason-network send <team-name>/<relay-name> "test 1"`. Here `<relay-name>` is the relay address on the Mac (`bot` by default; the installer prints it as `Bot address:`). Expected within 30 seconds: the local `~/Library/Logs/agent-relay.log` gains a `forwarded` line and a `POST … code=200` line. Grok Bot wakes, retrieves the body and replies on `[BOT-CLOUD]`; the reply may reach the user's local session or be collected with `reason-network listen --as terminal --wait 120` on `[LOCAL]`.
 3. **`[GROK-UI]` User → `[BOT-CLOUD]` Grok Bot:** ask the Bot to run `/workspace/agent-mesh/box/rn-cloud.sh who` on its cloud computer and send one sentence to a specific `[LOCAL]` session, for example `<team-name>/<folder>-claude`. Expected: the sentence appears inside the local session even if it was idle; when the local session replies, Grok Bot is woken again.
 4. Report both results as they happened. Do not claim success for a test you did not observe.
 
@@ -63,7 +64,7 @@ Repair commands below run on `[LOCAL]`; invite retries and `fetch` run on `[BOT-
 
 - Cloud side reports `couldn't reach the machine that made the invite`: stage 0 step 2 regressed (the Mac's VPN/proxy is intercepting `*.iroh.link` again). Fix it as in stage 0 step 2, run `reason-network stop` on the Mac, and have Grok Bot retry with the same invite.
 - Relay log shows `webhook POST failed`: check the Webhook URL and key by asking the user to run `./install.sh --webhook --lang en` again (substitute their chosen language). Do not read the env file.
-- `install.sh` stops because the Mac is already in a team under another name: names cannot change. Only on the user's explicit decision run `./uninstall.sh --all -y`, then start again from stage 1.
+- `install.sh` stops because the Mac is already in a team under another name: names cannot change. Only on the user's explicit decision, ask the user to run `./uninstall.sh --level identity` in their own terminal (it needs typed confirmation and a step with Grok Bot), then start again from stage 1.
 - Anything else: show the user the exact error and the matching README section.
 
 ## Update
@@ -72,4 +73,4 @@ Repair commands below run on `[LOCAL]`; invite retries and `fetch` run on `[BOT-
 
 ## Removal
 
-`[LOCAL]`: `./uninstall.sh` removes the relay; `./uninstall.sh --all` also removes Reason Network and leaves the team. Both keep this folder. Ask the user before running either. Follow the order in the guide's [Uninstall](README.md#uninstall) section: check first whether anything else on either computer shares Reason Network or `/workspace/agent-mesh/box`; for a full uninstall the user pauses the routine in `[GROK-UI]`, the Bot leaves the team and removes `/workspace/agent-mesh` on `[BOT-CLOUD]`, then `./uninstall.sh --all` runs on `[LOCAL]`, and finally the user deletes the routine.
+`[LOCAL]`: run `git pull` first, then `./uninstall.sh --plan` and show the user its output; it lists what is installed and what each level removes, and changes nothing. With the user's consent you may run `./uninstall.sh --level program --yes`, which removes only the relay program; `./install.sh --restart-relay` brings it back. Levels `identity` (also leave the team on both computers and remove keys and identity) and `all` (also logs, the engine and the cloud's data) need typed confirmation and a step in Grok Bot: ask the user to run `./uninstall.sh --level identity` or `--level all` in their own terminal and follow the guide's [Uninstall](README.md#uninstall) section. Without a terminal they exit with code 3. All levels keep this folder. Never remove files by hand instead, and never touch a deployment the uninstaller lists as foreign.

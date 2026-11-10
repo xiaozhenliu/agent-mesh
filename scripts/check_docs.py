@@ -59,14 +59,34 @@ def check_docs():
         try:
             en = render_prompt(template, "en")
             zh = render_prompt(template, "zh-CN")
-            placeholders = lambda text: set(re.findall(r"<(?:repo-url|team-name|mac-home|invite-link)>", text))
+            placeholders = lambda text: set(re.findall(r"<(?:repo-url|team-name|mac-home|invite-link|relay-name)>",
+                                                       text))
             if placeholders(en) != placeholders(zh):
                 errors.append(f"{template}: translated placeholders differ")
             if template == "cloud-setup" and placeholders(en) != {
-                    "<repo-url>", "<team-name>", "<mac-home>", "<invite-link>"}:
+                    "<repo-url>", "<team-name>", "<mac-home>", "<invite-link>", "<relay-name>"}:
                 errors.append("cloud-setup: expected placeholders are missing")
+            if template == "routine":
+                for lang, text in (("en", en), ("zh-CN", zh)):
+                    if placeholders(text) != {"<team-name>", "<relay-name>"}:
+                        errors.append(f"routine ({lang}): expected placeholders <team-name> and <relay-name>")
+                    for fixed in ("/bot", "bot-cloud", "bot-inbox", "含 bot"):
+                        if fixed in text:
+                            errors.append(f"routine ({lang}): fixed Bot address {fixed!r}; use <relay-name>")
         except (OSError, ValueError) as error:
             errors.append(str(error))
+    try:
+        found = lambda text: set(re.findall(r"<(?:team-name|mac-machine|relay-name|level|mode|challenge|"
+                                            r"script-sha256|cloud-script)>", text))
+        expected = {"<team-name>", "<mac-machine>", "<relay-name>", "<level>", "<mode>", "<challenge>"}
+        for lang in ("en", "zh-CN"):
+            text = render_prompt("cloud-uninstall", lang)
+            if found(text) != expected:
+                errors.append(f"cloud-uninstall ({lang}): expected placeholders {sorted(expected)}")
+            if text.count("AGENT_MESH_UNINSTALL_EOF") != 2 or "```" in text:
+                errors.append(f"cloud-uninstall ({lang}): the cloud script is not embedded once as a heredoc")
+    except (OSError, ValueError) as error:
+        errors.append(str(error))
     en = (ROOT / "README.md").read_text(encoding="utf-8")
     zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
     vectors = lambda text: set(re.findall(r"\b[0-9a-f]{64}\b", text))

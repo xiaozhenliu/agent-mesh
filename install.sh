@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agent-mesh: install the Mac side in one run.
-#   ./install.sh --name <team-name> [--machine mac] [--yes] [--lang en|zh-CN]
+#   ./install.sh --name <team-name> [--relay-name bot] [--machine mac] [--yes] [--lang en|zh-CN]
 #   ./install.sh --webhook        enter (or change) the routine's Webhook URL and key, then (re)start the relay
 #   ./install.sh --cloud-prompt   print the invite and the text to send to Grok Bot again
 #   ./install.sh --rotate-key     replace the signing key, restart the relay, print how to copy it to the cloud
@@ -10,8 +10,10 @@
 #   ./install.sh --restart-relay  (used by update.sh) install this checkout's relay and restart it; rolls back on failure
 #   ./install.sh --preflight      (used by update.sh) check this Mac and the existing installation; changes nothing
 # --lang selects prompt language in every mode. Default: AGENT_MESH_LANG, otherwise en. Diagnostics stay English.
-# The team name is also your name inside the team: 1-40 chars, lowercase letters, digits and '-', not your real
-# name. It is fixed once the team exists.
+# The team name is also your name inside the team: 1-40 chars, lowercase letters and digits joined by single '-',
+# not your real name. It is fixed once the team exists.
+# --relay-name picks the Bot's address <team-name>/<name> (default bot; the cloud uses <name>-cloud and
+# <name>-inbox): 1-34 chars, the same character rules, not terminal. It cannot be changed once chosen.
 # What it does: installs Reason Network, creates your private team, wires your local agents (after showing the
 # plan), generates the signing key, asks for the routine's webhook, installs the relay as a login service, then
 # prints what to send to Grok Bot. Re-running is safe.
@@ -29,12 +31,13 @@ ROLLBACK="$LIB_DIR/rollback"
 CFG="$HOME/.reason/network/config.toml"
 export REASON_NETWORK_NO_PROMPT=1
 
-NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG="${AGENT_MESH_LANG:-en}"
+NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG="${AGENT_MESH_LANG:-en}"; RELAY_NAME_ARG=""
 REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="${2:?}"; shift 2 ;;
     --machine) MACHINE="${2:?}"; shift 2 ;;
+    --relay-name) RELAY_NAME_ARG="${2:?Bot address name}"; shift 2 ;;
     --yes|-y) YES=1; shift ;;
     --webhook) MODE=webhook; shift ;;
     --cloud-prompt) MODE=cloud; shift ;;
@@ -45,7 +48,7 @@ while [ $# -gt 0 ]; do
     --repo-url) REPO_URL="${2:?public HTTPS repository URL}"; shift 2 ;;
     --version) echo "agent-mesh $PROJECT_VERSION (Reason Network ${VERSION#v})"; exit 0 ;;
     --lang) [ $# -ge 2 ] || { echo "install: --lang needs en or zh-CN" >&2; exit 2; }; DOC_LANG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1"; sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
@@ -56,9 +59,18 @@ esac
 
 say() { printf '\n== %s\n' "$*"; }
 die() { echo "install: $*" >&2; exit 1; }
-valid_name() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$ ]]; }
-current_person() { if [ -f "$CFG" ]; then sed -n 's/^person = "\(.*\)"/\1/p' "$CFG" | head -n 1; fi; }
+valid_name() { [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#1}" -le 40 ]; }
+current_person() { if [ -f "$CFG" ]; then sed -n '/^person = "\(.*\)"/{s//\1/p;q;}' "$CFG"; fi; }
 render_prompt() { "$PYTHON" "$HERE/scripts/render_prompt.py" "$@" --lang "$DOC_LANG"; }
+deploy_state() { "$PYTHON" "$HERE/scripts/deploy_state.py" "$@"; }
+relay_names() { "$PYTHON" "$HERE/scripts/relay_names.py" "$@"; }
+now_ms() { "$PYTHON" -c 'import time; print(int(time.time() * 1000))'; }
+
+rename_refused() {
+  die "this installation uses the Bot address name '$1'. Renaming is not supported, also not for an unfinished
+installation: queued mail, the routine prompt and the cloud setup all use the current name. Run again without
+--relay-name to keep '$1', or remove the installation including its identity (README: Uninstall) and install again."
+}
 have_webhook() { [ -f "$ENV_FILE" ] && grep -Eq '^WEBHOOK_URL=https://' "$ENV_FILE" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$ENV_FILE"; }
 
 relay_env() {   # NAME=value for each given name set in the env file, parsed like agent_relay.load_env (last wins)
@@ -77,31 +89,54 @@ for k in sys.argv[2:]:
 PY
 }
 
-write_env() {   # $1 url, $2 key; keeps the user's optional settings (e.g. DOORBELL_PREVIEW_CHARS=0) from the old file
-  local kept=""
-  [ ! -f "$ENV_FILE" ] || kept="$(relay_env LISTEN_NAME CLOUD_NAME INBOX_NAME CLOUD_MACHINE MAX_WAKES_PER_HOUR \
-    MIN_SECONDS_BETWEEN_WAKES MAX_BATCH MAX_PROXY_PER_HOUR MAX_SPOOL WEBHOOK_MAX_BODY_CHARS DOORBELL_PREVIEW_CHARS \
-    FWD_COPY_DAYS REFWD_MAX_PER_ID REFWD_MAX_PER_HOUR GOT_TIMEOUT_SECONDS GOT_DONE_SECONDS GOT_MAX_RERINGS \
-    NONCE_KEEP_SECONDS)" || die "cannot read $ENV_FILE; nothing changed"
-  ( umask 077; cat > "$ENV_FILE" <<EOF
+env_text() {
+  cat <<EOF
 # agent-relay config (mode 600). Never paste these values into a chat.
 RN_BIN=$RN
 PERSON=$(current_person)
-WEBHOOK_URL=$1
-WEBHOOK_KEY=$2
+EOF
+  [ -z "$1" ] || printf 'WEBHOOK_URL=%s\nWEBHOOK_KEY=%s\n' "$1" "$2"
+  cat <<EOF
 OUTBOUND_KEY_FILE=$KEY_FILE
+# The Bot address name, chosen with install.sh --relay-name; renaming is not supported, do not edit these three.
+LISTEN_NAME=$RELAY_NAME
+CLOUD_NAME=$RELAY_NAME-cloud
+INBOX_NAME=$RELAY_NAME-inbox
 # Optional, shown with defaults:
-# LISTEN_NAME=bot  CLOUD_NAME=bot-cloud  INBOX_NAME=bot-inbox  CLOUD_MACHINE=cloud
+# CLOUD_MACHINE=cloud
 # MAX_WAKES_PER_HOUR=20  MIN_SECONDS_BETWEEN_WAKES=20  MAX_BATCH=10  MAX_PROXY_PER_HOUR=60  MAX_SPOOL=1000
 # WEBHOOK_MAX_BODY_CHARS=3500  DOORBELL_PREVIEW_CHARS=200  FWD_COPY_DAYS=7  REFWD_MAX_PER_ID=2  REFWD_MAX_PER_HOUR=20
 # GOT_TIMEOUT_SECONDS=900  GOT_DONE_SECONDS=7200  GOT_MAX_RERINGS=2  NONCE_KEEP_SECONDS=86400
 EOF
-    [ -z "$kept" ] || printf '%s\n' "$kept" >> "$ENV_FILE"
-  )
+}
+
+put_env() {
+  local tmp
+  rm -f "$CONF_DIR"/.env.??????
+  tmp="$(mktemp "$CONF_DIR/.env.XXXXXX")" || die "cannot create a temporary file in $CONF_DIR; $ENV_FILE is unchanged"
+  if ! { env_text "$1" "$2" > "$tmp" && { [ -z "$3" ] || printf '%s\n' "$3" >> "$tmp"; } \
+      && chmod 600 "$tmp" && mv -f "$tmp" "$ENV_FILE"; }; then
+    rm -f "$tmp"
+    die "could not write $ENV_FILE; it is unchanged"
+  fi
+}
+
+seed_env() {
+  [ ! -f "$ENV_FILE" ] || return 0
+  put_env "" "" ""
+}
+
+write_env() {   # $1 url, $2 key; keeps the user's optional settings (e.g. DOORBELL_PREVIEW_CHARS=0) from the old file
+  local kept=""
+  [ ! -f "$ENV_FILE" ] || kept="$(relay_env CLOUD_MACHINE MAX_WAKES_PER_HOUR \
+    MIN_SECONDS_BETWEEN_WAKES MAX_BATCH MAX_PROXY_PER_HOUR MAX_SPOOL WEBHOOK_MAX_BODY_CHARS DOORBELL_PREVIEW_CHARS \
+    FWD_COPY_DAYS REFWD_MAX_PER_ID REFWD_MAX_PER_HOUR GOT_TIMEOUT_SECONDS GOT_DONE_SECONDS GOT_MAX_RERINGS \
+    NONCE_KEEP_SECONDS)" || die "cannot read $ENV_FILE; nothing changed"
+  put_env "$1" "$2" "$kept"
 }
 
 record_pending() {
-  "$PYTHON" "$HERE/scripts/deploy_state.py" mark "$1" pending --lang "$DOC_LANG" \
+  deploy_state mark "$1" pending --lang "$DOC_LANG" --relay-name "$RELAY_NAME" \
     || echo "note: could not update $LIB_DIR/deployed.json; ./update.sh will ask about this step"
 }
 
@@ -227,15 +262,32 @@ start_relay() {
   return 1
 }
 
+check_registered() {
+  local actual="" rc=0 waited=0
+  while :; do
+    rc=0; actual="$(relay_names registered "$RELAY_NAME" --since "$1" 2>&1)" || rc=$?
+    if [ "$rc" = 0 ] && [ -n "$actual" ]; then break; fi
+    [ "$waited" -lt "${AGENT_MESH_REGISTER_WAIT:-15}" ] || break
+    sleep 1; waited=$((waited + 1))
+  done
+  if [ "$rc" = 0 ] && [ "$actual" = "$RELAY_NAME" ]; then
+    echo "relay registered as $(current_person)/$RELAY_NAME"
+    return 0
+  fi
+  if [ "$rc" != 0 ]; then actual="nothing ($actual)"; elif [ -z "$actual" ]; then actual=nothing; fi
+  die "the relay registered as $actual instead of $(current_person)/$RELAY_NAME; another session in the team may use this name (reason-network who --all). The relay keeps running but gets no mail for $RELAY_NAME; see README: Troubleshooting"
+}
+
 webhook_step() {
   [ -n "$(current_person)" ] && [ -s "$KEY_FILE" ] \
     || die "team or signing key missing; run ./install.sh --name <team-name> first"
   mkdir -p "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
+  seed_env
   if [ "$MODE" = webhook ] || ! have_webhook; then
     record_pending prompt
     echo "[GROK-UI] User: create a webhook-triggered routine in Grok Bot and paste this prompt. The Bot executes it on [BOT-CLOUD], its cloud computer:"
     echo "----------------------------------------------------------------"
-    render_prompt routine
+    deploy_state show-prompt --lang "$DOC_LANG" --relay-name "$RELAY_NAME"
     echo "----------------------------------------------------------------"
     echo "The routine panel then shows a Webhook URL and a key."
     if [ ! -t 0 ]; then
@@ -250,7 +302,10 @@ webhook_step() {
     write_env "$url" "$key"
   fi
   chmod 600 "$ENV_FILE"
+  local t0
+  t0="$(now_ms)"
   start_relay
+  check_registered "$t0"
 }
 
 cloud_prompt() {
@@ -266,9 +321,10 @@ cloud_prompt() {
   echo "----------------------------------------------------------------"
   echo "$invite"
   echo
-  render_prompt cloud-setup --team-name "$person" --mac-home "$HOME" --repo-url "$repo"
+  render_prompt cloud-setup --team-name "$person" --mac-home "$HOME" --repo-url "$repo" --relay-name "$RELAY_NAME"
   echo "----------------------------------------------------------------"
   echo "[GROK-UI] User: approve CopyToBox from [LOCAL] $KEY_FILE to [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key. Afterwards the installing agent runs ./check.sh on [LOCAL]."
+  echo "Bot address: $person/$RELAY_NAME (cloud sessions $RELAY_NAME-cloud, $RELAY_NAME-inbox)"
 }
 
 # The relay reads the key only at start, so a new key always means a restart. The old key is not kept: rotation is
@@ -280,7 +336,7 @@ rotate_key() {
   # Rotating $KEY_FILE only helps if that is the key the relay actually loads.
   local src
   src="$(relay_env OUTBOUND_KEY OUTBOUND_KEY_FILE)" || die "cannot read $ENV_FILE; the key is unchanged"
-  if printf '%s\n' "$src" | grep -Eq '^OUTBOUND_KEY=.'; then
+  if grep -Eq '^OUTBOUND_KEY=.' <<<"$src"; then
     die "$ENV_FILE sets OUTBOUND_KEY inline, which the relay prefers over $KEY_FILE; remove that line, then rotate again"
   fi
   [ "$(printf '%s\n' "$src" | sed -n 's/^OUTBOUND_KEY_FILE=//p')" = "$KEY_FILE" ] \
@@ -359,6 +415,20 @@ launchctl print "gui/$(id -u)" >/dev/null 2>&1 \
   || die "custom REASON_NETWORK_HOME is not supported; use the default user profile or stop to review your existing deployment"
 export REASON_NETWORK_HOME="$HOME/.reason/network"
 case "$REPO_URL" in https://*) ;; *) die "--repo-url must be a public HTTPS clone URL accessible without cloud credentials" ;; esac
+if [ -n "$RELAY_NAME_ARG" ]; then
+  why="$(relay_names check "$RELAY_NAME_ARG" 2>&1)" || die "--relay-name: $why"
+fi
+CURRENT="$(relay_names env "$ENV_FILE" 2>&1)" \
+  || die "$CURRENT. The installer manages only <name>, <name>-cloud, <name>-inbox; make LISTEN_NAME/CLOUD_NAME/INBOX_NAME match or remove all three, then run again"
+[ -z "$RELAY_NAME_ARG" ] || [ -z "$CURRENT" ] || [ "$RELAY_NAME_ARG" = "$CURRENT" ] || rename_refused "$CURRENT"
+RELAY_NAME="${CURRENT:-${RELAY_NAME_ARG:-bot}}"
+recorded="$(deploy_state check-name --relay-name "$RELAY_NAME" 2>&1)" || die "$recorded"
+case "$recorded" in
+  "changed "*)
+    recorded="${recorded#changed }"; recorded="${recorded%% *}"
+    [ -n "$CURRENT" ] || die "this Mac was installed with the Bot address name '$recorded' (recorded in $LIB_DIR/deployed.json), and $ENV_FILE is gone. Renaming is not supported: run again with --relay-name $recorded, or remove the installation including its identity (README: Uninstall) and install again."
+    die "this Mac was installed with the Bot address name '$recorded', but $ENV_FILE now gives '$CURRENT'. Renaming is not supported: put LISTEN_NAME/CLOUD_NAME/INBOX_NAME back to '$recorded', or remove the installation including its identity (README: Uninstall) and install again." ;;
+esac
 
 # Never replace a user's different engine version or create a second PATH installation silently.
 existing="$(command -v reason-network || true)"
@@ -388,7 +458,7 @@ esac
 
 [ -n "$NAME" ] || die "need --name <team-name> (run with --help)"
 valid_name "$NAME" && valid_name "$MACHINE" \
-  || die "the name must be 1-40 chars of lowercase letters, digits and '-', not starting or ending with '-'"
+  || die "the name must be 1-40 chars of lowercase letters and digits, joined by single '-' (no '-' at the start or end, none repeated: Reason Network would merge them)"
 
 say "1/6 network"
 code="$(curl -sS -o /dev/null -m 10 -w '%{http_code}' https://aps1-1.relay.n0.iroh.link/ 2>/dev/null || true)"
@@ -431,6 +501,11 @@ for kv in "auto_update = false" "lan = false"; do
 done
 "$RN" stop >/dev/null 2>&1 || true
 "$RN" team
+if [ ! -f "$ENV_FILE" ]; then
+  sessions="$("$RN" who --all --json)" \
+    || die "could not list the team's sessions (reason-network who --all --json failed), so the Bot address name '$RELAY_NAME' was not checked; nothing else was changed, run again"
+  taken="$(relay_names conflicts "$RELAY_NAME" <<<"$sessions" 2>&1)" || die "$taken"
+fi
 
 say "4/6 wiring your local agents"
 "$RN" setup --dry-run
@@ -450,6 +525,7 @@ say "5/6 signing key and routine webhook"
 mkdir -p "$CONF_DIR" "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"; chmod 700 "$CONF_DIR"
 [ -s "$KEY_FILE" ] || ( umask 077; openssl rand -hex 32 > "$KEY_FILE" )
 chmod 600 "$KEY_FILE"
+seed_env
 webhook_step
 
 say "6/6 cloud side"

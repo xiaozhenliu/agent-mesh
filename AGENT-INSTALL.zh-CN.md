@@ -22,12 +22,12 @@
 1. 先按指南「准备」检查 `[LOCAL]` 和 `[BOT-CLOUD]` 的依赖。`[LOCAL]` 的 `uname -s` 应输出 `Darwin`，CPU 为 arm64 或 x86_64；当前用户应已登录桌面，不用 sudo。运行 `git --version` 和 `python3 -c 'import sys, ssl, sqlite3; print(sys.version)'`，要求 Git 可用、Python 3.9+。缺少 Git/Python 时可先运行 `xcode-select --install`，等用户完成安装后重新检查，不把“已发起安装”当作已就绪。已有 agent 也须先安装、登录并能独立工作。
 2. 运行 `curl -sS -o /dev/null -m 10 -w '%{http_code}\n' https://aps1-1.relay.n0.iroh.link/`，应输出 `200`。失败时先让用户关掉 VPN/代理重试；若恢复，给 `iroh.link` 及所有子域添加直连规则（TUN、虚拟网卡、增强或全局模式也需要），并排除 HTTPS 解密/MITM。用 `curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer` 查看，应是公共 CA（目前是 Let's Encrypt）而非代理自己的 CA。引擎可能使用多台中继，规则应覆盖整个域名。关闭代理后仍失败则排查 DNS、防火墙和网络。返回 200 后再继续。
 3. 如果 `$HOME/.local/bin` 不在 PATH，后续 Bash/zsh 命令加上 `export PATH="$HOME/.local/bin:$PATH";` 前缀。持久配置前确认用户实际使用的 shell：zsh 用 `~/.zshrc`，Bash 用实际读取的启动文件，fish 用 `fish_add_path "$HOME/.local/bin"`，不要统一修改 zsh 配置。检查现有 Reason Network 的路径、版本和默认状态目录；不兼容时先报告，不覆盖另一套安装，也不直接卸载。仓库目录已存在时先核对 origin 和本地改动；本地目录可以自选。
-4. 一次向用户确认：使用 Claude Code、Codex、pi、DeepSeek Harness 中的哪些（其他工具不在本手册支持范围）；团队名（同时是 person 名，1–40 个 ASCII 小写字母、数字或 `-`，首尾不能是 `-`，不用真名，建好不能直接改）；Grok Bot 能否创建 webhook routine 并使用 CopyToBox（都必须支持）；Mac 是否会保持唤醒（接电防睡眠，合盖会让整套停止）。
+4. 一次向用户确认：使用 Claude Code、Codex、pi、DeepSeek Harness 中的哪些（其他工具不在本手册支持范围）；团队名（同时是 person 名，1–40 个 ASCII 小写字母、数字或 `-`，首尾不能是 `-`、不能连用，不用真名，建好不能直接改）；Bot 地址名（默认 bot；小写字母、数字，用单个 `-` 分隔，最多 34 个字符，不能是 terminal；以后不能修改）；Grok Bot 能否创建 webhook routine 并使用 CopyToBox（都必须支持）；Mac 是否会保持唤醒（接电防睡眠，合盖会让整套停止）。
 
 ## 第 1 阶段：本地安装（[LOCAL] 安装 agent）
 
-1. 进入公开发行目录，运行 `./install.sh --name <team-name> --lang zh-CN`。它安装引擎、建团队、打印 `reason-network setup --dry-run` 计划；非交互终端不能确认，所以以退出码 3 停下。
-2. 展示计划并请求用户确认。确认后运行 `./install.sh --name <team-name> --yes --lang zh-CN`。它应用接入配置、生成签名密钥、打印 routine 提示词，并在 webhook 步骤以退出码 0 停下。
+1. 进入公开发行目录，运行 `./install.sh --name <team-name> --relay-name <relay-name> --lang zh-CN`。它安装引擎、建团队、打印 `reason-network setup --dry-run` 计划；非交互终端不能确认，所以以退出码 3 停下。
+2. 展示计划并请求用户确认。确认后运行 `./install.sh --name <team-name> --relay-name <relay-name> --yes --lang zh-CN`。它应用接入配置、生成签名密钥、打印 routine 提示词，并在 webhook 步骤以退出码 0 停下。
 3. 把分隔线之间的提示词原样交给用户，说明：「在 `[GROK-UI]` 创建由 webhook 触发的 routine，把提示词贴进去。面板会显示 Webhook URL 和 key。请在 `[LOCAL]` 用户本地电脑的终端进入这个仓库目录，运行 `./install.sh --webhook --lang zh-CN`，把两项粘贴进去；出现 `relay up` 后告诉我。」这份 routine 提示词将由 Bot 在 `[BOT-CLOUD]` 执行，不要让本地安装 agent 执行其中的命令。
 4. 等用户完成，再运行 `./check.sh`：relay 项应全部 PASS，cloud machine 可以暂时 SKIP。
 
@@ -40,7 +40,7 @@
 ## 第 3 阶段：会话与连通验证
 
 1. **`[LOCAL]` 用户：**关闭并重新打开第 1 阶段之前启动的 Claude Code、Codex 会话。Codex 会询问一次，选 Trust all and continue。
-2. **`[LOCAL]` 安装 agent：**运行 `reason-network send <team-name>/bot "test 1"`。这里的 `bot` 是 Mac 上的 relay 地址。预期 30 秒内本地 `~/Library/Logs/agent-relay.log` 新增 `forwarded` 和 `POST … code=200`。Grok Bot 醒来，在 `[BOT-CLOUD]` 取正文并回复；回复可以进入用户本地会话，也可由 `[LOCAL]` 的 `reason-network listen --as terminal --wait 120` 收取。
+2. **`[LOCAL]` 安装 agent：**运行 `reason-network send <team-name>/<relay-name> "test 1"`。这里的 `<relay-name>` 是 Mac 上的 relay 地址（默认 `bot`，安装器以 `Bot address:` 打印）。预期 30 秒内本地 `~/Library/Logs/agent-relay.log` 新增 `forwarded` 和 `POST … code=200`。Grok Bot 醒来，在 `[BOT-CLOUD]` 取正文并回复；回复可以进入用户本地会话，也可由 `[LOCAL]` 的 `reason-network listen --as terminal --wait 120` 收取。
 3. **`[GROK-UI]` 用户 → `[BOT-CLOUD]` Grok Bot：**请 Bot 在它的云电脑运行 `/workspace/agent-mesh/box/rn-cloud.sh who` 并给具体的 `[LOCAL]` 会话（如 `<team-name>/<folder>-claude`）发一句话。预期本地空闲会话也收到；本地会话回复后 Grok Bot 再次被唤醒。
 4. 按实际观察汇报两项结果，未观察到的测试不宣称成功。
 
@@ -57,7 +57,7 @@
 
 - 云端报 `couldn't reach the machine that made the invite`：第 0 阶段第 2 步又失效了（Mac 的 VPN/代理又在拦截 `*.iroh.link`）。按第 0 阶段第 2 步修好，在 Mac 上运行 `reason-network stop`，请 Grok Bot 在邀请仍有效时用同一链接重试。
 - 日志报 `webhook POST failed`：请用户运行 `./install.sh --webhook --lang zh-CN` 重新核对 URL 和 key，不读取 env 文件。
-- Mac 已用另一个名字入队：不能直接改名。仅在用户明确决定后运行 `./uninstall.sh --all -y`，再从第 1 阶段重来。
+- Mac 已用另一个名字入队：不能直接改名。仅在用户明确决定后，请用户在自己的终端里运行 `./uninstall.sh --level identity`（需要输入确认，并有一步在 Grok Bot 里完成），再从第 1 阶段重来。
 - 其他问题：展示原始错误和指南中对应的排错章节。
 
 ## 更新
@@ -66,4 +66,4 @@
 
 ## 卸载
 
-`[LOCAL]`：`./uninstall.sh` 删除 relay；`./uninstall.sh --all` 还会退出团队并删除 Reason Network。两者都保留当前代码目录。执行前询问用户。按指南[卸载](README.zh-CN.md#卸载)一节的顺序进行：先检查两台电脑上有没有别的用途共用 Reason Network 或 `/workspace/agent-mesh/box`；完全卸载时，用户先在 `[GROK-UI]` 暂停 routine，Bot 在 `[BOT-CLOUD]` 退出团队并删除 `/workspace/agent-mesh`，然后在 `[LOCAL]` 运行 `./uninstall.sh --all`，最后用户删除 routine。
+`[LOCAL]`：先运行 `git pull`，再运行 `./uninstall.sh --plan`，把输出给用户看；它列出已安装的内容和每个级别要删除的内容，不改动任何东西。经用户同意，你可以运行 `./uninstall.sh --level program --yes`，它只删除 relay 程序，`./install.sh --restart-relay` 可以装回。`identity` 级别（另外让两台电脑都退出团队，删除密钥和身份）和 `all` 级别（另外删除日志、引擎和云端数据）需要输入确认，并有一步在 Grok Bot 里完成：请用户在自己的终端里运行 `./uninstall.sh --level identity` 或 `--level all`，按指南[卸载](README.zh-CN.md#卸载)一节操作。没有终端时它们以退出码 3 结束。所有级别都保留当前代码目录。不要改为手动删除文件，也不要动卸载器列为 foreign 的部署。

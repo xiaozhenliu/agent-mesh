@@ -1,12 +1,12 @@
 # agent-mesh
 
-agent-mesh version: 0.4.1 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
+agent-mesh version: 0.5.0 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
 
 > Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. macOS, Reason Network v0.10.7. MIT.
 
 If you are an agent asked to install this: read AGENT-INSTALL.md (English) or AGENT-INSTALL.zh-CN.md (Simplified Chinese) and follow it stage by stage. Speak the user's language. Pass --lang en or --lang zh-CN on every installer invocation to select prompts; diagnostics and protocol fields stay English. Never read env or key files.
 
-Execution location labels: [LOCAL] = the user's local computer (Mac), where the installing agent, engine and relay run; [BOT-CLOUD] = Grok Bot's cloud computer (machine name cloud), where the Bot runs /workspace/agent-mesh/box/rn-cloud*.sh; [GROK-UI] = the Grok Bot interface, where the user creates routines and approves CopyToBox. install.sh, check.sh, update.sh and uninstall.sh run on [LOCAL]. Each computer has its own clone and state. CopyToBox copies the signing key from [LOCAL] to [BOT-CLOUD]; never print its contents. The <team-name>/bot address is the relay on [LOCAL], not a cloud process.
+Execution location labels: [LOCAL] = the user's local computer (Mac), where the installing agent, engine and relay run; [BOT-CLOUD] = Grok Bot's cloud computer (machine name cloud), where the Bot runs /workspace/agent-mesh/box/rn-cloud*.sh; [GROK-UI] = the Grok Bot interface, where the user creates routines and approves CopyToBox. install.sh, check.sh, update.sh and uninstall.sh run on [LOCAL]. Each computer has its own clone and state. CopyToBox copies the signing key from [LOCAL] to [BOT-CLOUD]; never print its contents. The <team-name>/<relay-name> address (the Bot address name, default bot, chosen once with install.sh --relay-name and never changed) is the relay on [LOCAL], not a cloud process.
 
 ## Install (for agents)
 
@@ -37,7 +37,7 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 
 ## Code
 
-- agent_relay.py: the Mac relay (standard library only). install.sh, uninstall.sh, check.sh, update.sh (updates an existing installation; scripts/deploy_state.py keeps the record of what is deployed).
-- box/rn-cloud-setup.sh, box/rn-cloud.sh, box/rn-fetch.py: cloud side.
+- agent_relay.py: the Mac relay (standard library only). install.sh, uninstall.sh, check.sh, update.sh (updates an existing installation; scripts/deploy_state.py keeps the record of what is deployed). uninstall.sh (scripts/uninstall.py) lists what is installed and removes it by level: program, identity or all; levels identity and all need the user's own terminal and a step with Grok Bot.
+- box/rn-cloud-setup.sh, box/rn-cloud.sh, box/rn-fetch.py: cloud side. box/rn-cloud-uninstall.sh: the cloud uninstall script, filled in and embedded in the prompt by uninstall.sh; never run it unfilled or edit it.
 - dsh/reason-network-bridge.mjs, dsh/mac-install.sh, dsh/mac-uninstall.sh: optional DeepSeek Harness plugin, its installer and uninstaller.
 - test_relay.py, box/test_rn_fetch.py, dsh/reason-network-bridge.test.mjs: offline tests.

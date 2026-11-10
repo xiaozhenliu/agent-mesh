@@ -1,55 +1,25 @@
 #!/usr/bin/env bash
-# Remove what install.sh put on this Mac.
-#   ./uninstall.sh        the relay: login service, state and copies, logs, ~/.config/agent-relay (webhook env + key)
-#   ./uninstall.sh --all  also leave the team, unwire the agents (setup --remove, plus the dsh bridge block if present),
-#                         remove ~/.reason/network and the binary
-# Add -y to skip the confirmation. The cloud side is separate: pause or delete the routine in Grok Bot and remove
-# /workspace/agent-mesh on the cloud machine.
-set -uo pipefail
-LABEL="com.local.agent-relay"
-RN="$HOME/.local/bin/reason-network"
-DSH_PATCH="$HOME/.dsh/cordis.patch.yml"
-ALL=0; YES=0
-for a in "$@"; do
-  case "$a" in
-    --all) ALL=1 ;;
-    -y|--yes) YES=1 ;;
-    *) echo "usage: $0 [--all] [-y]"; exit 2 ;;
-  esac
-done
-[ "$(uname -s)" = Darwin ] || { echo "[LOCAL] this uninstaller requires macOS"; exit 1; }
-[ "$(id -u)" != 0 ] || { echo "run as the logged-in Mac user, without sudo"; exit 1; }
+# Remove agent-mesh from this Mac and, guided, from the Bot's cloud computer. Without options it only shows
+# what is installed; nothing is removed until you choose a level and confirm it.
+#   ./uninstall.sh --plan [--level L]        what is installed and what a level would do; removes nothing
+#   ./uninstall.sh --level program [--yes]   the relay program only; team, settings, key and cloud stay
+#   ./uninstall.sh --level identity          also leave the team on both computers, remove keys and identity
+#   ./uninstall.sh --level all               also remove logs, the engine and the cloud's data (--all for short)
+#   ./uninstall.sh --residual --level identity|all   no identity left on this Mac (e.g. after an older --all)
+#   ./uninstall.sh --cloud-prompt --level identity|all   only the cloud step again
+#   --lang en|zh-CN                          language of the printed cloud prompt
+# Levels identity and all run only in your own terminal and ask you to type a confirmation.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+die() { echo "uninstall: $*" >&2; exit 1; }
+case "${1:-}" in -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+[ "$(uname -s)" = Darwin ] || die "[LOCAL] this uninstaller requires macOS"
+[ "$(id -u)" != 0 ] || die "run as the logged-in Mac user, without sudo"
 [ "${REASON_NETWORK_HOME:-$HOME/.reason/network}" = "$HOME/.reason/network" ] \
-  || { echo "custom REASON_NETWORK_HOME is not supported; review your deployment before uninstalling"; exit 1; }
+  || die "custom REASON_NETWORK_HOME is not supported; review your deployment before uninstalling"
+[[ "$HOME" = /* ]] && [ -d "$HOME" ] || die "HOME must be an absolute home directory"
+command -v python3 >/dev/null || die "python3 is missing; see README prerequisites"
+PYTHON="$(python3 -c 'import sys; print(sys.executable)')" || die "python3 cannot start"
+"$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 9))' || die "Python 3.9+ is required"
 export REASON_NETWORK_HOME="$HOME/.reason/network"
-echo "Will remove: login service $LABEL, ~/.local/lib/agent-mesh, ~/Library/Application Support/agent-relay,"
-echo "             ~/Library/Logs/agent-relay*.log*, ~/.config/agent-relay (webhook env and signing key)"
-[ "$ALL" = 1 ] && echo "        and: leave the team, setup --remove, ~/.reason/network, $RN"
-[ "$ALL" = 1 ] && grep -qs 'reason-network-bridge' "$DSH_PATCH" && echo "        and: the dsh bridge block in $DSH_PATCH"
-if [ "$YES" != 1 ]; then
-  read -r -p "Continue? [y/N] " ans
-  [[ "$ans" == [yY]* ]] || { echo "cancelled"; exit 1; }
-fi
-
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
-rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
-rm -rf "$HOME/.local/lib/agent-mesh" "$HOME/.config/agent-relay" "$HOME/Library/Application Support/agent-relay"
-rm -f "$HOME"/Library/Logs/agent-relay*.log*
-echo "relay removed."
-
-if [ "$ALL" = 1 ]; then
-  if grep -qs 'reason-network-bridge' "$DSH_PATCH"; then
-    "$BASH" "$(dirname "$0")/dsh/mac-uninstall.sh" --no-restore || {
-      echo "dsh bridge not removed, so Reason Network was left in place; fix $DSH_PATCH and run ./uninstall.sh --all again"
-      exit 1
-    }
-  fi
-  if [ -x "$RN" ]; then
-    "$RN" leave --force
-    "$RN" setup --remove
-  fi
-  rm -rf "$HOME/.reason/network"
-  rm -f "$RN"
-  echo "Reason Network removed. Reopen your agent sessions. To start over with new names, run ./install.sh again,"
-  echo "re-invite the cloud machine and copy the new outbound.key to it."
-fi
+exec "$PYTHON" "$HERE/scripts/uninstall.py" "$@"

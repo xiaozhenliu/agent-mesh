@@ -6,7 +6,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 
 | | |
 |---|---|
-| **Version** | agent-mesh **v0.4.1** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Version** | agent-mesh **v0.5.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
 | **Platform** | Local: not tied to one OS by design (the engine ships macOS / Linux / Windows builds; the relay is pure Python), but only macOS currently has a one-click installer and has been verified · Python 3.9+ |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
@@ -73,8 +73,8 @@ There are three roles:
 
 | Role | Availability | What it does |
 |---|---|---|
-| `[LOCAL]` User's local computer | Kept awake | Runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the local computer, not to the Bot's cloud computer. |
-| `[BOT-CLOUD]` Bot's cloud computer | May sleep | Starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox`, and uses the machine name `cloud`. No always-on service is installed there. |
+| `[LOCAL]` User's local computer | Kept awake | Runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the local computer, not to the Bot's cloud computer. `bot` is the default [Bot address name](#grok-bot-and-team-name). |
+| `[BOT-CLOUD]` Bot's cloud computer | May sleep | Starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox` (with another Bot address name `<name>`: `<name>-cloud` and `<name>-inbox`), and uses the machine name `cloud`. No always-on service is installed there. |
 | `[GROK-UI]` Routine | Woken by webhook | A webhook task created in the Grok Bot interface; when woken, the Bot executes its prompt on `[BOT-CLOUD]`. A POST from the `[LOCAL]` relay wakes it. |
 
 ```mermaid
@@ -125,7 +125,7 @@ Five design choices make this work:
   If Git or Python is missing, run `xcode-select --install`, finish installation and check again; if Python is still too old, install a suitable Python and put it on PATH. The installer also checks `curl`, `tar`, `shasum`, `openssl`, `launchctl`, and `plutil`; supply missing tools before retrying. No separate Node installation or pip packages are needed.
 - **At least one coding agent:** first install and sign in to at least one of Claude Code, Codex, pi, or DeepSeek Harness and verify it works independently. This project does not install these agents or configure model accounts/subscriptions. The integration plan comes from `reason-network setup --dry-run` on the user's computer, not from the author's configuration.
 - **`~/.local/bin` in PATH:** in the current Bash/zsh shell, run `export PATH="$HOME/.local/bin:$PATH"`. For persistence, use `~/.zshrc` for zsh, the appropriate `~/.bash_profile` or `~/.bashrc` for Bash, or `fish_add_path "$HOME/.local/bin"` for fish. Do not always edit `~/.zshrc`. The relay service records the detected Python's absolute path; if that Python is later moved or removed, repair Python and rerun the installer to update the service.
-- **Existing Reason Network installations:** review them first. This flow uses `~/.local/bin/reason-network`, the default `~/.reason/network` state directory, and pinned v0.10.7. A different PATH installation, engine version, or custom `REASON_NETWORK_HOME` stops the installer so the existing deployment can be reviewed. An existing team with the same person name can be reused; a different person cannot be renamed in place. Uninstalling with `--all` removes this default engine and its integrations and may affect existing uses; it is not a general troubleshooting step.
+- **Existing Reason Network installations:** review them first. This flow uses `~/.local/bin/reason-network`, the default `~/.reason/network` state directory, and pinned v0.10.7. A different PATH installation, engine version, or custom `REASON_NETWORK_HOME` stops the installer so the existing deployment can be reviewed. An existing team with the same person name can be reused; a different person cannot be renamed in place. Uninstalling at level `identity` or `all` removes this default engine's state and integrations (level `all` also the engine) and may affect existing uses; it is not a general troubleshooting step.
 - **Stay awake:** keep the local computer powered on and awake during collaboration. On macOS, enable the setting that prevents automatic sleep on power, or run `caffeinate`. Closing a laptop lid stops everything.
 
 ### `[BOT-CLOUD]` Bot's cloud computer
@@ -137,6 +137,8 @@ Five design choices make this work:
 
 - Grok Bot must support webhook-triggered routines and CopyToBox from your Mac.
 - Choose a team name, also used as your person name: 1–40 lowercase ASCII letters, digits, or hyphens; no leading or trailing hyphen. Use a pseudonym. Renaming requires recreating the team.
+- Team and machine names use single hyphens only: the engine merges repeated hyphens, so `a--b` would become `a-b`, and the installer refuses such names.
+- Optionally choose the Bot address name. The relay listens as `<team-name>/<name>`, and the cloud uses `<name>-cloud` and `<name>-inbox`. The default is `bot`. Rules: 1–34 lowercase ASCII letters and digits, in groups joined by a single hyphen (no leading, trailing or repeated hyphen), not `terminal` or `terminal-<n>`. Do not use your real name. The name cannot be changed later, not even for an unfinished installation: queued mail, the routine prompt and the cloud setup all use it. A different name needs an uninstall at level `identity` or `all` and a new install.
 
 ### Network
 
@@ -159,6 +161,8 @@ git clone https://github.com/xiaozhenliu/agent-mesh.git ~/agent-mesh
 cd ~/agent-mesh
 ./install.sh --name <team-name> --lang en
 ```
+
+To use a Bot address name other than `bot`, add `--relay-name <name>` to this first `install.sh` run. Later runs (`--webhook`, `--cloud-prompt`, `update.sh`) take the name from the installation; a different `--relay-name` is refused. The installer stops before wiring anything if the name is already used in the team, and checks after starting the relay that the engine registered exactly `<team-name>/<name>`.
 
 If the destination already exists, check that it is the same repository and review uncommitted changes before proceeding; do not overwrite it or blindly pull. These commands clone the public distribution. The cloud defaults to the same public repository, whose root must contain `box/rn-cloud-setup.sh`; the installer does not infer its URL from the local origin.
 
@@ -190,7 +194,7 @@ Locations: self-checks, test sends, and relay log inspection run on `[LOCAL]`; G
    ./check.sh
    ```
 
-2. **Test message.** Send a message, then wait for the reply in another terminal:
+2. **Test message.** Send a message to the Bot address (`bot` below; use your name if you passed `--relay-name`), then wait for the reply in another terminal:
 
    ```bash
    reason-network send <team-name>/bot "test 1"
@@ -247,7 +251,7 @@ The relay log records message ids, lengths and checksums, not bodies. `FWD_COPY_
 
 - On `[LOCAL]`, run `./install.sh --purge-copies` to delete all copies the relay kept. Redelivery requests for those messages then get `no-copy`, and the sender has to send again.
 - For `[BOT-CLOUD]`, ask Grok Bot in `[GROK-UI]` to run `/workspace/agent-mesh/box/rn-cloud.sh purge <days>`. It stops the cloud engine, then deletes received messages (the cloud `network.db`), `inbox/<id>/`, misdirected mail logs in `inbox/_stray/`, and `threads/*.md` older than that many days; `0` deletes all of them. The thread notes give the routine its context, so the Bot no longer remembers earlier conversations afterwards. The cloud clone must first be updated to a version that has this command.
-- The engine manages the local `network.db`; this project offers no partial cleanup for it. `./uninstall.sh --all` removes all of `~/.reason/network`.
+- The engine manages the local `network.db`; this project offers no partial cleanup for it. `./uninstall.sh --level identity` and `--level all` remove all of `~/.reason/network`.
 
 ### Team members
 
@@ -278,74 +282,68 @@ The relay log records message ids, lengths and checksums, not bodies. `FWD_COPY_
 - **Cloud join reports `couldn't reach the machine that made the invite`:** usually the Mac's VPN or proxy is intercepting `*.iroh.link` again. Fix it as in the previous item, run `reason-network stop` on the Mac, then have Grok Bot retry with the same invite while valid.
 - **Session missing from `who`:** reopen sessions started before `setup`. Codex also needs to complete a turn before appearing.
 - **`fetch` reports `missing`:** inspect `refwd`. `ack=resent` means the relay resent it; retry after 60 seconds. `no-copy`, `limit`, `failed`, or `skipped` means recovery did not succeed; ask the sender to resend. No `refwd` field means the Mac was not connected.
+- **Relay log shows `webhook POST failed: 30x`:** `WEBHOOK_URL` is not the final address; the relay does not follow redirects. Copy the webhook URL again from the routine in `[GROK-UI]`, then run `./install.sh --webhook --lang en` on `[LOCAL]`.
 - **Message `refused`:** the engine's loop guard refuses more than 12 messages between a pair of agents within ten minutes. Body forwarding uses the exempt terminal identity.
+- **The relay names are not derived from one name, or the relay registered under another name:** `install.sh`, `update.sh` or `check.sh` says so. The three names in `~/.config/agent-relay/env` (`LISTEN_NAME`, `CLOUD_NAME`, `INBOX_NAME`) must be `<name>`, `<name>-cloud` and `<name>-inbox`; the installer writes them, do not edit them. A registration such as `<team-name>/<name>-2` means another session on this computer or in the team already had the name. The engine keeps that pick for the relay even after the other session is gone, so the check keeps failing; remove the installation including its identity ([level `identity`](#remove-the-identity-or-everything)) and install again with another `--relay-name`.
+- **`rn-cloud.sh` says `box/relay is damaged`, or replies never arrive after `box/relay` was deleted:** `/workspace/agent-mesh/box/relay` holds the Bot address name on `[BOT-CLOUD]`; without it the cloud uses `bot`. On `[LOCAL]`, run `./install.sh --cloud-prompt --lang en` and give Grok Bot the printed prompt, which contains the full invite link and your name; `rn-cloud-setup.sh` then sees that the cloud is already in the team, skips joining, and writes the file again (a damaged file is kept as `box/relay.damaged-<time>`). It writes a name other than `bot` only if the cloud engine shows that it already registered `<name>-inbox` or `<name>-cloud`; otherwise only an uninstall at level `identity` or `all` and a new install help. Check with `cat /workspace/agent-mesh/box/relay` and one real message.
+- **`rn-cloud-setup.sh` stops at `join` on a cloud that already joined:** give it the full invite link (the one containing `tincan1…`, as `./install.sh --cloud-prompt` prints it). A short invite code cannot show that the cloud is in the same team.
 - **`<` became `[`:** version 0.10.7's `listen` rewrites some tags to deter spoofing without changing the character count. Re-forwards use the relay's stored copy.
 
 ## Uninstall
 
-All of these commands run on `[LOCAL]`:
+Update this folder first (`git pull`), so that `./uninstall.sh` is the uninstaller described here; the script in v0.4.1 and earlier has no levels, removes the relay settings and signing key even without `--all`, and does not handle the cloud.
 
-| Command | Removes |
-|---|---|
-| `./uninstall.sh` | The relay service, state, message copies, logs, and `~/.config/agent-relay` (webhook settings and signing key). |
-| `./uninstall.sh --all` | Everything above; also removes the dsh bridge block if present, runs `leave --force` and `setup --remove`, then removes `~/.reason/network` and the engine binary. |
-| `dsh/mac-uninstall.sh` | Only the dsh bridge: puts Reason Network's own block back in `~/.dsh/cordis.patch.yml`. See the [bridge guide](dsh/README.md#uninstall). |
+`./uninstall.sh` runs on `[LOCAL]`. Without options it only lists what is installed and removes nothing: the version, the team name and this machine, the cloud member, the Bot address names, the relay and its queue, the dsh bridge, the other team members, and any deployment it did not install. `./uninstall.sh --plan` adds what each level would remove and keep; `--plan --level <level>` shows one level. Neither asks anything or changes anything. In a terminal, `./uninstall.sh` then offers to choose a level.
 
-These scripts only handle `[LOCAL]`. The routine in `[GROK-UI]` and the files on `[BOT-CLOUD]` are handled by hand, in the order below. First choose how much to remove:
+| Level | Removes | Keeps |
+|---|---|---|
+| `--level program` | The relay service and plist, the relay program, its temporary files and `rollback/`. | Everything else: the team identity on both computers, `~/.config/agent-relay` (webhook settings and signing key), the queue, logs and Reason Network. |
+| `--level identity` | Also the deployment record, `~/.config/agent-relay`, the relay state (queue, replay protection, message copies) and the dsh bridge block; this Mac leaves the team, runs `setup --remove` and removes `~/.reason/network`. The Bot leaves the team and removes the cloud's identity, key and names (`box/state`, `box/bin`, `box/person`, `box/relay`, `box/outbound.key`). | Relay logs, the engine binary, and the cloud's `inbox/`, `threads/` and `/workspace/agent-mesh`. |
+| `--level all` (or `--all`) | Also the relay logs, `~/.local/bin/reason-network`, the dsh bridge backups and log; on `[BOT-CLOUD]` also `inbox/`, `threads/` and `/workspace/agent-mesh`. | Only the items listed below. |
 
-- **Relay only**: keeps the team identity and Reason Network, for a later reinstall or version change.
-- **Full uninstall**: leaves the team and removes all state, keys and the routine on both computers.
+No level touches this code folder, PATH lines in your shell startup files, reply conventions appended to your projects, an external inbox folder on `[BOT-CLOUD]`, or what the Bot keeps in its long-term memory. Level `all` lists them for you. `dsh/mac-uninstall.sh` alone removes only the dsh bridge; see the [bridge guide](dsh/README.md#uninstall).
 
 ### Before you uninstall
 
-1. **Does anything else on `[LOCAL]` use Reason Network?** `--all` leaves the team, disconnects every agent on this computer from Reason Network, and removes the engine. If this computer uses Reason Network for anything else, run only `./uninstall.sh`.
-2. **Does anything else on `[BOT-CLOUD]` use `/workspace/agent-mesh/box`?** In `[GROK-UI]`, ask the Bot to run:
+1. **Does anything else on `[LOCAL]` use Reason Network?** Levels `identity` and `all` leave the team, disconnect every agent on this computer from Reason Network and remove its state. If this computer uses Reason Network for anything else, use only `--level program`.
+2. **Deployments it did not install.** A second relay, another login service that runs a `*_relay.py`, or an older layout installed by hand is listed under "foreign" and never changed. Levels `identity` and `all` stop for each one until you type `I accept <id>`, because removing the shared identity breaks it; `--plan` shows this as a `STOP unless you type I accept <id>` line. Processes are shown by PID and program name only, never with their arguments.
+3. **Other users of `/workspace/agent-mesh/box` on `[BOT-CLOUD]`.** The cloud script searches `/workspace` itself and prints a `SHARED:` line for each file or link that refers to the cloud's engine state or binary. The Bot removes nothing while such lines remain, unless you confirm that nothing listed still uses them.
+4. **Messages not yet delivered.** The uninstaller shows the relay queue. Level `program` keeps it for the reinstall (entries still `sending` become `unknown` and are not sent again); the deeper levels ask you to type `yes` to lose it. On `[BOT-CLOUD]`, the prompt asks the Bot to offer one more `rn-cloud.sh fetch` first.
+5. **Something stops the run.** It lists every reason before changing anything. Every level stops for a running `./update.sh`, a login service changed by hand, or a loaded `com.local.agent-relay` service that does not come from this home's plist (it is never stopped); levels `identity` and `all` also stop when the team or Bot address names differ between the settings, the team list and the deployment record, or when a path is a symlink or belongs to another user. Nothing is removed until they are resolved.
 
-   ```bash
-   grep -rlF /workspace/agent-mesh/box /workspace --exclude-dir=agent-mesh 2>/dev/null | head
-   find /workspace -maxdepth 3 -type l -lname '*agent-mesh/box*' 2>/dev/null | head
-   ```
+### Remove the relay only
 
-   Any output means another program still uses the engine state (`box/state`) or binary (`box/bin`) here. Do not run steps 2 and 3 of the full uninstall until those dependencies have moved.
-3. **Messages not yet fetched** are lost after uninstalling. If you need them, first ask the Bot in `[GROK-UI]` to run `/workspace/agent-mesh/box/rn-cloud.sh fetch` once and handle the results.
-
-### Relay only
+For a reinstall or a version change; the team, the key and the cloud stay as they are.
 
 1. `[GROK-UI]`: pause the routine.
-2. `[LOCAL]`: run `./uninstall.sh`.
-3. `[BOT-CLOUD]`: nothing to do; the team identity stays.
+2. `[LOCAL]`: run `./uninstall.sh --level program` and type `y`. With `--yes` it does not ask; this is the only level an agent may run for you.
+3. `[LOCAL]`: to reinstall, `git pull` and run `./install.sh --restart-relay`. It installs the relay of this folder again with the same settings, signing key and Bot address name, so nothing needs copying to `[BOT-CLOUD]`. Then resume the routine. Do not run the full install again.
 
-A reinstall generates a new signing key. Copy the new `outbound.key` to `[BOT-CLOUD]` as the install steps describe, then resume the routine.
+### Remove the identity or everything
 
-### Full uninstall
+Levels `identity` and `all` run only in your own terminal; anywhere else they show the plan and exit with status 3. Keep Grok Bot open: one step happens there.
 
-Run the steps in order; go on only after the previous one succeeds:
+1. **`[LOCAL]`: run `./uninstall.sh --level identity` or `./uninstall.sh --level all`.** It shows the plan and asks you to type the team name (`identity`) or `delete <team-name>` (`all`).
+2. **It stops the relay** and counts the queue again.
+3. **Cloud step.** First pause the routine in `[GROK-UI]` and make sure no run is in progress. Then send the printed prompt to Grok Bot as one message. It contains the cloud script and its SHA-256 checksum; the Bot writes the script on `[BOT-CLOUD]`, checks the checksum, runs `check` (which changes nothing) and reports a `PROOF:` value.
+   - Type the `PROOF` value into the uninstaller. It matches only if the cloud holds this Mac's signing key, so a cloud of another deployment is never removed by mistake. The uninstaller then shows a confirmation code; send it to the Bot and say you agree. The Bot runs `apply <code>`: it leaves the team while this Mac is still online to hear it, then removes the cloud files. When it reports `DONE` (or `KEPT`, see below), type `done`; when it reports `INCOMPLETE`, type `incomplete`, and the run stays not complete until the cloud is out of the team.
+   - Type `prompt` to show the prompt again. If the Bot printed `PROOF: none` (the cloud has no signing key left), type `none`; the Bot then runs `apply-no-proof` only after you confirm in the chat that this is your own deployment.
+   - If `leave` fails on `[BOT-CLOUD]`, the Bot shows the output and adds `force` only with your consent. At level `all`, the Bot first lists your own files in the clone (`FILE:` lines). It keeps the clone, and prints `KEPT:`, when Git cannot list everything or when a local branch, tag or `HEAD` has commits that no remote branch has. If the cloud's engine is missing but its identity remains, the Bot removes the files and reports `INCOMPLETE`: the cloud could not leave the team, and the uninstaller then offers to remove it from this Mac.
+   - If the cloud cannot finish (`skip`) and is still in the team, the uninstaller offers to remove it from this Mac with `reason-network remove <team-name>/cloud`. It never removes other members.
+4. **The dsh bridge**, if present, is removed with `dsh/mac-uninstall.sh --no-restore`. If that fails, the run stops before Reason Network is touched.
+5. **This Mac leaves the team**, runs `setup --remove` and stops the engine. If every other member is offline, nobody hears the `leave`; it asks you to type `force`, and they need to remove this Mac on their side. Then the files of the level are removed.
+6. **`[GROK-UI]`: delete the routine** and type `deleted`. A paused routine keeps its webhook URL and key valid; deleting it revokes them. Typing `later` leaves the run marked as not complete.
+7. Reopen your agent sessions.
 
-1. **`[GROK-UI]`: pause the routine** and confirm no run is in progress. After this, the relay's POSTs no longer wake the Bot.
-2. **`[BOT-CLOUD]`: leave the team.** Do this before uninstalling `[LOCAL]`: `leave` broadcasts "this machine left" only while at least one teammate is online, and the `[LOCAL]` engine is still running to receive it. In `[GROK-UI]`, ask the Bot to run:
+The result lists every item as `done`, `absent`, `skipped` or `failed`, and what is still open; the exit status is 0 only when the level is complete. The run can be repeated: finished steps show `absent` or `done`. `./uninstall.sh --cloud-prompt --level identity|all` repeats only the cloud step.
 
-   ```bash
-   export REASON_NETWORK_HOME=/workspace/agent-mesh/box/state REASON_NETWORK_MACHINE=cloud REASON_NETWORK_NO_PROMPT=1
-   /workspace/agent-mesh/box/bin/reason-network leave
-   /workspace/agent-mesh/box/bin/reason-network stop
-   ```
-
-   If `leave` reports "no teammate is online", bring `[LOCAL]` online and try again. If `[LOCAL]` really cannot be reached, use `leave --force`: the cloud still leaves, but `[LOCAL]` does not hear about it. That does not matter for a full uninstall, because the next steps run `--all` on `[LOCAL]`, which leaves the team there too.
-3. **`[BOT-CLOUD]`: delete the whole `/workspace/agent-mesh` directory.** The cloud's signing key, machine identity, received bodies and thread notes all live there and go with it.
-4. **`[LOCAL]`: run `./uninstall.sh --all`.**
-5. **`[GROK-UI]`: delete the routine.** A paused routine keeps its webhook URL and key valid; deleting it revokes them.
-6. **`[LOCAL]`: clean up.** The scripts leave these in place; handle them by hand if needed:
-   - this code folder;
-   - the `~/.local/bin` PATH line, if you added one to your shell startup file;
-   - the dsh bridge backup and log: `~/.dsh/backup-reason-network-bridge/` and `~/.dsh/logs/reason-network-bridge.log`.
-
-   Then reopen your agent sessions.
+**After an older `./uninstall.sh --all`.** Older versions removed the Mac side only, so the cloud may still be in the team with valid keys. Run `./uninstall.sh --residual --level identity` (or `--level all`). It asks for the team name and gives a prompt for the cloud step without a proof; the Bot runs `apply-no-proof` after you confirm, and stops if other people are in that team.
 
 ### Check that it is gone
 
-- `[LOCAL]`: `launchctl print gui/$(id -u)/com.local.agent-relay` fails (no such service); `~/.local/lib/agent-mesh`, `~/.config/agent-relay` and `~/Library/Application Support/agent-relay` do not exist. After a full uninstall, `~/.local/bin/reason-network` and `~/.reason/network` do not exist either.
-- `[BOT-CLOUD]` (full uninstall): `/workspace/agent-mesh` does not exist.
-- `[GROK-UI]` (full uninstall): the routine is no longer listed.
+- `[LOCAL]`: `launchctl print gui/$(id -u)/com.local.agent-relay` fails (no such service). After level `identity`, `~/.local/lib/agent-mesh`, `~/.config/agent-relay`, `~/Library/Application Support/agent-relay` and `~/.reason/network` do not exist; after level `all`, `~/.local/bin/reason-network` and the `agent-relay` logs in `~/Library/Logs` do not exist either. `./uninstall.sh` shows the rest.
+- `[BOT-CLOUD]`: after level `identity`, `box/state`, `box/bin`, `box/person`, `box/relay` and `box/outbound.key` are gone under `/workspace/agent-mesh`; after level `all`, `/workspace/agent-mesh` does not exist, unless the Bot reported `KEPT`.
+- `[GROK-UI]`: the routine is no longer listed.
 
 ## Upgrade
 
@@ -374,6 +372,7 @@ What the Mac last confirmed is kept in `~/.local/lib/agent-mesh/deployed.json`. 
 - `./update.sh --plan` only shows the comparison and the steps; it changes nothing in the deployment. Without `--no-pull` it may still fast-forward the checkout first.
 - Exit code 3 means answers in a terminal are needed; nothing was changed.
 - If you answer no, press Ctrl-C or a step fails, the relay that was running before is started again, and you are reminded if the routine is still paused. Run `./update.sh` again to continue from that step; finished steps are not repeated unless the version moved on in between.
+- Updating an installation from before Bot address names: it keeps the name `bot`, and the routine prompt stays the same. The cloud setup script changed, so `update.sh` asks once whether the cloud side is set up for this version; no cloud migration is needed, answer yes. An installation with another Bot address name cannot go back to a version without Bot address names.
 - First update from v0.3.0 or earlier: run `git pull` yourself once, because older checkouts have no `update.sh`. Without a record, the cloud scripts and the prompt count as unknown, so the guided steps run once.
 - The script cannot see the routine or the cloud computer: it relies on your answers and on the commit and checksums Grok Bot reports.
 
@@ -414,6 +413,8 @@ To choose the language of generated prompts, see [Prompt language](#prompt-langu
 
 ## Appendix: message formats
 
+The examples use the default Bot address name. With another name, replace `bot`, `bot-cloud` and `bot-inbox` by `<name>`, `<name>-cloud` and `<name>-inbox`.
+
 ### Signing rules
 
 - The key is the 64-character hex **string** in `outbound.key`, stripped of surrounding whitespace. Use its UTF-8 bytes directly as the HMAC-SHA256 key; do not hex-decode it.
@@ -438,6 +439,8 @@ sig: <hex>
 <body>
 ```
 
+The relay sends only to a plain address `<person>/<session>[@<machine>]`: each part is lowercase letters, digits and hyphens and starts with a letter or digit. A non-empty `reply_to` must be a plain message id: letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 120 characters. Anything else is refused before sending, with an alert.
+
 Signature: `sig = HMAC(key, "v1\n" + to + "\n" + reply_to + "\n" + ts + "\n" + nonce + "\n" + body)`. Split headers and body at the first `\n---\n`.
 
 Test vector:
@@ -453,7 +456,7 @@ Derived-nonce test vector:
 - to=`demo/claude-session`, reply_to=`01JTESTREPLYTO0000000000`, body = `hello` + newline + `第二行`
 - Expected nonce=`21dfab75a1eabc427d7655db`
 
-The relay keeps a send record for every nonce it proxies, saved before it calls the engine and kept for `NONCE_KEEP_SECONDS` (default 86400, 24 hours). A repeated nonce that was already sent is dropped silently. A repeated nonce whose result is unknown (the engine timed out, answered `held` or gave no clear answer, or the relay stopped during the send) is not sent; the relay alerts once, and the Bot should check with the recipient, or change the text to send it anyway. A nonce the engine clearly refused, or one the relay refused before sending it (stale, hourly limit, group or own address), may be sent again. Those refusals, failures and unknown results reach the routine as relay alerts.
+The relay keeps a send record for every nonce it proxies, saved before it calls the engine and kept for `NONCE_KEEP_SECONDS` (default 86400, 24 hours). A repeated nonce that was already sent is dropped silently. A repeated nonce whose result is unknown (the engine timed out, answered `held` or gave no clear answer, or the relay stopped during the send) is not sent; the relay alerts once, and the Bot should check with the recipient, or change the text to send it anyway. A nonce the engine clearly refused, or one the relay refused before sending it (stale, hourly limit, group or own address, address not plain), may be sent again; an address that is not plain is refused again until it is corrected, so resending the same file does not help. Those refusals, failures and unknown results reach the routine as relay alerts. When a later try with the same nonce ends unknown, the relay withdraws that nonce's earlier refusal or failure alert, and the unknown alert starts by saying it replaces it.
 
 Deduplication is a safety net; the Bot still should not resend a reply that is only queued. It works only when all of these hold: the relay and the cloud scripts are this version or later, the reply has a `reply_to`, the resend is byte-for-byte the same (the same reply file), and no more than `NONCE_KEEP_SECONDS` have passed since the first proxied send. Otherwise:
 

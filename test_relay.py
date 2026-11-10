@@ -2,8 +2,9 @@
 """Offline checks for agent_relay.py: envelope verification (RN-OUT v1), replay/staleness/address guards, outbound
 send records (duplicate, failed and unknown sends), wake limit, spool overflow, forwarding (RN-FWD v1) and doorbells,
 re-forward (RN-REFWD v1), per-message isolation, crash-safe ordering and startup recovery from a throwaway
-network.db. No network, no webhook, no reason-network binary. Run: python3 test_relay.py"""
-import hashlib, io, json, os, random, sqlite3, subprocess, sys, tempfile, time, unittest
+network.db. No network beyond loopback test servers, no real webhook, no reason-network binary.
+Run: python3 test_relay.py"""
+import hashlib, http.server, io, json, os, random, re, sqlite3, subprocess, sys, tempfile, threading, time, unittest
 from unittest import mock
 from pathlib import Path
 
@@ -11,6 +12,8 @@ tmp = tempfile.mkdtemp()
 os.environ["AGENT_RELAY_STATE"] = tmp
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_relay as rr  # noqa: E402
+
+REAL_WEBHOOK_OPEN = rr.webhook_open
 
 KEY = "0123456789abcdef" * 4          # obviously fake test key (64 hex chars, like `openssl rand -hex 32`)
 CFG = {"RN_BIN": "/nonexistent", "PERSON": "demo", "LISTEN_NAME": "bot", "CLOUD_NAME": "bot-cloud",
@@ -165,7 +168,7 @@ class Doorbell(unittest.TestCase):
         self.r = rr.Relay(dict(CFG))
         self.calls, self.posts, self.result = [], [], RunOK()
         self.r.rn = lambda *a, **k: (self.calls.append((a, k)), self.result)[1]
-        rr.urllib.request.urlopen = lambda req, timeout=None: (self.posts.append(req.data.decode()), FakeResp())[1]
+        rr.webhook_open = lambda req, timeout=None: (self.posts.append(req.data.decode()), FakeResp())[1]
 
     def m(self, text, i="m1", frm="demo/other", agent="codex", thread="01JTHREAD000000000000000000"):
         return {"id": i, "from": frm, "agent": agent, "thread": thread, "text": text}
@@ -185,7 +188,7 @@ class Doorbell(unittest.TestCase):
                 self.r.s.overflow_dropped = 3
                 response = FakeResp()
                 response.status = status
-                rr.urllib.request.urlopen = lambda req, timeout=None: (self.posts.append(req.data), response)[1]
+                rr.webhook_open = lambda req, timeout=None: (self.posts.append(req.data), response)[1]
                 self.assertEqual(self.r.flush(), 5)
                 self.assertEqual([m["id"] for m in self.r.s.spool], ["m2"])
                 self.assertEqual(self.r.s.overflow_dropped, 0)
@@ -210,7 +213,7 @@ class Doorbell(unittest.TestCase):
                     response = FakeResp()
                     response.status = failure
                     return response
-                rr.urllib.request.urlopen = post
+                rr.webhook_open = post
                 self.assertEqual(self.r.flush(), 5)
                 self.assertEqual([m["id"] for m in self.r.s.spool], ["m1"])
                 self.assertEqual([m["id"] for m in rr.State().spool], ["m1"])
@@ -310,6 +313,91 @@ class Doorbell(unittest.TestCase):
         self.assertEqual(len(self.r.s.spool), 3)
         self.r.s.save()
         self.assertEqual(len(rr.Relay(dict(CFG)).s.spool), 3)     # survives a restart
+
+    def test_webhook_goes_through_the_no_redirect_opener_only(self):
+        src = (Path(__file__).resolve().parent / "agent_relay.py").read_text(encoding="utf-8")
+        self.assertNotIn("urlopen(", src)
+        self.assertNotIn("install_opener", src)
+
+    def servers(self, code):
+        """A answers every POST with `code` and a Location pointing at B; B counts whatever reaches it."""
+        hits = {"a": [], "b": []}
+        holder = {}
+        class A(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                hits["a"].append(("POST", self.headers))
+                self.send_response(code)
+                self.send_header("Location", holder["b"])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            def log_message(self, *a):
+                pass
+        class B(http.server.BaseHTTPRequestHandler):
+            def hit(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                if n:
+                    self.rfile.read(n)
+                hits["b"].append((self.command, self.headers))
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            do_GET = do_POST = do_HEAD = hit
+            def log_message(self, *a):
+                pass
+        out = []
+        for handler in (A, B):
+            srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+            out.append(srv)
+        holder["b"] = f"http://127.0.0.1:{out[1].server_port}/b-landing-xyz"
+        return f"http://127.0.0.1:{out[0].server_port}/hook", holder["b"], hits
+
+    def test_webhook_redirects_are_not_followed(self):
+        loopback = {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
+        with mock.patch.dict(os.environ, loopback):
+            url, landing, hits = self.servers(302)
+            req = rr.urllib.request.Request(url, data=b"{}", method="POST",
+                                            headers={"Authorization": "Bearer control-key"})
+            try:
+                rr.urllib.request.build_opener().open(req, timeout=10).close()
+            except rr.urllib.error.HTTPError as e:
+                e.close()
+            self.assertEqual(len(hits["a"]), 1)
+            self.assertEqual(len(hits["b"]), 1)
+            self.assertEqual(hits["b"][0][1].get("Authorization"), "Bearer control-key")
+            for code in (301, 302, 303, 307, 308):
+                for alerts in (False, True):
+                    with self.subTest(code=code, alerts=alerts):
+                        self.setUp()
+                        url, landing, hits = self.servers(code)
+                        self.r.c.update(WEBHOOK_URL=url, WEBHOOK_KEY="test-webhook-key-123")
+                        if alerts:
+                            self.r.s.alert("k", "an alert")
+                        else:
+                            self.r.s.spool = [self.m("pending")]
+                        with mock.patch.object(rr, "webhook_open", REAL_WEBHOOK_OPEN), \
+                                self.assertLogs("agent-relay", "INFO") as lg:
+                            self.assertEqual(self.r.flush(), 5)
+                        self.assertIsNot(rr.webhook_open, REAL_WEBHOOK_OPEN)
+                        self.assertEqual(len(hits["a"]), 1)
+                        self.assertEqual(hits["a"][0][1].get("X-Automation-Key"), "test-webhook-key-123")
+                        self.assertEqual(hits["a"][0][1].get("Authorization"), "Bearer test-webhook-key-123")
+                        self.assertEqual(hits["b"], [])
+                        self.assertEqual(len(self.r.s.wakes), 1)
+                        if alerts:
+                            self.assertEqual([(a["key"], a["posted"]) for a in rr.State().alerts], [("k", None)])
+                        else:
+                            self.assertEqual([m["id"] for m in rr.State().spool], ["m1"])
+                        log = "\n".join(lg.output)
+                        self.assertIn(f"code={code}", log)
+                        self.assertIn(f"webhook POST failed: {code}", log)
+                        self.assertIn("redirects are not followed", log)
+                        self.assertNotIn("b-landing-xyz", log)
+                        self.assertNotIn(landing.split("/b-")[0], log)
+                        self.assertNotIn("test-webhook-key-123", log)
 
     def test_fwd_vector(self):
         body = rr.fwd_body(KEY, "01JTESTMSG0000000000000000", "demo/claude-session", "claude-code", "", "你好\n x ",
@@ -861,7 +949,7 @@ class GotReceipts(unittest.TestCase):
         self.addCleanup(patch.stop)
         self.cfg = dict(CFG, GOT_TIMEOUT_SECONDS=self.TO, GOT_DONE_SECONDS=self.DONE, GOT_MAX_RERINGS=self.MAXR)
         self.calls, self.posts, self.code, self.result, self.hook = [], [], 200, RunOK(), None
-        rr.urllib.request.urlopen = self.post
+        rr.webhook_open = self.post
         self.evidence, self.keeps, self.prev, self.k = set(), set(), {}, 0
         self.cloud = FakeCloud(lambda: self.now)
         self.r = self.relay()
@@ -1486,6 +1574,58 @@ class GotReceipts(unittest.TestCase):
         self.inv()
         self.assertEqual((self.r.s.pending, [a["key"] for a in self.r.s.alerts]), ({}, ["reject:n1"]))
 
+    def reply(self, mid, k):
+        self.evidence.add(mid)
+        self.r.handle([{"id": f"out-{k}", "from": "demo/bot-cloud", "agent": None, "thread": None,
+                        "text": envelope("demo/x", mid, "hi", nonce=f"reply-{k}")}])
+        self.inv()
+
+    def bells(self):
+        return [i["id"] for i in self.r.s.spool if i.get("doorbell")]
+
+    def test_done_receipt_withdraws_a_queued_doorbell_after_the_reply_ended_pending(self):
+        self.inbound("A", "B")
+        self.r.notice("hello")
+        self.reply("A", 1)
+        self.assertNotIn("A", self.r.s.pending)
+        self.assertEqual(self.bells(), ["A", "B"])
+        self.r.s.alert("x", "an alert")
+        self.r.s.last_batch, self.r.s.wakes = "spool", []
+        self.r.flush()
+        batch = self.r.s.alerts[0]["batch"]
+        self.assertTrue(batch.startswith(rr.ALERT_PREFIX))
+        self.got(done=["A", batch])
+        self.assertEqual(self.bells(), ["B"])
+        self.assertEqual([i["text"] for i in self.r.s.spool if not i.get("doorbell")], ["hello"])
+        self.assertEqual(self.r.s.alerts, [])
+        self.assertIn("B", self.r.s.pending)
+        self.assertEqual([i["id"] for i in rr.State().spool if i.get("doorbell")], ["B"])
+        before = json.dumps([self.r.s.pending, self.r.s.alerts, self.r.s.spool])
+        self.got(done=["A"])
+        self.assertEqual(json.dumps([self.r.s.pending, self.r.s.alerts, self.r.s.spool]), before)
+
+    def test_reply_alone_keeps_the_queued_doorbell(self):
+        self.inbound("A")
+        self.reply("A", 1)
+        self.assertEqual((self.r.s.pending, self.bells()), ({}, ["A"]))
+        self.assertEqual(self.deliver(), ["A"])
+
+    def test_only_a_valid_done_receipt_withdraws_the_doorbell(self):
+        self.inbound("A")
+        self.reply("A", 1)
+        self.got(stored=["A"])
+        self.assertEqual(self.bells(), ["A"])
+        self.got(stored=["Z"], nonce="ab" * 12)
+        with self.assertLogs("agent-relay", "WARNING") as lg:
+            self.got(done=["A"], key="f" * 64)
+            self.got(done=["A"], ts=int(self.now) - 1000)
+            self.got(done=["A"], nonce="ab" * 12)
+            self.got(done=["A"], frm="demo/other")
+        self.assertEqual(len(lg.output), 4)
+        self.assertEqual(self.bells(), ["A"])
+        self.got(done=["A"])
+        self.assertEqual(self.bells(), [])
+
     def test_receipts_off_then_back(self):
         self.r.s.caps_lost = True
         self.inbound("C")
@@ -1594,7 +1734,7 @@ class OutboundIdempotency(unittest.TestCase):
         self.addCleanup(clock.stop)
         self.cfg = dict(CFG)
         self.calls, self.posts, self.result, self.k = [], [], FakeRun(), 0
-        rr.urllib.request.urlopen = self.post
+        rr.webhook_open = self.post
         self.r = self.relay()
 
     def relay(self):
@@ -1703,6 +1843,152 @@ class OutboundIdempotency(unittest.TestCase):
         self.assertIn("o1 to demo/claude-b was being sent when the relay stopped", r2.s.alerts[0]["text"])
         self.out(to="demo/claude-b")
         self.assertEqual((len(self.proxied()), self.keys(r2)), (1, [f"unknown:{self.N}"]))
+
+    def test_crash_after_the_engine_accepted_and_before_the_result_was_saved(self):
+        real_save, seen = rr.State.save, []
+        def save(state):
+            if len(seen) == 1:
+                disk = json.loads((Path(tmp) / "state.json").read_text())
+                seen.append((len(self.proxied()), disk["sends"][self.N]["state"]))
+                raise Crash()
+            seen.append(None)
+            real_save(state)
+        with mock.patch.object(rr.State, "save", save), self.assertRaises(Crash):
+            self.out(to="demo/claude-b")
+        self.assertEqual(seen, [None, (1, "sending")])
+        r2 = self.r = self.relay()
+        self.assertEqual((self.state(r=r2), r2.s.sends[self.N]["noticed"]), ("unknown", True))
+        self.assertEqual(self.keys(r2), [f"unknown:{self.N}"])
+        self.assertEqual([a["key"] for a in rr.State().alerts], [f"unknown:{self.N}"])
+        self.out(to="demo/claude-b")
+        self.assertEqual((len(self.proxied()), self.state(r=r2), self.keys(r2)), (1, "unknown", [f"unknown:{self.N}"]))
+
+    def done(self, batch):
+        self.r.handle([{"id": f"got-{batch}-{self.k}", "from": "demo/terminal", "agent": None, "thread": None,
+                        "text": rr.got_body(KEY, [], [batch], ts=int(self.now))}])
+
+    def test_unknown_after_a_stale_refusal_replaces_it(self):
+        self.out(ts=int(self.now) - 1000)
+        self.assertEqual(self.keys(), [f"reject:{self.N}"])
+        self.result = subprocess.TimeoutExpired(("rn",), 60)
+        self.out()
+        self.assertEqual((self.keys(), len(self.proxied()), self.state()), ([f"unknown:{self.N}"], 1, "unknown"))
+        self.assertTrue(self.r.s.alerts[0]["text"].startswith(rr.SUPERSEDED))
+        self.assertEqual(rr.State().alerts[0]["text"], self.r.s.alerts[0]["text"])
+
+    def test_unknown_after_an_engine_refusal_replaces_it(self):
+        self.result = RunOut(0, "→ demo/claude-a: refused: these two agents have exchanged a lot of messages")
+        self.out()
+        self.assertEqual(self.keys(), [f"failed:{self.N}"])
+        self.result = RunOut(0, "→ demo/claude-a: queued: held for approval")
+        self.out()
+        self.assertEqual((self.keys(), len(self.proxied()), self.state()), ([f"unknown:{self.N}"], 2, "unknown"))
+        self.assertTrue(self.r.s.alerts[0]["text"].startswith(rr.SUPERSEDED))
+        self.result = FakeRun()
+        self.out()
+        self.assertEqual((self.keys(), len(self.proxied())), ([f"unknown:{self.N}"], 2))
+
+    def test_replacement_note_reaches_the_posted_alert_batch(self):
+        self.cfg["WEBHOOK_MAX_BODY_CHARS"] = 600
+        self.r = self.relay()
+        to = "demo/" + "c" * 40 + "@" + "m" * 40
+        self.out(to=to, ts=int(self.now) - 1000)
+        self.result = subprocess.TimeoutExpired(("rn",), 60)
+        self.out(to=to)
+        self.assertEqual(self.r.c["WEBHOOK_MAX_BODY_CHARS"], 600)
+        self.r.s.wakes = []
+        self.r.flush()
+        (b,) = self.posts
+        self.assertLessEqual(len(json.dumps(b, ensure_ascii=False)), 600)
+        self.assertTrue(b["messages"][0]["text"].startswith(rr.SUPERSEDED))
+        self.assertNotIn("refused: stale", b["messages"][0]["text"])
+
+    def test_unknown_after_a_crash_during_the_resend_replaces_the_failure(self):
+        self.result = RunOut(1, "Error: no session called 'demo/claude-a'")
+        self.out()
+        self.assertEqual(self.keys(), [f"failed:{self.N}"])
+        self.result = Crash()
+        with self.assertRaises(Crash):
+            self.out()
+        self.assertEqual(json.loads((Path(tmp) / "state.json").read_text())["sends"][self.N]["state"], "sending")
+        self.result = FakeRun()
+        self.r = self.relay()
+        self.assertEqual(self.keys(), [f"unknown:{self.N}"])
+        self.assertTrue(self.r.s.alerts[0]["text"].startswith(rr.SUPERSEDED))
+        self.assertIn("was being sent when the relay stopped", self.r.s.alerts[0]["text"])
+        self.assertEqual([a["key"] for a in rr.State().alerts], [f"unknown:{self.N}"])
+
+    def test_replaced_alert_batches_confirm_only_what_is_left(self):
+        self.result = RunOut(1, "Error: no session called 'demo/claude-a'")
+        self.out()
+        self.r.s.wakes = []
+        self.r.flush()
+        first = self.posts[-1]["messages"][0]["id"]
+        self.assertEqual(self.r.s.alerts[0]["batch"], first)
+        self.result = subprocess.TimeoutExpired(("rn",), 60)
+        self.out()
+        self.assertEqual(self.keys(), [f"unknown:{self.N}"])
+        self.now += 30
+        self.r.s.wakes = []
+        self.r.flush()
+        second = self.posts[-1]["messages"][0]["id"]
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.r.s.alerts[0]["batch"], second)
+        self.done(first)
+        self.assertEqual(self.keys(), [f"unknown:{self.N}"])
+        self.done(second)
+        self.assertEqual(self.r.s.alerts, [])
+
+    def test_unknown_without_an_earlier_report_has_no_replacement_note(self):
+        self.result = subprocess.TimeoutExpired(("rn",), 60)
+        self.out()
+        self.assertEqual(self.keys(), [f"unknown:{self.N}"])
+        self.assertNotIn("Replaces", self.r.s.alerts[0]["text"])
+        self.result = Crash()
+        with self.assertRaises(Crash):
+            self.out(nonce="ab" * 12)
+        self.r = self.relay()
+        self.assertEqual(self.keys(), [f"unknown:{self.N}", f"unknown:{'ab' * 12}"])
+        self.assertFalse(any("Replaces" in a["text"] for a in self.r.s.alerts))
+
+    def test_recipient_and_reply_to_must_be_plain(self):
+        bad = [(to, "A") for to in ("--help", "-x", "demo/-x", "-demo/x", "demo/Codex", "demo/a b", "demo/x/y",
+                                    "demo/x@", "demo/x@-m", "demo/x@m@n", "demo/*@mac", "*@mac", "repo:x@mac",
+                                    "codex", "/x", "demo/", "demo/xé", "ｄemo/x")]
+        bad += [("demo/codex", "--help"), ("demo/codex", "a b"), ("demo/codex", "-m1"), ("demo/codex", "a" * 121)]
+        for k, (to, reply_to) in enumerate(bad):
+            with self.subTest(to=to, reply_to=reply_to):
+                nonce = f"bad{k:02d}" + "0" * 19
+                self.out(nonce=nonce, to=to, reply_to=reply_to)
+                self.assertEqual(self.proxied(), [])
+                self.assertNotIn(nonce, self.r.s.sends)
+                self.assertEqual(self.keys()[-1], f"reject:{nonce}")
+        self.assertEqual(len(self.keys()), len(bad))
+        texts = [a["text"] for a in self.r.s.alerts]
+        self.assertTrue(all("\n" not in t for t in texts))
+        plain = [t for t in texts if "not a plain address/id" in t]
+        self.assertEqual(len(plain), len(bad) - 1)
+        self.assertTrue(all("Do not resend; tell the user." in t[:rr.ALERT_ITEM_CHARS] for t in plain))
+        self.assertIn("repo:x@mac", next(t for t in texts if "group or self address" in t))
+
+    def test_plain_recipients_and_reply_tos_are_sent(self):
+        good = [(to, "A") for to in ("demo/codex", "demo/terminal-3", "demo/claude@mac", "other/codex", "a--b/x",
+                                     "demo/codex@" + "a" * 39 + "-", "demo/x-@m-", "0/1@2")]
+        good += [("demo/codex", "01JTESTREPLYTO0000000000"), ("demo/codex", "m1"), ("demo/codex", ""),
+                 ("demo/codex", "a" * 120), ("demo/codex", "relay-alerts-1.x_y")]
+        for k, (to, reply_to) in enumerate(good):
+            with self.subTest(to=to, reply_to=reply_to):
+                self.out(nonce=f"good{k:02d}" + "0" * 18, to=to, reply_to=reply_to)
+                args = self.proxied()[-1]
+                self.assertEqual(args[1], to)
+                self.assertEqual("--reply-to" in args, bool(reply_to))
+        self.assertEqual((len(self.proxied()), self.keys()), (len(good), []))
+
+    def test_malformed_recipient_refusal_leaves_the_nonce_free(self):
+        self.out(to="--help")
+        self.assertEqual((self.proxied(), self.r.s.sends, self.keys()), ([], {}, [f"reject:{self.N}"]))
+        self.out(to="demo/codex")
+        self.assertEqual((len(self.proxied()), self.state(), self.keys()), (1, "sent", []))
 
     def test_startup_alert_goes_out_without_new_mail_and_ends_when_confirmed(self):
         self.result = Crash()
@@ -1932,12 +2218,207 @@ class OutboundIdempotency(unittest.TestCase):
         self.out()
         self.assertEqual((len(self.proxied()), self.state()), (1, "sent"))
 
+    def test_cloud_classifies_send_output_with_the_same_code(self):
+        import importlib.util, inspect
+        spec = importlib.util.spec_from_file_location("rn_fetch_parity", Path(rr.__file__).parent / "box/rn-fetch.py")
+        fetch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fetch)
+        for name in ("send_status", "send_outcome"):
+            self.assertEqual(inspect.getsource(getattr(fetch, name)), inspect.getsource(getattr(rr, name)), name)
+        for name in ("SEND_REFUSED", "SEND_UNSURE"):
+            self.assertEqual((getattr(fetch, name).pattern, getattr(fetch, name).flags),
+                             (getattr(rr, name).pattern, getattr(rr, name).flags), name)
+        self.assertEqual(fetch.SEND_ACCEPTED, rr.SEND_ACCEPTED)
+        outs = ["→ demo/x: queued", "→ demo/x: Refused by policy", "→ demo/x: held", "", "queued",
+                "→ demo/x: queued: held for approval", "→ demo/x: queued (error: x)", "daemon went away",
+                "→ demo/error: queued", "→ demo/held-x: queued\nmessage id 01JX", "Error: nobody matches \"x\"",
+                "Error: no session called 'demo/held-x'", "Error: daemon cannot reach 'demo/refused-x'",
+                "could not deliver to demo/ambiguous-x", "→ sheldon/bot: queued", RunOK.stdout, FakeRun.stdout]
+        outs += [f"→ demo/claude-a: {w.upper()} (test)" for w in ("refused", "not on this machine", "no session",
+                                                                 "nobody matches", "ambiguous")]
+        for out in outs:
+            for rc in (0, 1, 2):
+                with self.subTest(out=out, rc=rc):
+                    self.assertEqual(fetch.send_status(out), rr.send_status(out))
+                    self.assertEqual(fetch.send_outcome(rc, out), rr.send_outcome(rc, out))
+
     def test_forward_and_proxy_share_the_classification(self):
         self.assertEqual(rr.send_outcome(0, "→ demo/x: queued"), "sent")
         self.assertEqual(rr.send_outcome(1, "→ demo/x: queued"), "unknown")
         self.assertEqual(rr.send_outcome(0, "→ demo/x: Refused by policy"), "failed")
         self.assertEqual(rr.send_outcome(0, "→ demo/x: held"), "unknown")
         self.assertEqual(rr.send_outcome(0, ""), "unknown")
+
+
+def defang(text):
+    return re.sub(r"<(?=[^\x00-\x7f]|reason)", "[", text)
+
+
+class DisplayRewrite(Envelopes):
+    BODY = "结果：把 \\u003c→<、还原；标签 <标签> 和 <reasoning> 都在。"
+
+    def setUp(self):
+        super().setUp()
+        self.db_path = str(Path(tempfile.mkdtemp()) / "network.db")
+        self.r.c["RN_DB"] = self.db_path
+        db = sqlite3.connect(self.db_path)
+        db.executescript(SCHEMA)
+        db.commit(); db.close()
+
+    def store(self, i, text, sender="demo/bot-cloud", recipient="demo/bot", held=0):
+        db = sqlite3.connect(self.db_path)
+        db.execute("INSERT INTO messages (id, sender, recipient, body, wake, sent_at, read_at, held) "
+                   "VALUES (?,?,?,?,1,?,?,?)", (i, sender, recipient, text, int(time.time() * 1000), 1, held))
+        db.commit(); db.close()
+
+    def test_rewritten_display_is_verified_against_stored_text(self):
+        e = envelope("demo/claude-session", "r1", self.BODY)
+        self.assertNotEqual(defang(e), e)
+        self.store("m1", e)
+        with self.assertLogs(self.r.log, "INFO") as logs:
+            self.r.handle([self.msg(defang(e))])
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0][1], self.BODY)
+        self.assertEqual((self.notices(), self.alerts()), ([], []))
+        self.assertTrue(any("verified against the stored text" in l for l in logs.output))
+
+    def test_rewritten_header_is_recovered_from_stored_text(self):
+        e = envelope("demo/claude-session", "", "hi")
+        self.store("m1", e)
+        self.r.handle([self.msg(e.replace("RN-OUT v1", "RN-OUT v1 [x", 1))])
+        self.assertEqual([s[1] for s in self.sent], ["hi"])
+
+    def test_recipient_check_applies_to_the_envelope_recovered_from_stored_text(self):
+        e = envelope("--help", "", self.BODY)
+        shown = defang(e).replace("to: --help", "to: demo/claude-session", 1)
+        self.store("m1", e)
+        self.r.handle([self.msg(shown)])
+        self.assertEqual(self.sent, [])
+        self.assertEqual([a["key"] for a in self.r.s.alerts], ["reject:0123456789abcdef01234567"])
+        self.assertIn("not a plain address/id", self.alerts()[0])
+        self.assertIn("'--help'", self.alerts()[0])
+        self.assertEqual(self.r.s.sends, {})
+
+    def test_no_stored_row_still_refused(self):
+        e = envelope("demo/claude-session", "", self.BODY)
+        self.r.handle([self.msg(defang(e))])
+        self.assertEqual(self.sent, [])
+        self.assertTrue(any("bad signature" in n for n in self.notices()))
+
+    def test_stored_row_must_match_sender_recipient_and_not_be_held(self):
+        e = envelope("demo/claude-session", "", self.BODY)
+        self.store("a", e, sender="demo/bot-cloud-2")
+        self.store("b", e, recipient="demo/other")
+        self.store("c", e, held=1)
+        for i in ("a", "b", "c"):
+            self.r.handle([self.msg(defang(e), i=i)])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(len([n for n in self.notices() if "bad signature" in n]), 3)
+
+    def test_tampered_stored_text_refused(self):
+        e = envelope("demo/claude-session", "", self.BODY)
+        self.store("m1", e + " (edited)")
+        self.r.handle([self.msg(defang(e) + " (edited)")])
+        self.assertEqual(self.sent, [])
+        self.assertTrue(any("bad signature" in n for n in self.notices()))
+
+    def test_wrong_key_refused_even_when_stored(self):
+        e = envelope("demo/claude-session", "", self.BODY, key="f" * 64)
+        self.store("m1", e)
+        self.r.handle([self.msg(defang(e))])
+        self.assertEqual(self.sent, [])
+
+    def test_unreadable_database_refuses_without_crashing(self):
+        self.r.c["RN_DB"] = str(Path(self.db_path).with_name("nope.db"))
+        e = envelope("demo/claude-session", "", self.BODY)
+        with self.assertLogs(self.r.log, "WARNING") as logs:
+            self.r.handle([self.msg(defang(e))])
+        self.assertEqual(self.sent, [])
+        self.assertTrue(any("could not read" in l for l in logs.output))
+
+    def test_stored_text_keeps_replay_and_staleness_checks(self):
+        old = envelope("demo/claude-session", "", self.BODY, ts=int(time.time()) - 1000, nonce="n-old")
+        self.store("s1", old)
+        self.r.handle([self.msg(defang(old), i="s1")])
+        self.assertEqual(self.sent, [])
+        self.assertTrue(any("stale" in a for a in self.alerts()))
+        e = envelope("demo/claude-session", "", self.BODY, nonce="n-dup")
+        self.store("d1", e); self.store("d2", e)
+        self.r.handle([self.msg(defang(e), i="d1"), self.msg(defang(e), i="d2")])
+        self.assertEqual(len(self.sent), 1)
+
+
+class CustomNames(unittest.TestCase):
+    """A relay installed with --relay-name alice: every address follows LISTEN_NAME, CLOUD_NAME and INBOX_NAME."""
+    NAMES = {"LISTEN_NAME": "alice", "CLOUD_NAME": "alice-cloud", "INBOX_NAME": "alice-inbox"}
+    ME, CLOUD, INBOX, FWD = "demo/alice", "demo/alice-cloud", "demo/alice-inbox", "demo/alice-inbox@cloud"
+
+    def setUp(self):
+        clean_state()
+        self.r = rr.Relay(dict(CFG, **self.NAMES))
+        self.calls, self.posts = [], []
+        self.r.rn = lambda *a, **k: (self.calls.append((a, k)), RunOK())[1]
+        rr.webhook_open = lambda req, timeout=None: (self.posts.append(json.loads(req.data.decode())), FakeResp())[1]
+
+    def msg(self, text, i="m1", frm="demo/other"):
+        return {"id": i, "from": frm, "agent": None, "thread": None, "text": text}
+
+    def notices(self):
+        return [i["text"] for i in self.r.s.spool if i["from"] == "relay"]
+
+    def drain(self):
+        while self.r.s.spool:
+            self.r.s.wakes = []
+            self.r.flush()
+        return self.posts
+
+    def test_listens_as_the_configured_name(self):
+        listens = []
+        def rn(*a, **k):
+            if a[0] == "listen":
+                listens.append(a)
+                raise Crash()
+            return RunOK()
+        self.r.rn = rn
+        with mock.patch.object(rr.time, "sleep"), self.assertRaises(Crash):
+            self.r.run()
+        self.assertEqual(listens[0][:3], ("listen", "--as", self.ME.split("/")[1]))
+
+    def test_inbound_mail_is_forwarded_to_the_inbox_and_rings_with_these_names(self):
+        self.r.handle([self.msg("hi")])
+        (args, _), = self.calls
+        self.assertEqual(args, ("send", self.FWD, "-"))
+        (bell,) = self.drain()
+        self.assertEqual((bell["to"], bell["reply_via"], bell["inbox"]), (self.ME, self.CLOUD, self.INBOX))
+
+    def test_only_the_configured_cloud_session_is_proxied(self):
+        self.r.handle([self.msg(envelope("demo/claude-session", "r1", "hi"), frm=self.CLOUD)])
+        (args, _), = self.calls
+        self.assertEqual(args[:4], ("send", "demo/claude-session", "--from", self.ME))
+        self.calls.clear()
+        self.r.handle([self.msg(envelope("demo/claude-session", "r2", "hi", nonce="n2"), i="m2", frm="demo/bot-cloud")])
+        self.assertEqual([a[1] for a, _ in self.calls], [self.FWD])
+        self.assertEqual(self.r.s.spool[-1]["from"], "demo/bot-cloud")
+
+    def test_notice_names_the_configured_cloud_session(self):
+        self.r.handle([self.msg("just text", frm=self.CLOUD)])
+        self.assertTrue(any(n.startswith(f"{self.CLOUD.split('/')[1]} sent m1 without a valid RN-OUT")
+                            for n in self.notices()), self.notices())
+
+    def test_receipts_come_from_the_configured_inbox_or_a_terminal_only(self):
+        for i, (frm, allowed) in enumerate(((self.INBOX, True), (self.CLOUD, True), ("demo/terminal-3", True),
+                                            ("demo/bot-inbox", False))):
+            with self.assertLogs(self.r.log, "INFO") as logs:
+                self.r.log.info("start")
+                self.r.got({"id": f"g{i}", "from": frm, "text": rr.got_body(KEY, [], ["m1"])})
+            refused = any("sender not allowed" in line for line in logs.output)
+            self.assertEqual(refused, not allowed, (frm, logs.output))
+
+
+class UnrelatedNames(CustomNames):
+    """The relay itself does not require derived names; only the installer insists on them."""
+    NAMES = {"LISTEN_NAME": "x", "CLOUD_NAME": "y", "INBOX_NAME": "z"}
+    ME, CLOUD, INBOX, FWD = "demo/x", "demo/y", "demo/z", "demo/z@cloud"
 
 
 if __name__ == "__main__":

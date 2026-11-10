@@ -18,7 +18,7 @@ English uses the original filenames (`README.md`, `AGENT-INSTALL.md`, and so on)
 - Put a language switch at the top of each document. Keep links in the reader's language where a translation exists. Copyable AGENTS templates put navigation in an HTML comment so it does not become an instruction.
 - Translate explanations, prompts, and sample conversational text. Preserve command names, flags, paths, configuration keys, protocol markers, status codes, version numbers, and cryptographic test vectors.
 - Team/person identifiers remain ASCII even when message bodies use other languages. `text_len` is Python's Unicode code-point count; hashes use UTF-8 bytes. Do not translate or normalize signed text.
-- The two prompt documents each contain exactly one untyped or `text` fenced block. The installer renders that block directly; avoid maintaining separate prompt copies in shell code. Keep `<repo-url>`, `<team-name>`, `<mac-home>`, and `<invite-link>` identical across cloud templates. The invite is printed separately and filled by the receiving agent.
+- The prompt documents (`routine`, `cloud-setup`, `cloud-uninstall`) each contain exactly one untyped or `text` fenced block. The installer and uninstaller render that block directly; avoid maintaining separate prompt copies in shell code. Keep `<repo-url>`, `<team-name>`, `<relay-name>`, `<mac-home>`, and `<invite-link>` identical across cloud templates; the routine templates use exactly `<team-name>` and `<relay-name>`, and with `bot` the routine must render byte-for-byte as before (the test keeps the old digests). The invite is printed separately and filled by the receiving agent. The cloud-uninstall templates use `<level>`, `<mode>`, `<team-name>`, `<mac-machine>`, `<relay-name>`, `<script-sha256>` and `<cloud-script>`; `<cloud-script>` becomes the filled `box/rn-cloud-uninstall.sh`, which is the only copy of the cloud script.
 - New languages need paired guides, navigation links, renderer support, installer validation, and tests before being advertised as supported. Unsupported language codes fail explicitly.
 - Diagnostic output and protocol fields currently stay English. `--lang` selects prompts, not a translation of the Reason Network engine or CLI diagnostics.
 
@@ -32,10 +32,10 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 test_relay.py
 python3 box/test_rn_fetch.py
 node dsh/reason-network-bridge.test.mjs
-for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh; do bash -n "$script" || exit; done
+for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh box/rn-cloud-uninstall.sh; do bash -n "$script" || exit; done
 ```
 
-The dsh test can also use the app runtime documented in its [guide](dsh/README.md). The installer tests use disposable homes and fake system/network/service commands; they do not install software or contact real services. The documentation checker validates language pairs, relative links and anchors, prompt placeholders, and protocol vectors. It cannot judge translation quality; review both languages for meaning.
+The dsh test can also use the app runtime documented in its [guide](dsh/README.md). The installer and uninstaller tests use disposable homes and fake system/network/service/engine commands; they do not install software, remove anything outside their temporary folders, or contact real services. The documentation checker validates language pairs, relative links and anchors, prompt placeholders, and protocol vectors. It cannot judge translation quality; review both languages for meaning.
 
 Preview prompts without installing, reading credentials, creating an invite, or contacting the network:
 
@@ -43,4 +43,5 @@ Preview prompts without installing, reading credentials, creating an invite, or 
 python3 scripts/render_prompt.py routine --lang en
 python3 scripts/render_prompt.py routine --lang zh-CN
 python3 scripts/render_prompt.py cloud-setup --lang zh-CN --team-name demo --mac-home /Users/example --repo-url https://example.invalid/agent-mesh.git
+python3 scripts/render_prompt.py cloud-uninstall --lang en --team-name demo --mac-machine mac --relay-name bot --level identity --mode normal --challenge 0123456789abcdef
 ```

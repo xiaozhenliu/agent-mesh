@@ -3,7 +3,7 @@
 # Usage:
 #   rn-cloud.sh who                      # list the team's agents (waits for the Mac to connect)
 #   rn-cloud.sh send <to> [reply_to] < body.txt
-#                                         # signed RN-OUT envelope -> <team-name>/bot on the Mac, which re-sends it.
+#                                         # signed RN-OUT envelope -> <team-name>/<name> on the Mac, which re-sends it.
 #                                         # With reply_to: records "replying" for that id before the engine sees the
 #                                         # message (if that fails, nothing is sent), and "done" after "handed to
 #                                         # the Mac" (if only that fails: a warning, exit 0; the id later shows as
@@ -26,7 +26,7 @@
 #   rn-cloud.sh done <id>...             # record these ids as handled without a reply and send the relay a done
 #                                         # receipt (RN-GOT); relay-alerts-* notice batches get no folder or marker,
 #                                         # only the receipt that confirms them (non-zero exit if it was not sent)
-#   rn-cloud.sh init-inbox               # (re)register <team-name>/bot-inbox so the Mac can address it
+#   rn-cloud.sh init-inbox               # (re)register <team-name>/<name>-inbox so the Mac can address it
 #   rn-cloud.sh purge <days>             # only when the user asks: stop the engine, then delete received messages
 #                                         # (network.db), inbox/<id>/, inbox/_stray/*.log, inbox/_mismatch/ and
 #                                         # threads/*.md older than <days> (0 = all). Prints one JSON line with the
@@ -36,9 +36,11 @@
 #   RN_DONE_LOCK_WAIT seconds working/done/send wait for the inbox lock (default 300)
 #   RN_GOT=0          no receipts (RN-GOT) and no "caps: got1" in RN-REFWD; also set GOT_TIMEOUT_SECONDS=0 on the relay
 #   FETCH_TIMEOUT, FETCH_TIMEOUT_OFFLINE (15 s), REFWD_TIMEOUT, REFWD (see fetch)
-# Names: bot-cloud is SEND-only (registered with `listen --wait 0`, which marks its mail read, so nothing
-# should ever be sent to it); bot-inbox is RECEIVE-only (rn-fetch reads its mail from network.db, which keeps
-# messages after they are marked read, so registering it never loses anything).
+# Names: <name> is the Bot address name in box/relay, written by rn-cloud-setup.sh (bot if the file does not exist;
+# an empty or damaged file stops every command). <name>-cloud is SEND-only (registered with `listen --wait 0`, which
+# marks its mail read, so nothing should ever be sent to it); <name>-inbox is RECEIVE-only (rn-fetch reads its mail
+# from network.db, which keeps messages after they are marked read, so registering it never loses anything). After
+# each registration the engine's session table must show exactly that name, else the command stops.
 # State lives under /workspace/agent-mesh/box (survives box restarts). Nothing here runs in the background
 # on purpose: the engine daemon is started on demand and dies with the box.
 set -euo pipefail
@@ -52,11 +54,24 @@ export REASON_NETWORK_MACHINE="${MACHINE_NAME:-cloud}"   # same machine name as 
 RN="$BASE/bin/reason-network"
 [ -s "$BASE/person" ] || die "cloud setup is incomplete; run rn-cloud-setup.sh with the Mac invite and team name first"
 PERSON="$(cat "$BASE/person")"            # written by rn-cloud-setup.sh; the same name as the Mac
-CLOUD="${RN_CLOUD_NAME:-bot-cloud}"
-INBOX="${RN_INBOX_NAME:-bot-inbox}"
+BASE_NAME=bot
+if [ -e "$BASE/relay" ]; then
+  BASE_NAME="$(cat "$BASE/relay")" || die "cannot read $BASE/relay"
+  if ! [[ "$BASE_NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#BASE_NAME}" -gt 34 ] \
+     || [[ "$BASE_NAME" =~ ^terminal(-[0-9]+)?$ ]]; then
+    die "$BASE/relay is damaged; it must hold the Bot address name the Mac uses (README: Troubleshooting)"
+  fi
+fi
+RELAY="${AGENT_RELAY_NAME:-$BASE_NAME}"
+CLOUD="${RN_CLOUD_NAME:-$BASE_NAME-cloud}"
+INBOX="${RN_INBOX_NAME:-$BASE_NAME-inbox}"
+for n in "$CLOUD" "$INBOX"; do
+  [[ "$n" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#n}" -le 40 ] \
+    || die "invalid session name '${n:0:60}' in RN_CLOUD_NAME/RN_INBOX_NAME: lowercase letters and digits joined by single '-', at most 40 characters"
+done
 STRAY="${RN_INBOX_DIR:-/workspace/agent-mesh/inbox}/_stray"
 export RN_BOX="$BASE" RN_PERSON="$PERSON" RN_INBOX_NAME="$INBOX" RN_KEY_FILE="$BASE/outbound.key"
-export RN_BIN="$RN" RN_RELAY_NAME="${AGENT_RELAY_NAME:-bot}"
+export RN_BIN="$RN" RN_RELAY_NAME="$RELAY" RN_CLOUD_NAME="$CLOUD"
 KEY_FILE="$BASE/outbound.key"             # same secret as OUTBOUND_KEY on the Mac, mode 0600
 
 [ -x "$RN" ] || die "engine not installed at $RN"
@@ -71,15 +86,45 @@ is_connected() {     # starts the daemon if needed and waits (<=90s) until the M
 }
 wait_connected() { is_connected || die "the Mac is not connected (is it awake and is reason-network running there?)"; }
 
+now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+
+check_registered() {
+  local actual
+  actual="$(python3 - "$REASON_NETWORK_HOME/network.db" "$1" "$2" <<'PY'
+import sqlite3, sys
+from pathlib import Path
+db, name, since = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+try:
+    con = sqlite3.connect(f"{db.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        row = con.execute("SELECT name, last_seen FROM sessions WHERE key = ? ORDER BY last_seen DESC LIMIT 1",
+                          ("cli:" + name,)).fetchone()
+    finally:
+        con.close()
+except sqlite3.Error as e:
+    print(f"nothing (the session table cannot be read: {e})")
+    sys.exit(0)
+print(row[0] if row is not None and row[1] >= since else "nothing")
+PY
+)" || actual="nothing"
+  [ "$actual" = "$1" ] \
+    || die "the engine registered $actual instead of $PERSON/$1; another session may use this name (README: Troubleshooting)"
+}
+
 register() {         # makes <team-name>/$CLOUD a live sender here; anything mistakenly sent to it is kept, not dropped
-  local out; out="$("$RN" listen --as "$CLOUD" --wait 0)"
+  local out t0; t0="$(now_ms)"; out="$("$RN" listen --as "$CLOUD" --wait 0)"
   case "$out" in
     "No messages."*) ;;
     *) mkdir -p "$STRAY"; { echo "== $(date -Iseconds)"; echo "$out"; } >> "$STRAY/$CLOUD.log"
        echo "rn-cloud: note: mail sent to $PERSON/$CLOUD (send-only) saved to $STRAY/$CLOUD.log" >&2 ;;
   esac
+  check_registered "$CLOUD" "$t0"
 }
-register_inbox() { "$RN" listen --as "$INBOX" --wait 0 >/dev/null; }   # bodies stay in network.db for rn-fetch
+register_inbox() {   # bodies stay in network.db for rn-fetch
+  local t0; t0="$(now_ms)"
+  "$RN" listen --as "$INBOX" --wait 0 >/dev/null
+  check_registered "$INBOX" "$t0"
+}
 
 outbox_count() {
   python3 - "$REASON_NETWORK_HOME/network.db" <<'PY'
@@ -102,8 +147,8 @@ case "${1:-}" in
     got=""; [ "$connected" = 0 ] || got=1
     rc=0
     if [ "$#" -gt 0 ] && [ "$connected" = 1 ] && [ "${REFWD:-1}" != 0 ]; then
-      register            # bot-cloud must be a live sender here before an RN-REFWD request can go out
-      RN_CLOUD_NAME="$CLOUD" python3 "$BASE/rn-fetch.py" fetch --timeout "$t" \
+      register            # <name>-cloud must be a live sender here before an RN-REFWD request can go out
+      python3 "$BASE/rn-fetch.py" fetch --timeout "$t" \
         --refwd-timeout "${REFWD_TIMEOUT:-90}" ${got:+--got} "$@" || rc=$?
     else
       python3 "$BASE/rn-fetch.py" wait --timeout "$t" ${got:+--got} "$@" || rc=$?
@@ -133,9 +178,10 @@ sig = hmac.new(key.encode(), "\n".join(["v1", to, reply_to, ts, nonce, body]).en
 print(f"RN-OUT v1\nto: {to}\nreply_to: {reply_to}\nts: {ts}\nnonce: {nonce}\nsig: {sig}\n---\n{body}", end="")
 PY
 )"
-    out="$(printf '%s' "$envelope" | "$RN" send "$PERSON/bot" --from "$PERSON/$CLOUD" -)" || die "send failed: $out"
+    out="$(printf '%s' "$envelope" | "$RN" send "$PERSON/$RELAY" --from "$PERSON/$CLOUD" -)" || die "send failed: $out"
     echo "$out"
-    case "$out" in *refused*|*held*) die "the engine did not accept the message: $out" ;; esac
+    status="$(python3 "$BASE/rn-fetch.py" send-status <<<"$out")" || die "could not classify the engine output: $out"
+    case "$status" in *refused*|*held*) die "the engine did not accept the message: $out" ;; esac
     # Don't end the turn while the message still sits in the box's outbox (the box may sleep right after).
     for _ in $(seq 1 30); do
       if [ "$(outbox_count)" = "0" ]; then

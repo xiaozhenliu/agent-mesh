@@ -16,6 +16,8 @@ stores what arrives in $REASON_NETWORK_HOME/network.db (table messages, kept eve
                                            record that a turn started work on / started a reply to /
                                            finished these ids; waits up to RN_DONE_LOCK_WAIT (default
                                            300 s) for the inbox lock and exits 1 without writing if it cannot
+  rn-fetch.py send-status                  read an `rn send` output on stdin, print only the engine's status words
+                                           (no addresses), exit 0; reads no credentials, takes no lock
   rn-fetch.py purge DAYS                   delete received messages, inbox folders, stray logs, remembered
                                            bad rows and thread notes older than DAYS (0 = all); the engine
                                            must be stopped
@@ -52,9 +54,11 @@ never recorded done, and the lease is over; full kept, plus working_at/replying_
 yet), or mismatch (reason: bad signature, length/hash differs, malformed, id collision). Exit 5 if any
 mismatch, else 4 if any missing, else 0 (handled, claimed and uncertain do not change it).
 Writes $RN_INBOX_DIR/<id>/full.txt and meta.json.
-Env: REASON_NETWORK_HOME, RN_PERSON, RN_INBOX_NAME (default bot-inbox), RN_KEY_FILE, RN_INBOX_DIR, RN_CLAIM_LEASE,
-RN_ORPHANS, RN_ORPHAN_DAYS, RN_DONE_LOCK_WAIT, RN_GOT (1; 0 = off); for fetch and receipts also RN_BIN,
-RN_CLOUD_NAME (bot-cloud), RN_RELAY_NAME (bot), RN_REFWD (1; 0 = off), RN_REFWD_MAX.
+Env: REASON_NETWORK_HOME, RN_PERSON, RN_INBOX_NAME (default <name>-inbox), RN_KEY_FILE, RN_INBOX_DIR,
+RN_CLAIM_LEASE, RN_ORPHANS, RN_ORPHAN_DAYS, RN_DONE_LOCK_WAIT, RN_GOT (1; 0 = off); for fetch and receipts also
+RN_BIN, RN_CLOUD_NAME (<name>-cloud), RN_RELAY_NAME (<name>), RN_REFWD (1; 0 = off), RN_REFWD_MAX.
+<name> is the Bot address name in $RN_BOX/relay (written by rn-cloud-setup.sh; bot if the file does not exist). It
+is read only if one of those three is unset; an empty or damaged file stops scan/wait/fetch and done.
 Standard library only.
 """
 import hashlib, hmac, json, os, re, shutil, sqlite3, subprocess, sys, time
@@ -68,9 +72,42 @@ CAPS = "got1"
 GOT_ID = re.compile(r"[A-Za-z0-9._-]{1,120}")
 GOT_MAX_IDS = 100
 GOT_FROM = None
+SEND_REFUSED = re.compile(r"refused|not on this machine|no session|nobody matches|ambiguous", re.I)
+SEND_UNSURE = re.compile(r"held|error", re.I)
+SEND_ACCEPTED = "→"
+RELAY_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+RESERVED_NAME = re.compile(r"terminal(?:-[0-9]+)?")
 AGENT_ENV = ("REASON_NETWORK_AGENT", "REASON_NETWORK_SESSION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
              "CODEX_THREAD_ID", "CODEX_SESSION_ID", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "COPILOT_CLI",
              "COPILOT_AGENT_SESSION_ID")
+
+
+def send_status(out):
+    """The engine's own words in an `rn send` output, without addresses or quoted names: on a line
+    "→ <address>: <status>" exactly the text after the first ": "; elsewhere the line minus quoted text and minus
+    whole words shaped like an address (they contain "/" or "@"). A bare name is never removed by value, since it
+    may equal one of the engine's own words."""
+    words = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith(SEND_ACCEPTED):
+            words.append(line[len(SEND_ACCEPTED):].strip().partition(": ")[2])
+            continue
+        line = re.sub(r"'[^']*'|\"[^\"]*\"", " ", line)
+        words.append(" ".join(w for w in line.split() if not re.search(r"[/@]", w)))
+    return "\n".join(words)
+
+
+def send_outcome(rc, out):
+    """Result of an `rn send`, judged on send_status() only: "failed" (clearly refused, whatever the exit code),
+    "sent" (exit 0, a "→ <address>:" line, no held/error), else "unknown"."""
+    status = send_status(out)
+    if SEND_REFUSED.search(status):
+        return "failed"
+    accepted = any(l.strip().startswith(SEND_ACCEPTED) for l in out.splitlines())
+    if rc == 0 and accepted and not SEND_UNSURE.search(status):
+        return "sent"
+    return "unknown"
 
 
 def sha(t):
@@ -289,6 +326,28 @@ def outbox_count():
         db.close()
 
 
+def relay_name_ok(name):
+    return bool(RELAY_NAME.fullmatch(name)) and len(name) <= 34 and not RESERVED_NAME.fullmatch(name)
+
+
+def names():
+    given = [os.environ.get(k) for k in ("RN_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME")]
+    if all(given):
+        return tuple(given)
+    path = Path(os.environ.get("RN_BOX", "/workspace/agent-mesh/box")) / "relay"
+    try:
+        base = path.read_text(encoding="utf-8", errors="replace").rstrip("\n")
+    except FileNotFoundError:
+        base = "bot"
+    except OSError as e:
+        raise SystemExit(f"rn-fetch: cannot read {path}: {e.strerror or e}")
+    else:
+        if not relay_name_ok(base):
+            raise SystemExit(f"rn-fetch: {path} is damaged; it must hold the Bot address name the Mac uses "
+                             "(README: Troubleshooting)")
+    return tuple(g or d for g, d in zip(given, (base, f"{base}-cloud", f"{base}-inbox")))
+
+
 def rn_bin():
     return os.environ.get("RN_BIN") or str(Path(os.environ.get("RN_BOX", "/workspace/agent-mesh/box")) / "bin/reason-network")
 
@@ -299,7 +358,7 @@ def send_got(stored, done, key, person):
     done = [i for i in dict.fromkeys(done) if GOT_ID.fullmatch(i)]
     stored = [i for i in dict.fromkeys(stored) if GOT_ID.fullmatch(i) and i not in done]
     items = [("stored", i) for i in stored] + [("done", i) for i in done]
-    to = f"{person}/{os.environ.get('RN_RELAY_NAME', 'bot')}"
+    to = f"{person}/{names()[0]}"
     args = [rn_bin(), "send", to] + (["--from", f"{person}/{GOT_FROM}"] if GOT_FROM else []) + ["-"]
     env = {k: v for k, v in os.environ.items() if k not in AGENT_ENV}
     sent, errors = 0, []
@@ -312,7 +371,7 @@ def send_got(stored, done, key, person):
             errors.append(f"send failed: {type(e).__name__}")
             continue
         res = (r.stdout + r.stderr).strip()
-        if r.returncode != 0 or re.search(r"refused|held|nobody matches|ambiguous|error", res, re.I):
+        if send_outcome(r.returncode, res) != "sent":
             errors.append(f"send rc={r.returncode}: {res.splitlines()[0][:80] if res else ''}")
             continue
         sent += 1
@@ -355,8 +414,7 @@ def request_refwd(mid, key, person):
     if len(done) >= cap:
         return None, f"box limit: {len(done)} re-forward request(s) already sent for this id"
     rn = rn_bin()
-    cloud = os.environ.get("RN_CLOUD_NAME", "bot-cloud")
-    relay = os.environ.get("RN_RELAY_NAME", "bot")
+    relay, cloud, _ = names()
     done.append(time.time())
     write(cf, json.dumps(done))            # count before sending: a crash never allows extra requests
     try:
@@ -365,7 +423,7 @@ def request_refwd(mid, key, person):
     except Exception as e:
         return None, f"send failed: {type(e).__name__}"
     res = (r.stdout + r.stderr).strip()
-    if r.returncode != 0 or re.search(r"refused|held|nobody matches|ambiguous|error", res, re.I):
+    if send_outcome(r.returncode, res) != "sent":
         return None, f"send rc={r.returncode}: {res.splitlines()[0][:80] if res else ''}"
     return len(done), None
 
@@ -767,6 +825,10 @@ def purge(days, threads, rn_bin=None):
 
 
 def main(argv):
+    if argv == ["send-status"]:
+        status = send_status(sys.stdin.buffer.read().decode("utf-8", "replace"))
+        sys.stdout.buffer.write(status.encode("utf-8") + b"\n")
+        return 0
     if argv[:1] == ["purge"]:
         if len(argv) != 2 or not re.fullmatch(r"[0-9]{1,5}", argv[1]):
             print("usage: rn-fetch.py purge DAYS   (whole days; 0 = everything)", file=sys.stderr)
@@ -784,6 +846,8 @@ def main(argv):
         if not ids or via == "" or any(not i or i.startswith("-") for i in ids):
             print(f"usage: rn-fetch.py {argv[0]} ID... [--via send]", file=sys.stderr)
             return 2
+        if argv[0] == "done" and via is None:
+            names()
         try:
             return mark(argv[0], ids, via)
         except OSError as e:
@@ -802,8 +866,8 @@ def main(argv):
             refwd_timeout = int(rest[1])
         rest = rest[2:]
     ids = list(dict.fromkeys(rest))
+    inbox = names()[2]
     key, person = credentials()
-    inbox = os.environ.get("RN_INBOX_NAME", "bot-inbox")
     lock = inbox_lock(300)
     try:
         migrate()

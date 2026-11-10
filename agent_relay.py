@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 """agent-relay: the always-on Mac side of agent-mesh. Runs under launchd.
 
-Inbound  (local agents -> Grok Bot): loops `reason-network listen --as bot`. Each message for <team-name>/bot is
-          forwarded in full over Reason Network to <team-name>/bot-inbox@cloud as a signed RN-FWD v1 message
+Names: <LISTEN_NAME>, <CLOUD_NAME> and <INBOX_NAME> come from the config (defaults bot, bot-cloud, bot-inbox;
+          install.sh derives all three from --relay-name).
+Inbound  (local agents -> Grok Bot): loops `reason-network listen --as <LISTEN_NAME>`. Each message for
+          <team-name>/<LISTEN_NAME> is forwarded in full over Reason Network to
+          <team-name>/<INBOX_NAME>@<CLOUD_MACHINE> as a signed RN-FWD v1 message
           (sent as <team-name>/terminal, which the engine's agent-loop guard never refuses). Then the routine
           webhook is rung with a small doorbell: {id, from, agent, thread, text_len, text_sha256, preview}.
           The routine fetches the full text by id with `rn-cloud.sh fetch` and verifies it.
-Outbound (Grok Bot -> local agents): messages from <team-name>/bot-cloud that carry a valid RN-OUT v1 envelope
-          (HMAC, 15-minute window) are re-sent here as <team-name>/bot, so replies always land on this machine,
-          never on the sleeping cloud box. Each envelope nonce gets a send record (sending, sent, failed, unknown)
+Outbound (Grok Bot -> local agents): messages from <team-name>/<CLOUD_NAME> that carry a valid RN-OUT v1
+          envelope (HMAC, 15-minute window) are re-sent here as <team-name>/<LISTEN_NAME>, so replies always land
+          on this machine, never on the sleeping cloud box. Each envelope nonce gets a send record (sending, sent, failed, unknown)
           saved before the engine is called and kept NONCE_KEEP_SECONDS: a nonce already sent is dropped
           silently, one whose result is unknown is not sent again (one alert), a failed one may be sent again.
           Refused, failed and unknown sends are reported as durable alerts.
 Re-forward: a copy of every forwarded text is kept for FWD_COPY_DAYS (dir 0700, files 0600). A signed
-          RN-REFWD v1 from bot-cloud or bot-inbox makes the relay send the copy again, at most REFWD_MAX_PER_ID
+          RN-REFWD v1 from <CLOUD_NAME> or <INBOX_NAME> makes the relay send the copy again, at most REFWD_MAX_PER_ID
           per message and REFWD_MAX_PER_HOUR overall, answered with a signed RN-REFWD-ACK v1. It rings again
           only if the request does not carry "caps: got1" (a cloud that sends receipts is still waiting).
           If the first forward fails, the doorbell still rings (flagged forward_failed) and the cloud's fetch
           asks for the copy the same way.
 Receipts: every forwarded message stays pending until the cloud reports it done (signed RN-GOT v1 from
-          bot-cloud, bot-inbox or a <team-name>/terminal session; the engine may number it, e.g. terminal-3) or a
+          <CLOUD_NAME>, <INBOX_NAME> or a <team-name>/terminal session; the engine may number it, e.g. terminal-3) or a
           valid RN-OUT replies to it. Without a "stored"
           receipt GOT_TIMEOUT_SECONDS after its doorbell went out, the relay forwards the copy again and rings
           again (field rering); without "done" GOT_DONE_SECONDS after a stored message's doorbell, it rings again.
@@ -49,6 +52,9 @@ LOG_FILE = Path(os.environ.get("AGENT_RELAY_LOG", HOME / "Library/Logs/agent-rel
 RN_DB = HOME / ".reason/network/network.db"     # the engine's message store; RN_DB in the config is for tests only
 RECONCILE_PAGE = 200                             # network.db rows read per query during recovery
 
+NAME_SEG = r"[a-z0-9][a-z0-9-]*"
+OUT_TO = re.compile(rf"{NAME_SEG}/{NAME_SEG}(?:@{NAME_SEG})?")
+OUT_REPLY_TO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
 BLOCK = re.compile(r'<reason-message ([^>]*)>\n(.*?)\n</reason-message>', re.S)
 ATTR = re.compile(r'(\w+)="([^"]*)"')
 
@@ -93,6 +99,18 @@ def load_env():
                                                  cfg["NONCE_KEEP_SECONDS"])
         cfg["NONCE_KEEP_SECONDS"] = 86400
     return cfg
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+WEBHOOK_OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def webhook_open(req, timeout):
+    return WEBHOOK_OPENER.open(req, timeout=timeout)
 
 
 def sha256_hex(text):
@@ -212,6 +230,7 @@ ALERT_PREFIX = "relay-alerts-"
 ALERT_OVERFLOW = "alerts-overflow"
 ALERT_ITEM_CHARS = 300
 MAX_ALERTS = 200
+SUPERSEDED = "Replaces the earlier failed/refused report; do not resend. "
 
 
 def sign_got(key, stored, done, ts, nonce):
@@ -351,7 +370,8 @@ class State:
         for n, r in self.sends.items():
             if isinstance(r, dict) and r.get("state") == "sending":
                 r["state"], r["noticed"], found = "unknown", True, True
-                self.alert(f"unknown:{n}", f"outbound {r.get('id') or 'unknown'} to "
+                lead = SUPERSEDED if self.supersede(n) else ""
+                self.alert(f"unknown:{n}", f"{lead}outbound {r.get('id') or 'unknown'} to "
                                            f"{r.get('to') or 'unknown recipient'} was being sent when the relay "
                                            f"stopped; result unknown. Check with the recipient; to send anyway, "
                                            f"change the text.")
@@ -430,6 +450,13 @@ class State:
 
     def drop_alert(self, key):
         self.alerts = [a for a in self.alerts if a["key"] != key]
+
+    def supersede(self, nonce):
+        old = (f"reject:{nonce}", f"failed:{nonce}")
+        kept = [a for a in self.alerts if a["key"] not in old]
+        dropped = len(kept) < len(self.alerts)
+        self.alerts = kept
+        return dropped
 
     def confirm_alerts(self, batch):
         kept = []
@@ -657,11 +684,10 @@ class Relay:
         """Proof that mid was handled: a done receipt, or a valid RN-OUT replying to it."""
         mid = str(mid)
         self.s.drop_alert(f"abandon:{mid}")
-        if mid not in self.s.pending:
-            return
-        self.drop_pending(mid)
         if receipt:
             self.s.spool = [i for i in self.s.spool if not (i.get("doorbell") and str(i.get("id")) == mid)]
+        if mid in self.s.pending:
+            self.drop_pending(mid)
 
     def drop_pending(self, mid):
         del self.s.pending[mid]
@@ -780,13 +806,40 @@ class Relay:
                 self.log.info("pruned %d forward copies older than %d days", n, self.copies.days)
 
     # ---- outbound (Grok Bot -> network) ----
+    def signed(self, env):
+        return hmac.compare_digest(env["sig"], sign(self.c["OUTBOUND_KEY"], env["to"], env["reply_to"],
+                                                    env["ts"], env["nonce"], env["body"]))
+
+    def stored_text(self, mid):
+        path = Path(self.c.get("RN_DB") or RN_DB)
+        try:
+            db = sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
+            try:
+                cols = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
+                sql = "SELECT body FROM messages WHERE id = ? AND recipient = ? AND sender = ?"
+                if "held" in cols:
+                    sql += " AND COALESCE(held, 0) = 0"
+                rows = db.execute(sql + " LIMIT 2", (str(mid), self.me, self.cloud)).fetchall()
+            finally:
+                db.close()
+        except Exception as e:
+            self.log.warning("could not read %s for the stored text of %s: %s", path, mid, type(e).__name__)
+            return None
+        return rows[0][0] if len(rows) == 1 and isinstance(rows[0][0], str) else None
+
     def proxy(self, m):
         env = parse_envelope(m["text"])
         now = time.time()
+        if not (env and self.signed(env)):
+            stored = self.stored_text(m["id"])
+            alt = parse_envelope(stored) if stored is not None and stored != m["text"] else None
+            if alt and self.signed(alt):
+                self.log.info("proxy %s: verified against the stored text in network.db (listen showed it rewritten)",
+                              m["id"])
+                env = alt
         if not env:
-            return self.notice(f"bot-cloud sent {m['id']} without a valid RN-OUT envelope; not forwarded")
-        if not hmac.compare_digest(env["sig"], sign(self.c["OUTBOUND_KEY"], env["to"], env["reply_to"],
-                                                    env["ts"], env["nonce"], env["body"])):
+            return self.notice(f"{self.c['CLOUD_NAME']} sent {m['id']} without a valid RN-OUT envelope; not forwarded")
+        if not self.signed(env):
             self.log.warning("proxy refused %s: bad signature", m["id"])
             return self.notice(f"outbound {m['id']} refused: bad signature")
         if env["reply_to"]:
@@ -826,6 +879,11 @@ class Relay:
                            f"outbound {m['id']} refused: over {self.c['MAX_PROXY_PER_HOUR']} sends/hour")
         if to in ("*",) or to.endswith("/*") or to.startswith("repo:") or to in (self.me, self.cloud):
             return s.alert(f"reject:{nonce}", f"outbound {m['id']} refused: group or self address '{to}'")
+        if not OUT_TO.fullmatch(to) or (env["reply_to"] and not OUT_REPLY_TO.fullmatch(env["reply_to"])):
+            shown = f"to={repr(to)[:80]} reply_to={repr(env['reply_to'])[:80]}"
+            self.log.warning("proxy refused %s: not a plain address/id (%s)", m["id"], shown)
+            return s.alert(f"reject:{nonce}", f"outbound {m['id']} refused: recipient or reply_to is not a plain "
+                                              f"address/id; not sent. Do not resend; tell the user. {shown}")
         s.sends[nonce] = {"t": now, "state": "sending", "id": str(m["id"]), "to": to, "noticed": False}
         s.nonces[nonce] = now
         s.proxies.append(now)
@@ -861,7 +919,7 @@ class Relay:
             s.alert(f"failed:{nonce}", text)
         else:
             rec["noticed"] = True
-            s.alert(f"unknown:{nonce}", text)
+            s.alert(f"unknown:{nonce}", (SUPERSEDED if s.supersede(nonce) else "") + text)
         s.save()
 
     def notice(self, text):
@@ -1004,10 +1062,12 @@ class Relay:
         })
         self.s.wakes.append(time.time())
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with webhook_open(req, timeout=15) as resp:
                 code = resp.status
         except urllib.error.HTTPError as e:
             code = e.code
+            if e.fp is not None:
+                e.close()
         except Exception as e:
             code = f"error {type(e).__name__}"
         self.log.info("POST %d chars %d bytes sha256=%s code=%s items=[%s]", len(body), len(data),
@@ -1033,6 +1093,9 @@ class Relay:
             self.log.warning("webhook POST failed: %s; %d alert(s) kept", code, len(chosen))
         else:
             self.log.warning("webhook POST failed: %s; %d item(s) kept in spool", code, len(self.s.spool))
+        if isinstance(code, int) and 300 <= code < 400:
+            self.log.warning("webhook answered %d; redirects are not followed (the key is sent only to WEBHOOK_URL "
+                             "itself); set WEBHOOK_URL to the final address", code)
         self.s.save()
         return 5 if self.s.spool or self.ready_alerts() else 600
 

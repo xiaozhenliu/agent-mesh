@@ -117,9 +117,15 @@ read_status() {
   while read -r k v; do
     case "$k" in
       relay) S_RELAY="$v" ;; dsh) S_DSH="$v" ;; cloud) S_CLOUD="$v" ;;
-      cloud_setup) S_SETUP="$v" ;; prompt) S_PROMPT="$v" ;; txn) S_TXN="$v" ;;
+      cloud_setup) S_SETUP="$v" ;; prompt) S_PROMPT="$v" ;; txn) S_TXN="$v" ;; name) S_NAME="$v" ;;
     esac
   done <<< "$out"
+  case "$S_NAME" in
+    "changed "*)
+      local recorded current
+      read -r _ recorded current <<< "$S_NAME"
+      die "the Bot address name in ~/.config/agent-relay/env ($current) is not the one this Mac installed with ($recorded); renaming is not supported. Put the old name back, or uninstall with identity removal and install again" ;;
+  esac
 }
 
 plan_line() {
@@ -131,6 +137,10 @@ plan_line() {
 print_plan() {
   echo "== plan (checkout $(checkout_label), prompt language $DOC_LANG)"
   [ "$S_TXN" = - ] || echo "  unfinished update stopped at '$S_TXN': it is continued first (terminal)"
+  local name_state name_value
+  read -r name_state name_value <<< "$S_NAME"
+  if [ "$name_state" = ok ]; then plan_line "address name" ok "$name_value"
+  else plan_line "address name" unknown "$name_value (recorded with the next step this script records)"; fi
   plan_line "relay" "$S_RELAY" "install this checkout's relay and restart it"
   if [ "$S_DSH" = absent ]; then plan_line "dsh plugin" absent "- (not installed)"
   else plan_line "dsh plugin" "$S_DSH" "replace the plugin file; bridge settings stay"; fi
@@ -172,7 +182,7 @@ prompt_step() {
   echo
   echo "[GROK-UI] Replace the prompt saved in the routine with this one ($DOC_LANG):"
   echo "----------------------------------------------------------------"
-  "$PYTHON" "$HERE/scripts/render_prompt.py" routine --lang "$DOC_LANG"
+  state show-prompt --lang "$DOC_LANG"
   echo
   echo "----------------------------------------------------------------"
   ask "Is the new prompt saved in the routine?" || die "the routine prompt was not recorded as updated"
@@ -254,7 +264,7 @@ main() {
   LIB_DIR="$HOME/.local/lib/agent-mesh"; LOCK="$LIB_DIR/update.lock"
   LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
   LANG_ARG=""; YES=0; PULL=1; PLAN=0
-  FAILED=0; NEED=""; SHOWN=""
+  FAILED=0; NEED=""; SHOWN=""; S_NAME=""
   R_RELAY="unchanged"; R_DSH="unchanged"; R_CLOUD="unchanged"; R_SETUP="unchanged"; R_PROMPT="unchanged"
   parse_args "$@"
 
