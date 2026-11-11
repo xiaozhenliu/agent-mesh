@@ -1,6 +1,6 @@
 # agent-mesh
 
-agent-mesh version: 0.5.1 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
+agent-mesh version: 0.5.2 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
 
 > Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. macOS, Reason Network v0.10.7. MIT.
 
@@ -24,8 +24,14 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 
 ## Reference (English and Simplified Chinese)
 
-- [README.md](README.md): what it is, how it works, install, verify, security, uninstall, message formats.
+- [README.md](README.md): what it is, how it works, install, verify, security, troubleshooting, and summaries of uninstall and upgrade.
 - [README.zh-CN.md](README.zh-CN.md): Simplified Chinese user guide.
+- [UNINSTALL.md](UNINSTALL.md): what each uninstall level removes and keeps, checks before uninstalling, the steps on both computers, how to confirm the result.
+- [UNINSTALL.zh-CN.md](UNINSTALL.zh-CN.md): Simplified Chinese uninstall guide.
+- [UPGRADE.md](UPGRADE.md): update.sh in detail, the manual upgrade order, the rollback order.
+- [UPGRADE.zh-CN.md](UPGRADE.zh-CN.md): Simplified Chinese upgrade guide.
+- [PROTOCOL.md](PROTOCOL.md): recovery and receipts, claims, the signed message formats (RN-OUT, RN-FWD, RN-REFWD, RN-REFWD-ACK, RN-GOT), the doorbell JSON, test vectors.
+- [PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md): Simplified Chinese protocol reference.
 - [templates/AGENTS.reason-network.md](templates/AGENTS.reason-network.md): reply convention to append to your AGENTS.md.
 - [templates/AGENTS.reason-network.zh-CN.md](templates/AGENTS.reason-network.zh-CN.md): Simplified Chinese reply convention.
 - [dsh/README.md](dsh/README.md): DeepSeek Harness auto-wake plugin.

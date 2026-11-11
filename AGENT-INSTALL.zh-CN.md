@@ -66,4 +66,4 @@
 
 ## 卸载
 
-`[LOCAL]`：先运行 `git pull`，再运行 `./uninstall.sh --plan`，把输出给用户看；它列出已安装的内容和每个级别要删除的内容，不改动任何东西。经用户同意，你可以运行 `./uninstall.sh --level program --yes`，它只删除 relay 程序，`./install.sh --restart-relay` 可以装回。`identity` 级别（另外让两台电脑都退出团队，删除密钥和身份）和 `all` 级别（另外删除日志、引擎和云端数据）需要输入确认，并有一步在 Grok Bot 里完成：请用户在自己的终端里运行 `./uninstall.sh --level identity` 或 `--level all`，按指南[卸载](README.zh-CN.md#卸载)一节操作。没有终端时它们以退出码 3 结束。所有级别都保留当前代码目录。不要改为手动删除文件，也不要动卸载器列为 foreign 的部署。
+`[LOCAL]`：先运行 `git pull`，再运行 `./uninstall.sh --plan`，把输出给用户看；它列出已安装的内容和每个级别要删除的内容，不改动任何东西。经用户同意，你可以运行 `./uninstall.sh --level program --yes`，它只删除 relay 程序，`./install.sh --restart-relay` 可以装回。`identity` 级别（另外让两台电脑都退出团队，删除密钥和身份）和 `all` 级别（另外删除日志、引擎和云端数据）需要输入确认，并有一步在 Grok Bot 里完成：请用户在自己的终端里运行 `./uninstall.sh --level identity` 或 `--level all`，按[卸载指南](UNINSTALL.zh-CN.md)操作。没有终端时它们以退出码 3 结束。所有级别都保留当前代码目录。不要改为手动删除文件，也不要动卸载器列为 foreign 的部署。

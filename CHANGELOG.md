@@ -4,6 +4,23 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.2 — 2026-11-11
+
+Makes the guided cloud update and the self-check report what actually happened.
+
+### Changed
+
+- Documentation: the README is shorter. The uninstall steps, the upgrade steps and the message formats moved, unchanged, to [UNINSTALL.md](UNINSTALL.md), [UPGRADE.md](UPGRADE.md) and [PROTOCOL.md](PROTOCOL.md), each with a Simplified Chinese version; the README keeps a summary and a link under the same headings. "Key highlights" is merged into "What problem it solves". No behavior changes.
+
+### Fixed
+
+- `update.sh`: the cloud step no longer records the cloud scripts as updated on a plain yes. You paste Grok Bot's reply instead, and the cloud is recorded as updated only when the reply shows exactly this checkout's commit and the checksums of `box/rn-cloud.sh` and `box/rn-fetch.py`. A plain yes, an empty answer, another commit or a different checksum leaves the cloud unrecorded and the routine paused, and the next `./update.sh` asks again. Before, a yes typed without the message ever reaching Grok Bot marked the cloud as current while it kept the old scripts. The message for Grok Bot now also covers a cloud clone on a detached HEAD: check out the branch this checkout tracks before `git pull --ff-only`, and stop instead of resetting anything (#28).
+- `check.sh`: the webhook line judges the latest webhook POST in the relay log. A failure that a later retry delivered (`code=200`) passes and is noted as recovered; it no longer sends you to `./install.sh --webhook` for a working webhook. A latest POST that failed, including a 3xx answer, still fails (#26).
+
+### Upgrade notes
+
+Only `update.sh`, `check.sh` and `scripts/deploy_state.py` changed; the relay, the cloud scripts, the cloud setup script and the routine prompt are unchanged, so updating from a confirmed v0.5.1 with no unfinished update needs nothing on the cloud. If the cloud was never confirmed, an earlier update was interrupted, or you skip versions, `./update.sh` runs the steps those need, now with the pasted reply.
+
 ## v0.5.1 — 2026-11-11
 
 Fixes the registration check added in v0.5.0, which stopped cloud replies after a fetch.

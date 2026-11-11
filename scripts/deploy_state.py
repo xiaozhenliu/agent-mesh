@@ -251,6 +251,39 @@ def cmd_txn_set(args):
     save(data)
 
 
+CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py")
+
+
+def reply_problems(text, commit):
+    text = text.lower()
+    commit = commit.lower()
+    problems = []
+    commits = set(re.findall(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", text))
+    if not commits:
+        problems.append("no commit (40 hex characters) in the reply")
+    elif commits != {commit}:
+        others = ", ".join(sorted(other[:12] for other in commits - {commit}))
+        problems.append(f"the reply shows commit {others}, not {commit[:12]}")
+    for name in CLOUD_FILES:
+        want = sha((ROOT / name).read_bytes())
+        pattern = r"(?<![0-9a-f])([0-9a-f]{64})[ \t]+\*?(?:\./)?" + re.escape(name) + r"(?=$|[\s`'\"),;])"
+        found = set(re.findall(pattern, text, re.M))
+        if not found:
+            problems.append(f"no checksum for {name} in the reply")
+        elif found != {want}:
+            problems.append(f"the checksum of {name} differs from this checkout")
+    return problems
+
+
+def cmd_cloud_reply(args):
+    problems = reply_problems(sys.stdin.read(), args.commit)
+    if problems:
+        for problem in problems:
+            print(f"  mismatch: {problem}")
+        raise SystemExit(1)
+    print("  match: commit and both checksums")
+
+
 def cmd_txn_clear(_args):
     data = load(warn=False)
     if "txn" in data:
@@ -299,6 +332,9 @@ def main(argv=None):
     p.add_argument("value")
     p.set_defaults(run=cmd_txn_set)
     sub.add_parser("txn-clear").set_defaults(run=cmd_txn_clear)
+    p = sub.add_parser("cloud-reply")
+    p.add_argument("--commit", required=True)
+    p.set_defaults(run=cmd_cloud_reply)
     args = parser.parse_args(argv)
     try:
         args.run(args)

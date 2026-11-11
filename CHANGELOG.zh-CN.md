@@ -4,6 +4,23 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.5.2 — 2026-11-11
+
+让引导式云端更新和自检如实反映实际情况。
+
+### 变更
+
+- 文档：README 变短了。卸载步骤、升级步骤和消息格式原样移到 [UNINSTALL.zh-CN.md](UNINSTALL.zh-CN.md)、[UPGRADE.zh-CN.md](UPGRADE.zh-CN.md) 和 [PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md)，各有英文版；README 在原标题下保留摘要和链接。「核心亮点」并入「解决什么问题」。行为没有变化。
+
+### 修复
+
+- `update.sh`：云端步骤不再凭一个"是"就记录云端脚本已更新。改为请你粘贴 Grok Bot 的回复，回复中的提交号和 `box/rn-cloud.sh`、`box/rn-fetch.py` 的校验值与当前仓库完全一致，才记录云端已更新。只回答"是"、什么都不贴、提交号不同或校验值不同，都不会记录，routine 保持暂停，下次运行 `./update.sh` 会再问。此前，即使那段话根本没发给 Grok Bot，回答"是"也会把云端记为最新，而云端仍在运行旧脚本。发给 Grok Bot 的话也覆盖了云端仓库处于分离 HEAD 的情况：先切换到当前仓库跟踪的分支，再执行 `git pull --ff-only`，遇到问题就停下，不做任何重置（#28）。
+- `check.sh`：webhook 一项改为看 relay 日志里最近一次 webhook POST。失败之后重试已送达（`code=200`）的，判为通过并注明已恢复，不再让你为正常工作的 webhook 去运行 `./install.sh --webhook`。最近一次 POST 失败（包括 3xx 应答）时仍判为失败（#26）。
+
+### 升级说明
+
+只改了 `update.sh`、`check.sh` 和 `scripts/deploy_state.py`；relay、云端脚本、云端初始化脚本和 routine 提示词都没有变化，所以从已确认的 v0.5.1 升级、且没有未完成的更新时，云端不需要做任何事。云端从未确认过、上次更新中途停下或跨版本升级时，`./update.sh` 照常走相应的步骤，云端那一步改为粘贴回复。
+
 ## v0.5.1 — 2026-11-11
 
 修复 v0.5.0 新增的注册检查：它使云端在 fetch 之后无法回信。

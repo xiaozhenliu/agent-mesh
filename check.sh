@@ -76,7 +76,23 @@ launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && ok "relay service loade
 log="$HOME/Library/Logs/agent-relay.log"
 if [ -f "$log" ]; then
   grep -q "agent-relay up" "$log" && ok "relay log shows 'agent-relay up'" || bad "relay never came up" "tail $log"
-  if tail -n 50 "$log" | grep -q "webhook POST failed"; then bad "recent webhook POST failures" "check the Webhook URL and key: ./install.sh --webhook"; fi
+  codes="$(grep -E ' POST [0-9]+ chars [0-9]+ bytes sha256=[0-9a-f]+ code=.* items=' "$log" | tail -n 2 \
+    | sed -E 's/.* code=(.*) items=.*/\1/')"
+  if [ -n "$codes" ]; then
+    code="$(printf '%s\n' "$codes" | tail -n 1)"
+    before=""
+    [ "$(printf '%s\n' "$codes" | wc -l)" -lt 2 ] || before="$(printf '%s\n' "$codes" | head -n 1)"
+    case "$code" in
+      2[0-9][0-9])
+        case "$before" in
+          ""|2[0-9][0-9]) ok "latest webhook POST succeeded (code=$code)" ;;
+          *) ok "latest webhook POST succeeded (code=$code; recovered after an earlier failure)" ;;
+        esac ;;
+      *) bad "latest webhook POST failed (code=$code)" "check the Webhook URL and key: ./install.sh --webhook" ;;
+    esac
+  elif tail -n 50 "$log" | grep -q "webhook POST failed"; then
+    bad "recent webhook POST failures" "check the Webhook URL and key: ./install.sh --webhook"
+  fi
 fi
 
 # sessions

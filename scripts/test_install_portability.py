@@ -737,14 +737,19 @@ exit 0""")
         try:
             os.write(master, "".join(answer + "\n" for answer in answers).encode())
             proc = subprocess.Popen(["/bin/bash", str(root / "update.sh"), *args], env=self.env, stdin=slave,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            seen, deadline = b"", time.time() + 30
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setpgrp)
+            seen, deadline = b"", time.time() + 90
             while wait_for.encode() not in seen and time.time() < deadline:
                 ready, _, _ = select.select([proc.stderr], [], [], 0.5)
                 if ready:
                     seen += os.read(proc.stderr.fileno(), 4096)
-            proc.send_signal(sig)
-            out, err = proc.communicate(timeout=30)
+            if wait_for.encode() not in seen:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate(timeout=30)
+                self.fail(f"update.sh never printed {wait_for!r}; stderr so far:\n{seen.decode()}")
+            time.sleep(1)
+            os.killpg(proc.pid, sig)
+            out, err = proc.communicate(timeout=60)
             return proc.returncode, out.decode(), (seen + err).decode()
         finally:
             os.close(slave)
@@ -752,6 +757,15 @@ exit 0""")
 
     def sha(self, path):
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    def cloud_reply(self, repo, commit="a" * 40, fetch_sum=None):
+        return ["Done. Output:", "```", commit, "",
+                f"{self.sha(repo / 'box/rn-cloud.sh')}  box/rn-cloud.sh",
+                f"{fetch_sum or self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py", "```", "."]
+
+    def cloud_reply_check(self, repo, text):
+        return subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "cloud-reply",
+                               "--commit", "a" * 40], input=text, env=self.env, capture_output=True, text=True)
 
     def test_restart_relay_rolls_back_each_failed_start(self):
         repo = self.installed()
@@ -989,8 +1003,10 @@ exit 0""")
 
     def test_update_guided_flow_runs_in_order_and_records_each_step(self):
         repo = self.installed(record=False)
-        result = self.run_tty(repo, "--no-pull", answers=["y"] * 5)
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("match: commit and both checksums", result.stdout)
+        self.assertIn("checkout main first", result.stdout)
         data = self.record()
         for field in ("cloud", "cloud_setup", "prompt"):
             self.assertEqual(data[field]["state"], "confirmed", field)
@@ -1011,14 +1027,14 @@ exit 0""")
         self.assertEqual(self.started()[-1], self.sha(relay))
         self.assertEqual(self.record()["txn"]["stage"], "relay_stopped")
         self.assertIn("stopped at 'relay_stopped'", result.stdout)
-        result = self.run_tty(repo, "--no-pull", answers=["y"] * 4)
+        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("continuing the update that stopped at 'relay_stopped'", result.stdout)
         self.assertNotIn("txn", self.record())
 
     def paused_after_cloud(self):
         repo = self.installed(record=False)
-        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", "n"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("The routine is still paused", result.stdout)
         self.assertTrue(self.loaded())
@@ -1040,12 +1056,86 @@ exit 0""")
         repo = self.paused_after_cloud()
         with open(repo / "box/rn-cloud.sh", "a") as stream:
             stream.write("\n")
-        result = self.run_tty(repo, "--no-pull", answers=["y"] * 4)
+        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Send this to Grok Bot", result.stdout)
         self.assertEqual(self.record()["cloud"]["hash"],
                          subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "digest", "cloud"],
                                         env=self.env, capture_output=True, text=True).stdout.strip())
+
+    def test_update_cloud_step_needs_the_pasted_reply_to_match(self):
+        cases = {
+            "bare yes": ["y", "."],
+            "empty answer": ["."],
+            "wrong commit": None,
+            "wrong checksum": None,
+        }
+        for label, answer in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                repo = self.installed(record=False)
+                if label == "wrong commit":
+                    answer = self.cloud_reply(repo, commit="b" * 40)
+                elif label == "wrong checksum":
+                    answer = self.cloud_reply(repo, fetch_sum="c" * 64)
+                result = self.run_tty(repo, "--no-pull", answers=["y", "y", *answer, "y", "y"])
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("mismatch:", result.stdout)
+                self.assertIn("The routine is still paused", result.stdout)
+                self.assertTrue(self.loaded())
+                data = self.record()
+                self.assertNotEqual(data.get("cloud", {}).get("state"), "confirmed")
+                self.assertEqual(data["txn"]["stage"], "routine_paused")
+                result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo), "y", "y"])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Send this to Grok Bot", result.stdout)
+                self.assertEqual(self.record()["cloud"]["state"], "confirmed")
+
+    def test_update_interrupted_while_pasting_keeps_the_cloud_unconfirmed(self):
+        for sig, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(sig=sig):
+                self.setUp()
+                repo = self.installed(record=False)
+                partial = self.cloud_reply(repo)[:4]
+                rc, out, err = self.run_tty_until(repo, "--no-pull", answers=["y", "y", *partial],
+                                                  wait_for="Paste Grok Bot's reply", sig=sig)
+                self.assertEqual(rc, code, out + err)
+                self.assertIn("The routine is still paused", out)
+                self.assertTrue(self.loaded())
+                data = self.record()
+                self.assertNotEqual(data.get("cloud", {}).get("state"), "confirmed")
+                self.assertEqual(data["txn"]["stage"], "routine_paused")
+                self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
+                result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo), "y", "y"])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.record()["cloud"]["state"], "confirmed")
+
+    def test_cloud_reply_matching_tolerates_formatting_but_not_extra_commits(self):
+        repo = self.installed()
+        cloud, fetch = self.sha(repo / "box/rn-cloud.sh"), self.sha(repo / "box/rn-fetch.py")
+        good = [
+            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py\n",
+            f"HEAD is {'A' * 40}.\n\n{cloud.upper()} *box/rn-cloud.sh\n{fetch}  ./box/rn-fetch.py\n",
+            f"`{'a' * 40}`\n`{cloud}  box/rn-cloud.sh`\n{fetch}  box/rn-fetch.py",
+        ]
+        bad = [
+            f"{'a' * 40}\n{'b' * 40}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py\n",
+            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh\n",
+            f"{'a' * 39}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py\n",
+            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py\n{'d' * 64}  box/rn-fetch.py\n",
+            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh.bak\n{fetch}  box/rn-fetch.py\n",
+            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py~\n",
+            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh~\n{fetch}  box/rn-fetch.py\n",
+        ]
+        for text in good:
+            with self.subTest(text=text):
+                result = self.cloud_reply_check(repo, text)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for text in bad:
+            with self.subTest(text=text):
+                result = self.cloud_reply_check(repo, text)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("mismatch:", result.stdout)
 
     def test_update_terminated_while_waiting_restores_the_relay(self):
         repo = self.installed(record=False)
@@ -1517,6 +1607,44 @@ exit 0""")
         self.assertNotIn("0123456789", out)
         env.unlink()
         self.assertIn("PASS  relay name: bot (default)", check())
+
+    def test_check_judges_the_latest_webhook_post(self):
+        self.configured()
+        log = self.home / "Library/Logs/agent-relay.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        up = "2026-11-10 09:00:00,000 INFO agent-relay up"
+
+        def post(code):
+            return f"2026-11-10 09:00:01,000 INFO POST 120 chars 120 bytes sha256={'e' * 64} code={code} items=[m1]"
+
+        failed = "2026-11-10 09:00:01,001 WARNING webhook POST failed: error URLError; 1 item(s) kept in spool"
+        cases = [
+            ("failure then success", [post("error URLError"), failed, post(200), "INFO woke Grok Bot with 1 item(s)"],
+             "PASS  latest webhook POST succeeded (code=200; recovered after an earlier failure)", False),
+            ("failure only", [post("error URLError"), failed], "FAIL  latest webhook POST failed (code=error URLError)",
+             True),
+            ("success only", [post(200)], "PASS  latest webhook POST succeeded (code=200)", False),
+            ("redirect", [post(302), failed.replace("error URLError", "302")],
+             "FAIL  latest webhook POST failed (code=302)", True),
+            ("no POST lines", [], None, False),
+            ("success then failure", [post(200), post("error URLError"), failed],
+             "FAIL  latest webhook POST failed (code=error URLError)", True),
+            ("success then 500", [post(200), post(500)], "FAIL  latest webhook POST failed (code=500)", True),
+            ("success then redirect", [post(200), post(302)], "FAIL  latest webhook POST failed (code=302)", True),
+            ("204", [post(204)], "PASS  latest webhook POST succeeded (code=204)", False),
+            ("recovered long ago", [post("error URLError"), failed, post(200)] + ["INFO note"] * 60,
+             "recovered after an earlier failure", False),
+            ("success twice", [post("error URLError"), post(200), post(200)],
+             "PASS  latest webhook POST succeeded (code=200)\n", False),
+            ("only a failure warning", [failed], "FAIL  recent webhook POST failures", True),
+        ]
+        for label, lines, expected, fails in cases:
+            with self.subTest(label):
+                log.write_text("\n".join([up, *lines]) + "\n")
+                out = self.run_script("check.sh").stdout
+                if expected:
+                    self.assertIn(expected, out)
+                self.assertEqual("webhook POST failed" in out or "webhook POST failures" in out, fails, out)
 
 
 TEAM_ID = "5f0c2a9be14d4c7aa3d1e2f30415a6b7"

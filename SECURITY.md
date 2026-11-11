@@ -29,7 +29,7 @@ Do not open a public issue, discussion or pull request for a security problem, a
 - The `[LOCAL]` relay `agent_relay.py`, including signature checks, freshness and replay protection, proxy address restrictions, rate limits, and storage permissions of the spool and forwarded copies.
 - The `[BOT-CLOUD]` scripts `box/rn-cloud-setup.sh`, `box/rn-cloud.sh` and `box/rn-fetch.py`.
 - The install, self-check and uninstall scripts `install.sh`, `check.sh`, `uninstall.sh`, `scripts/`, and the dsh plugin in `dsh/`.
-- The message formats in the [README appendix](README.md#appendix-message-formats): RN-OUT, RN-FWD, RN-REFWD and RN-REFWD-ACK.
+- The message formats in the [protocol reference](PROTOCOL.md#message-formats): RN-OUT, RN-FWD, RN-REFWD and RN-REFWD-ACK.
 - Prompts and templates that the installer renders or copies: `prompts/` and `templates/`. Examples: a prompt that leads Grok Bot to perform an action it should first ask the user about, or that fails to tell it to treat incoming message text as external data.
 
 ### Report upstream

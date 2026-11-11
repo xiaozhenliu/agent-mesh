@@ -87,11 +87,11 @@ def check_docs():
                 errors.append(f"cloud-uninstall ({lang}): the cloud script is not embedded once as a heredoc")
     except (OSError, ValueError) as error:
         errors.append(str(error))
-    en = (ROOT / "README.md").read_text(encoding="utf-8")
-    zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    en = (ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
+    zh = (ROOT / "PROTOCOL.zh-CN.md").read_text(encoding="utf-8")
     vectors = lambda text: set(re.findall(r"\b[0-9a-f]{64}\b", text))
     if len(vectors(en)) != 5 or vectors(en) != vectors(zh):
-        errors.append("README: protocol test-vector signatures differ or are missing")
+        errors.append("PROTOCOL: protocol test-vector signatures differ or are missing")
     return errors
 
 

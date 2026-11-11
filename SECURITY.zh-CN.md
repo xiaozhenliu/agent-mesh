@@ -29,7 +29,7 @@
 - `[LOCAL]` relay：`agent_relay.py`，包括签名校验、时效与防重放、代发地址限制、速率限制、spool 与正文副本的存储权限。
 - `[BOT-CLOUD]` 云端脚本：`box/rn-cloud-setup.sh`、`box/rn-cloud.sh`、`box/rn-fetch.py`。
 - 安装、自检和卸载脚本：`install.sh`、`check.sh`、`uninstall.sh`、`scripts/`，以及 dsh 插件 `dsh/`。
-- [README 附录](README.zh-CN.md#附录消息格式)中的消息格式：RN-OUT、RN-FWD、RN-REFWD、RN-REFWD-ACK。
+- [协议参考](PROTOCOL.zh-CN.md#消息格式)中的消息格式：RN-OUT、RN-FWD、RN-REFWD、RN-REFWD-ACK。
 - 由安装器渲染或复制的提示词与模板：`prompts/`、`templates/`。例如：提示词让 Grok Bot 执行了它本应先问用户的操作，或者没有指示它把来信正文当作外部数据。
 
 ### 请报告给上游

@@ -146,7 +146,7 @@ print_plan() {
   else plan_line "dsh plugin" "$S_DSH" "replace the plugin file; bridge settings stay"; fi
   case "$S_CLOUD" in
     pending) plan_line "cloud scripts" pending "asks whether Grok Bot finished the setup the installer printed" ;;
-    *) plan_line "cloud scripts" "$S_CLOUD" "Grok Bot pulls this commit on [BOT-CLOUD]; you compare checksums (terminal)" ;;
+    *) plan_line "cloud scripts" "$S_CLOUD" "Grok Bot pulls this commit on [BOT-CLOUD]; you paste its reply to compare (terminal)" ;;
   esac
   case "$S_SETUP" in
     pending) plan_line "cloud setup" pending "asks whether Grok Bot finished the setup the installer printed" ;;
@@ -161,20 +161,39 @@ print_plan() {
   fi
 }
 
+read_reply() {
+  local line
+  REPLY_TEXT=""
+  while IFS= read -r line; do
+    [ "$line" != "." ] || break
+    REPLY_TEXT="$REPLY_TEXT$line"$'\n'
+  done
+}
+
 cloud_step() {
   SHOWN="$(state digest cloud)"
+  local commit branch
+  commit="$(git -C "$HERE" rev-parse HEAD)"
+  branch="$(git -C "$HERE" rev-parse --abbrev-ref '@{u}')"
+  branch="${branch#*/}"
   echo
   echo "[GROK-UI] Send this to Grok Bot directly in the chat (not through the routine):"
   echo "----------------------------------------------------------------"
   echo "On [BOT-CLOUD], update the agent-mesh clone at /workspace/agent-mesh:"
   echo "1. Run git -C /workspace/agent-mesh status --porcelain and git -C /workspace/agent-mesh remote get-url origin. If there are uncommitted changes, or it is not the public agent-mesh repository cloned during setup, stop and tell me; do not overwrite anything."
-  echo "2. Run git -C /workspace/agent-mesh pull --ff-only."
-  echo "3. Reply with the output of: git -C /workspace/agent-mesh rev-parse HEAD; cd /workspace/agent-mesh && sha256sum box/rn-cloud.sh box/rn-fetch.py"
+  echo "2. If git -C /workspace/agent-mesh symbolic-ref -q HEAD prints nothing (a detached HEAD), run git -C /workspace/agent-mesh checkout $branch first. If that fails, stop and tell me; do not reset, clean or stash."
+  echo "3. Run git -C /workspace/agent-mesh pull --ff-only. If it fails, stop and tell me."
+  echo "4. Reply with the output of: git -C /workspace/agent-mesh rev-parse HEAD; cd /workspace/agent-mesh && sha256sum box/rn-cloud.sh box/rn-fetch.py"
   echo "----------------------------------------------------------------"
   echo "Grok Bot's reply must show exactly:"
-  echo "  $(git -C "$HERE" rev-parse HEAD)"
+  echo "  $commit"
   (cd "$HERE" && shasum -a 256 box/rn-cloud.sh box/rn-fetch.py) | sed 's/^/  /'
-  ask "Do the commit and both checksums match?" || die "the cloud side does not match this checkout; it was not recorded as updated"
+  echo
+  echo "Paste Grok Bot's reply here, then type a line with only a dot (.) and press Enter:" >&2
+  read_reply
+  if ! printf '%s' "$REPLY_TEXT" | state cloud-reply --commit "$commit"; then
+    die "the cloud side was not recorded as updated. Sort it out with Grok Bot (the routine stays paused), then run ./update.sh again to paste the new reply"
+  fi
 }
 
 prompt_step() {
@@ -264,7 +283,7 @@ main() {
   LIB_DIR="$HOME/.local/lib/agent-mesh"; LOCK="$LIB_DIR/update.lock"
   LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
   LANG_ARG=""; YES=0; PULL=1; PLAN=0
-  FAILED=0; NEED=""; SHOWN=""; S_NAME=""
+  FAILED=0; NEED=""; SHOWN=""; S_NAME=""; REPLY_TEXT=""
   R_RELAY="unchanged"; R_DSH="unchanged"; R_CLOUD="unchanged"; R_SETUP="unchanged"; R_PROMPT="unchanged"
   parse_args "$@"
 
