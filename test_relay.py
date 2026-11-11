@@ -1071,9 +1071,13 @@ class GotReceipts(unittest.TestCase):
             self.got(done=["A"], frm="demo/terminal-x")
             self.got(done=["A"], frm="demo/terminal-3x")
             self.got(done=["A"], frm="evil/terminal-3")
+            self.got(done=["A"], frm="demo/terminal@other")
+            self.got(done=["A"], frm="demo/terminal@cloudx")
+            self.got(done=["A"], frm="evil/terminal@cloud")
+            self.got(done=["A"], frm="demo/terminal-3@cloud")
             self.r.handle([{"id": "bad", "from": "demo/bot-cloud", "agent": None, "thread": None,
                             "text": "RN-GOT v1\nstored: A"}])
-        self.assertEqual(len(lg.output), 7)
+        self.assertEqual(len(lg.output), 11)
         self.assertEqual(json.dumps([self.r.s.pending, self.r.s.alerts, self.r.s.spool, self.r.s.got_last]), before)
         self.got(stored=["A"], nonce="ab" * 12)
         self.assertEqual(self.p("A")["stage"], "stored")
@@ -1081,10 +1085,11 @@ class GotReceipts(unittest.TestCase):
             self.got(done=["A"], nonce="ab" * 12)
         self.assertIn("A", self.r.s.pending)
         self.assertEqual([i for i in self.r.s.spool if not i.get("doorbell")], [])
-        for frm in ("demo/bot-cloud", "demo/bot-inbox", "demo/terminal-3", "demo/terminal-12"):
-            self.inbound(f"X{frm[-1]}")
-            self.got(done=[f"X{frm[-1]}"], frm=frm)
-            self.assertNotIn(f"X{frm[-1]}", self.r.s.pending)
+        for i, frm in enumerate(("demo/bot-cloud", "demo/bot-inbox", "demo/terminal-3", "demo/terminal-12",
+                                 "demo/terminal@cloud")):
+            self.inbound(f"X{i}")
+            self.got(done=[f"X{i}"], frm=frm)
+            self.assertNotIn(f"X{i}", self.r.s.pending)
 
     def test_non_hex_signature_is_an_invalid_receipt(self):
         self.inbound("A")
@@ -2407,12 +2412,19 @@ class CustomNames(unittest.TestCase):
 
     def test_receipts_come_from_the_configured_inbox_or_a_terminal_only(self):
         for i, (frm, allowed) in enumerate(((self.INBOX, True), (self.CLOUD, True), ("demo/terminal-3", True),
+                                            ("demo/terminal@cloud", True), ("demo/terminal@laptop", False),
                                             ("demo/bot-inbox", False))):
             with self.assertLogs(self.r.log, "INFO") as logs:
                 self.r.log.info("start")
                 self.r.got({"id": f"g{i}", "from": frm, "text": rr.got_body(KEY, [], ["m1"])})
             refused = any("sender not allowed" in line for line in logs.output)
             self.assertEqual(refused, not allowed, (frm, logs.output))
+
+    def test_terminal_receipts_follow_the_configured_cloud_machine(self):
+        r = rr.Relay(dict(CFG, **self.NAMES, CLOUD_MACHINE="box.1"))
+        for frm, allowed in (("demo/terminal@box.1", True), ("demo/terminal@boxx1", False),
+                             ("demo/terminal@cloud", False), ("demo/terminal", True), ("demo/terminal-2", True)):
+            self.assertEqual(bool(r.terminal.fullmatch(frm)), allowed, frm)
 
 
 class UnrelatedNames(CustomNames):

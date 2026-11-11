@@ -32,6 +32,17 @@ test('parse + filter', () => {
   assert.equal(B.filterFrames(f, ['gr-net']).kept.length, 0, 'no prefix match')
 })
 
+test('terminal senders in every engine form', () => {
+  for (const from of ['demo/terminal', 'demo/terminal-3', 'demo/terminal@laptop']) {
+    assert.ok(B.isTerminal(from), from)
+    assert.match(B.renderForModel([{ from, raw: 'x' }]), /From demo, typed in a terminal\./)
+  }
+  for (const from of ['demo/terminal-x', 'demo/terminals', 'demo/terminal@', 'demo/terminal@a@b', 'demo/bot', 'terminal']) {
+    assert.ok(!B.isTerminal(from), from)
+  }
+  assert.match(B.renderForModel([{ from: 'demo/terminal-3x', raw: 'x' }]), /From demo's agent\./)
+})
+
 test('config fails closed', () => {
   assert.throws(() => B.resolveConfig({}), /allowPeople/)
   assert.throws(() => B.resolveConfig({ allowPeople: ['demo'], command: 'reason-network' }), /absolute/)

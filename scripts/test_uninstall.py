@@ -8,6 +8,7 @@ import re
 import select
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -42,9 +43,10 @@ elif cmd == "team":
     if not s["in"]:
         print("error: not in a team"); sys.exit(1)
     print(f"team {s['team']} · relay: https://relay.example")
-    print(f"  {s['me'][0]}  {s['me'][1]}  this machine")
+    v = " (verified)" if s.get("verified") else ""
+    print(f"  {s['me'][0]}{v}  {s['me'][1]}  this machine")
     for row in s["rows"]:
-        print("  " + "  ".join(row))
+        print("  " + "  ".join([row[0] + v, *row[1:]]))
 elif cmd == "leave":
     if not s["in"]:
         print("error: not in a team"); sys.exit(1)
@@ -271,7 +273,11 @@ class Mac(Base):
         rn_home.mkdir(parents=True)
         (rn_home / "machine.key").write_text("machine")
         (rn_home / "config.toml").write_text('person = "demo"\nauto_update = false\n')
-        (rn_home / "network.db").write_text("db")
+        con = sqlite3.connect(rn_home / "network.db")
+        con.execute("CREATE TABLE sessions (name TEXT PRIMARY KEY, key TEXT NOT NULL, last_seen INTEGER NOT NULL)")
+        con.execute("INSERT INTO sessions VALUES (?, ?, 1)", (name or "bot", f"cli:{name or 'bot'}"))
+        con.commit()
+        con.close()
         self.tool("reason-network", FAKE_RN, h / ".local/bin/reason-network", shell="")
         (self.base / "launchd/loaded").write_text(str(agents / "com.local.agent-relay.plist"))
         if dsh:
@@ -947,6 +953,16 @@ class CloudScript(Base):
         self.assertTrue((self.b / "person").exists())
         self.assertEqual([c for c in self.calls().splitlines() if c.startswith("rn ")], ["rn team"])
 
+    def test_check_reads_a_team_list_with_verified_names(self):
+        self.rn_state(self.base / "rn", verified=True)
+        r = self.run_cloud("check")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn(f"PROOF: {ack(KEY, self.challenge, 'proof')}", r.stdout)
+        self.assertNotIn("STOP", r.stdout)
+        self.rn_state(self.base / "rn", rows=[["demo", "mac", "offline", "4m"]])
+        r = self.run_cloud("check")
+        self.assertIn("is not online in this cloud's team", r.stdout)
+
     def test_apply_with_the_code_leaves_and_removes_identity_only(self):
         r = self.run_cloud("apply", ack(KEY, self.challenge))
         self.assertEqual(r.returncode, 0, r.stdout)
@@ -1184,6 +1200,18 @@ class CloudScript(Base):
         self.assertIn("KEEP: refs/heads/side has commits that no remote branch has", r.stdout)
         self.assertIn("KEEP: refs/tags/local-only has commits", r.stdout)
         self.assertIn(f"WILL KEEP: {self.a}", r.stdout)
+
+
+class RosterParsing(unittest.TestCase):
+    def test_verified_names_parse_like_plain_ones(self):
+        import uninstall
+        for v in ("", " (verified)"):
+            with self.subTest(v=v):
+                out = (f"team demo · relay: Reason's (the default)\n  demo{v}  mac    this machine\n"
+                       f"  demo{v}  cloud  offline 4m\n  eve{v}   pc     direct 3ms\n")
+                r = uninstall.Roster.parse(0, out)
+                self.assertEqual((r.status, r.team, r.me), ("in", "demo", ("demo", "mac")))
+                self.assertEqual(r.rows, [("demo", "cloud", "offline 4m"), ("eve", "pc", "direct 3ms")])
 
 
 class Renderer(unittest.TestCase):

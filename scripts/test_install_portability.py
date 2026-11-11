@@ -70,6 +70,7 @@ class Installation(unittest.TestCase):
                                     'who) [ ! -f "$MOCK_WHO/fail" ] || exit 1; '
                                     'if [ "$*" = "who --all --json" ]; then cat "$MOCK_WHO/all.json"; '
                                     'elif [ -f "$MOCK_WHO/text" ]; then cat "$MOCK_WHO/text"; fi ;; '
+                                    'team) [ ! -f "$MOCK_WHO/team" ] || cat "$MOCK_WHO/team" ;; '
                                     '*) exit 0 ;; esac', path)
         cfg = self.home / ".reason/network/config.toml"
         cfg.parent.mkdir(parents=True)
@@ -405,6 +406,14 @@ exit 0""")
         self.assertIn("different team", result.stderr)
         self.assertIn("already in team 'demo'", result.stderr)
         self.assertEqual(self.names_files(), {})
+
+    def test_cloud_setup_rerun_reads_verified_names(self):
+        self.cloud_box()
+        self.joined_before(me="demo (verified)  cloud")
+        result = self.setup(invite(), "demo", "alice")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already joined this team as demo/cloud; the invite is not used", result.stdout)
+        self.assertNotIn("rn join", self.calls())
 
     def test_cloud_setup_joined_as_someone_else_stops_without_join(self):
         self.cloud_box()
@@ -790,6 +799,23 @@ exit 0""")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(relay.read_bytes(), (repo / "agent_relay.py").read_bytes())
         self.assertEqual(self.started()[-1], self.sha(repo / "agent_relay.py"))
+
+    def test_restart_relay_rolls_back_when_the_new_relay_registers_under_another_name(self):
+        repo = self.installed()
+        relay, plist = self.relay_files()
+        old_relay, old_plist = relay.read_bytes(), plist.read_bytes()
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        self.env.update(MOCK_REGISTER="bot-2", AGENT_MESH_REGISTER_WAIT="1")
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("the new relay registered as bot-2 instead of demo/bot", result.stdout)
+        self.assertIn("previous relay restored", result.stdout)
+        self.assertNotIn("relay up (log:", result.stdout)
+        self.assertEqual((relay.read_bytes(), plist.read_bytes()), (old_relay, old_plist))
+        self.assertTrue(self.loaded())
+        self.assertEqual(self.started()[-1], hashlib.sha256(old_relay).hexdigest())
+        self.assertFalse((relay.parent / "rollback").exists())
 
     def test_restart_relay_without_a_backup_changes_nothing(self):
         repo = self.installed()
@@ -1607,6 +1633,48 @@ exit 0""")
         self.assertNotIn("0123456789", out)
         env.unlink()
         self.assertIn("PASS  relay name: bot (default)", check())
+
+    def test_check_reads_team_lists_with_and_without_verified_names(self):
+        self.configured()
+        team = self.who / "team"
+        head = "team demo · relay: Reason's (the default)\n"
+        for v in ("", " (verified)"):
+            with self.subTest(v=v):
+                team.write_text(f"{head}  demo{v}  mac    this machine\n  demo{v}  cloud  direct 4ms\n")
+                out = self.run_script("check.sh").stdout
+                self.assertIn("PASS  cloud machine joined", out)
+                self.assertIn("PASS  team holds only this machine and cloud", out)
+                team.write_text(f"{head}  demo{v}  mac    this machine\n  demo{v}  cloud  direct 4ms\n"
+                                f"  eve{v}   pc     offline 1h\n")
+                self.assertIn("FAIL  unexpected team members: eve/pc", self.run_script("check.sh").stdout)
+                team.write_text(f"{head}  demo{v}  mac    this machine\n")
+                self.assertIn("SKIP  cloud machine", self.run_script("check.sh").stdout)
+
+    def test_check_probes_the_relay_the_engine_actually_uses(self):
+        self.configured()
+        out = self.run_script("check.sh").stdout
+        self.assertIn("PASS  relay reachable: n0 public relays (Reason Network 0.10.7)", out)
+        self.env["MOCK_VERSION"] = "0.12.17"
+        log = self.home / ".reason/network/daemon.log"
+        log.write_text("[1] net: on relay https://relay-sfo1.compute.reasonmachines.com/\n")
+        out = self.run_script("check.sh").stdout
+        self.assertIn("FAIL  relay not reachable (home relay from daemon.log (Reason Network 0.12.17)): "
+                      "https://relay-sfo1.compute.reasonmachines.com/", out)
+        self.assertIn("iroh.link and reasonmachines.com", out)
+        log.write_text("[1] net: on relay https://aps1-1.relay.n0.iroh.link/\n")
+        self.assertIn("PASS  relay reachable: home relay from daemon.log", self.run_script("check.sh").stdout)
+        log.unlink()
+        out = self.run_script("check.sh").stdout
+        self.assertIn("SKIP  relay reachability unknown (unknown: Reason Network 0.12.17 has not logged", out)
+        self.assertNotIn("relay not reachable", out)
+        (self.who / "team").write_text("team demo · relay: https://aps1-1.relay.n0.iroh.link/\n"
+                                       "  demo  mac  this machine\n")
+        self.assertIn("PASS  relay reachable: the team's relay", self.run_script("check.sh").stdout)
+
+    def test_install_probes_the_pinned_default_before_the_engine_exists(self):
+        result = self.run_script("install.sh", "--name", "demo", "--yes")
+        self.assertIn("ok (default relays of Reason Network 0.10.7 (not installed yet))", result.stdout)
+        self.assertIn("curl -sS -o /dev/null -m 10 -w %{http_code} https://aps1-1.relay.n0.iroh.link/", self.calls())
 
     def test_check_judges_the_latest_webhook_post(self):
         self.configured()

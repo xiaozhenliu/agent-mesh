@@ -6,8 +6,8 @@
 
 | | |
 |---|---|
-| **版本** | agent-mesh **v0.5.2** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
-| **支持平台** | 本地目前只有 macOS 提供一键安装并经过验证（设计上不绑定系统，见[准备](#准备)）· Python 3.9+ |
+| **版本** | agent-mesh **v0.6.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
+| **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证，但 Linux 本地安装尚不支持（见[准备](#准备)）· Bot 云端：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
 | **许可证** | MIT |
@@ -104,7 +104,7 @@ sequenceDiagram
 
 ### `[LOCAL]` 本地电脑
 
-- **系统与运行环境**：设计上不绑定系统，引擎有 macOS / Linux / Windows 版本，relay 为纯 Python。但目前只有 macOS（Apple Silicon 或 Intel）有一键安装脚本 `./install.sh` 并经过验证，需要已登录桌面的普通用户；不要用 `sudo`，纯 SSH/无桌面登录环境不在本流程支持范围内。Linux 和 Windows 还没有安装支持，也未经验证；思路上可以用 systemd 或 Task Scheduler 代替 macOS 的登录服务，欢迎社区实测并贡献安装支持。
+- **系统与运行环境**：设计上不绑定系统，引擎有 macOS / Linux / Windows 版本，relay 为纯 Python。目前只有 macOS（Apple Silicon 或 Intel）有一键安装脚本 `./install.sh`，需要已登录桌面的普通用户；不要用 `sudo`，纯 SSH/无桌面登录环境不在本流程支持范围内。Debian Linux 上已在现有团队中验证过 relay 的消息收发，包括与云端的真实双向消息；但在 Linux 上安装本地端（建团队、接入 agent、生成并复制签名密钥、以服务方式运行 relay）尚不支持，思路上可以用 systemd 代替 macOS 的登录服务。Windows 未经验证，可用 Task Scheduler 承担同样角色。欢迎社区实测并贡献安装支持。
 - **Git 与 Python 3.9+**（含 `ssl`、`sqlite3` 标准库模块）。用下面的命令检查：
 
   ```bash
@@ -141,6 +141,7 @@ sequenceDiagram
   ```
 
   不通的话，给 `iroh.link` 整个域名加一条直连规则，并把它排除出 HTTPS 解密，具体排查步骤见[常见问题](#常见问题)。这条探测只检查一个中继端点，不代表已经验证全球各地的可用性。
+- Reason Network 0.12 默认改用 Reason 自己的中继（`compute.reasonmachines.com` 下的 `relay-sfo1`、`relay-iad1`、`relay-fra1` 和 `relay-sin1`），不再用 n0 的 `*.iroh.link`。固定版本目前仍是 0.10.7，升级引擎后才受影响；现在就把两个域名都放行，可以免得升级后联不上。`./check.sh` 会探测已装引擎实际使用的中继，并在结果里写出是哪一个。
 
 ## 安装
 
@@ -256,21 +257,25 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 
 ### 网络与用量
 
-- 引擎开源、固定版本，以无账号模式在本机运行，无账号模式下不向 Reason 官方发送数据。消息可能经过 iroh 公共中继，上游将消息内容描述为加密传输；本项目没有独立审计这些中继。用 `reason-network relay <URL>` 可以换成自建中继。
+- 引擎开源、固定版本，以无账号模式在本机运行，无账号模式下不向 Reason 官方发送数据。按上游的说明，消息在两端引擎之间端到端加密，中继只负责转发；本项目没有独立审计这些中继。
+- 中继：0.10.7 默认用 n0 的公共 iroh 中继，0.12 默认用 Reason 的中继。团队可以用 `reason-network relay <URL>` 指定自己的中继（`reason-network relay default` 换回引擎默认）。团队里每台机器都要执行同一条命令，包括 `[BOT-CLOUD]`；当时离线的机器回来后要补上。指定中继后，短邀请码不能用，要用长格式邀请链接，`./install.sh --cloud-prompt` 打印的本来就是长格式。
+- **会话遗忘（仅 Reason Network 0.12）**：离线超过一天的普通 agent 会话会被遗忘，它的未读信也一起删除。守护进程连续运行满六小时后，引擎才开始这样清理。`[LOCAL]` 上 relay 的信箱和 `[BOT-CLOUD]` 上云端的信箱（用 `listen --as` 启动的会话）不受影响。0.10.7 从不遗忘会话，所以这条规则升级后才生效。要长时间离线的会话，先把信读完。
 - 每叫醒一次 Grok Bot 就消耗一次它的用量。relay 默认每小时最多叫醒 20 次。
 - 发现安全问题请按[安全策略](SECURITY.zh-CN.md)私下报告，不要公开提 Issue。
 
 ## 常见问题
 
-- **联不上 iroh 中继**（「准备」里那条 curl 不返回 200，或 install.sh 停在 cannot reach the iroh relay）：几乎都是 VPN 或代理软件造成的。
+- **联不上中继**（「准备」里那条 curl 不返回 200，install.sh 停在 cannot reach the relay，或 check.sh 报 relay not reachable；后两者会写出探测的是哪台中继）：几乎都是 VPN 或代理软件造成的。
   1. 先把 VPN 或代理整个关掉再测一次。能通，就是它拦的；还是不通，排查 DNS、防火墙和网络本身。
   2. 会拦的设置有两类：接管整台电脑流量的模式（各家叫法不同，常见的有 TUN、虚拟网卡、增强模式、全局模式、系统代理），以及 HTTPS 解密（也叫 MITM），它会替换中继的证书，引擎会连不上。
-  3. 修法：给 `iroh.link` 连同所有子域加一条直连规则（规则里通常叫 DIRECT、直连或 bypass），再把这个域名排除出 HTTPS 解密。引擎可能连到 `*.iroh.link` 下不止一台中继，要按域名放行，不要只放行 aps1-1 这一台。
-  4. 验证：curl 返回 200，并且下面这条命令显示的签发者是公共 CA（目前是 Let's Encrypt）。显示的是代理软件自己的 CA，说明解密还没排除掉。
+  3. 修法：给 `iroh.link` 和 `reasonmachines.com` 连同所有子域加直连规则（规则里通常叫 DIRECT、直连或 bypass），再把这两个域名排除出 HTTPS 解密。引擎可能连到不止一台中继，要按域名放行，不要只放行探测的那一台。
+  4. 验证：curl 返回 200，并且下面这条命令显示的签发者是公共 CA（目前是 Let's Encrypt）。显示的是代理软件自己的 CA，说明解密还没排除掉。探测的是别的中继时，把命令里的地址换成它。
 
      ```bash
      curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer
      ```
+
+  5. check.sh 报 SKIP `relay reachability unknown`，表示它判断不出 0.12 引擎在用哪台中继（引擎还没在日志里记下中继）。把两个域名都放行，过一会儿再运行一次。
 
 - **云电脑加入时报 couldn't reach the machine that made the invite**：通常是 Mac 这边的 VPN 或代理又把 `*.iroh.link` 拦住了。按上一条修好，在 Mac 上运行 `reason-network stop`，然后让 Grok Bot 用同一个邀请链接重试。
 - **who 里看不到某个会话**：在 `setup` 之前就开着的会话不会登记，关掉重开即可。Codex 还要先跑完一轮才会出现。

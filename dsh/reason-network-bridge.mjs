@@ -97,6 +97,7 @@ export function parseDelivery(text) {
 
 /** The person part of `person/session`. */
 export const personOf = from => (from.includes('/') ? from.slice(0, from.indexOf('/')) : from)
+export const isTerminal = from => /^[^/]+\/terminal(-[0-9]+|@[^/\s@]+)?$/.test(from)
 
 /** Keep only frames from allowed people. */
 export function filterFrames(frames, allowPeople) {
@@ -111,7 +112,7 @@ export function renderForModel(kept, serverName = 'reason-network') {
   if (kept.length === 0) return ''
   const last = kept[kept.length - 1]
   const person = personOf(last.from)
-  const who = last.from.endsWith('/terminal') ? `From ${person}, typed in a terminal.` : `From ${person}'s agent.`
+  const who = isTerminal(last.from) ? `From ${person}, typed in a terminal.` : `From ${person}'s agent.`
   const frames = kept.map(f => f.raw).join('\n')
   return `${frames}\n${who} Reply if useful with mcp__${serverName}__send_message to "${last.from}".`
 }

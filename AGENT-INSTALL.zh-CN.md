@@ -15,12 +15,12 @@
 - `install.sh` 在非交互终端里会在需要用户操作的位置停下并打印操作说明，把说明原样交给用户。
 - 每个阶段要求时运行 `./check.sh`，原样展示结果。`FAIL` 行给出修复办法，照做，不要即兴发挥。
 - 不安装额外软件，除第 0 阶段的 PATH 外不改 shell 配置。其他 agent 的配置由 `reason-network setup` 在用户确认计划后修改。
-- 不是 macOS 就停止：本安装流程只在 macOS 上测试过。
+- 不是 macOS 就停止：`install.sh` 只支持 macOS。
 
 ## 第 0 阶段：准备（[LOCAL] 安装 agent）
 
 1. 先按指南「准备」检查 `[LOCAL]` 和 `[BOT-CLOUD]` 的依赖。`[LOCAL]` 的 `uname -s` 应输出 `Darwin`，CPU 为 arm64 或 x86_64；当前用户应已登录桌面，不用 sudo。运行 `git --version` 和 `python3 -c 'import sys, ssl, sqlite3; print(sys.version)'`，要求 Git 可用、Python 3.9+。缺少 Git/Python 时可先运行 `xcode-select --install`，等用户完成安装后重新检查，不把“已发起安装”当作已就绪。已有 agent 也须先安装、登录并能独立工作。
-2. 运行 `curl -sS -o /dev/null -m 10 -w '%{http_code}\n' https://aps1-1.relay.n0.iroh.link/`，应输出 `200`。失败时先让用户关掉 VPN/代理重试；若恢复，给 `iroh.link` 及所有子域添加直连规则（TUN、虚拟网卡、增强或全局模式也需要），并排除 HTTPS 解密/MITM。用 `curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer` 查看，应是公共 CA（目前是 Let's Encrypt）而非代理自己的 CA。引擎可能使用多台中继，规则应覆盖整个域名。关闭代理后仍失败则排查 DNS、防火墙和网络。返回 200 后再继续。
+2. 运行 `curl -sS -o /dev/null -m 10 -w '%{http_code}\n' https://aps1-1.relay.n0.iroh.link/`，应输出 `200`。失败时先让用户关掉 VPN/代理重试；若恢复，给 `iroh.link` 及所有子域添加直连规则（TUN、虚拟网卡、增强或全局模式也需要），并排除 HTTPS 解密/MITM。用 `curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer` 查看，应是公共 CA（目前是 Let's Encrypt）而非代理自己的 CA。引擎可能使用多台中继，规则应覆盖整个域名；`reasonmachines.com` 及其子域也按同样方式放行，因为 Reason Network 0.12 默认使用那里的 Reason 中继。关闭代理后仍失败则排查 DNS、防火墙和网络。返回 200 后再继续。
 3. 如果 `$HOME/.local/bin` 不在 PATH，后续 Bash/zsh 命令加上 `export PATH="$HOME/.local/bin:$PATH";` 前缀。持久配置前确认用户实际使用的 shell：zsh 用 `~/.zshrc`，Bash 用实际读取的启动文件，fish 用 `fish_add_path "$HOME/.local/bin"`，不要统一修改 zsh 配置。检查现有 Reason Network 的路径、版本和默认状态目录；不兼容时先报告，不覆盖另一套安装，也不直接卸载。仓库目录已存在时先核对 origin 和本地改动；本地目录可以自选。
 4. 一次向用户确认：使用 Claude Code、Codex、pi、DeepSeek Harness 中的哪些（其他工具不在本手册支持范围）；团队名（同时是 person 名，1–40 个 ASCII 小写字母、数字或 `-`，首尾不能是 `-`、不能连用，不用真名，建好不能直接改）；Bot 地址名（默认 bot；小写字母、数字，用单个 `-` 分隔，最多 34 个字符，不能是 terminal；以后不能修改）；Grok Bot 能否创建 webhook routine 并使用 CopyToBox（都必须支持）；Mac 是否会保持唤醒（接电防睡眠，合盖会让整套停止）。
 

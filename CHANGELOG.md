@@ -4,6 +4,30 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.0 — 2026-11-11
+
+Prepares for Reason Network 0.12: the relay, the self-check and the cloud scripts read what both engine versions produce. The pinned engine stays 0.10.7, and `install.sh` and `update.sh` still require it; switching the engine comes in a later release.
+
+### Added
+
+- `scripts/relay_targets.py`: tells `check.sh` and `install.sh` which relay the installed engine actually uses. A relay the team set with `reason-network relay <URL>` comes first; otherwise the engine version decides (n0's relays for 0.10.x; for 0.12.x the relay its daemon last logged, else the list in `relays.json`); before the engine is installed, the pinned version's default. The default-relay text in the first line of `reason-network team` is not used, because the client binary draws it. When the relay cannot be told, `check.sh` reports SKIP with what to allow instead of counting a fallback address as a pass (#20).
+- README: Reason Network 0.12's default relays (`*.compute.reasonmachines.com`), how a team sets or resets its relay, that messages are end-to-end encrypted and relays only forward them, and 0.12's rule that forgets ordinary sessions offline for more than a day together with their unread messages (the relay's and the cloud's mailboxes are exempt; 0.10.7 never forgets). Troubleshooting covers both relay domains (#20).
+
+### Changed
+
+- Relay: cloud receipts (`RN-GOT v1`) are also accepted from `<team-name>/terminal@<CLOUD_MACHINE>`, the form newer engines give a terminal sender. Only the configured cloud machine name is accepted; `terminal@<other>` stays refused. `terminal` and `terminal-<n>` are accepted as before ([PROTOCOL.md](PROTOCOL.md#recovery-and-receipts)) (#20).
+- `check.sh` and `install.sh`: the network check probes the relay found as above and names it in the result, instead of always probing n0's `aps1-1` (#20).
+- `./install.sh --restart-relay` (used by `update.sh`): the new relay must also register under its name before the switch is kept. If it registers under another name, the previous relay and its launchd state are restored and the command fails; before, the switch was kept and only a later check noticed (#20).
+- DeepSeek Harness plugin: a message from `terminal`, `terminal-<n>` or `terminal@<machine>` is shown as typed in a terminal (#20).
+
+### Fixed
+
+- `check.sh`, `box/rn-cloud-setup.sh`, `box/rn-cloud-uninstall.sh` and `./uninstall.sh` read `reason-network team` lists in which a person is marked `(verified)`, as Reason Network 0.12 shows people who signed in with Reason. Before, such a list made `check.sh` miss the cloud machine and report it as an unexpected member, and made the cloud setup and uninstall steps misread which machine they run on (#20).
+
+### Upgrade notes
+
+The relay, `check.sh`, `install.sh`, `scripts/uninstall.py`, the new `scripts/relay_targets.py`, `box/rn-cloud-setup.sh`, `box/rn-cloud-uninstall.sh` and the DeepSeek Harness plugin changed. The cloud scripts `box/rn-cloud.sh` and `box/rn-fetch.py` and the routine prompt are unchanged, so the cloud needs no update. `./update.sh` restarts the relay and asks whether the cloud side is set up for this version because `box/rn-cloud-setup.sh` changed: there is no cloud setup migration, answer yes. The cloud uses the new setup script the next time it runs a setup.
+
 ## v0.5.2 — 2026-11-11
 
 Makes the guided cloud update and the self-check report what actually happened.

@@ -6,8 +6,8 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 
 | | |
 |---|---|
-| **Version** | agent-mesh **v0.5.2** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
-| **Platform** | Local: only macOS currently has a one-click installer and has been verified (not tied to one OS by design; see [Prerequisites](#prerequisites)) · Python 3.9+ |
+| **Version** | agent-mesh **v0.6.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Platform** | Local: macOS (Apple Silicon or Intel) with a one-click installer · relay messaging verified on Debian Linux, but local installation on Linux is not supported yet (see [Prerequisites](#prerequisites)) · Bot cloud: Linux x86_64 or ARM64 · Python 3.9+ on both sides |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
 | **License** | MIT |
@@ -104,7 +104,7 @@ Five design choices make this work:
 
 ### `[LOCAL]` Local computer
 
-- **Computer and system:** not tied to one OS by design; the engine ships macOS / Linux / Windows builds, and the relay is pure Python. Currently only macOS (Apple Silicon or Intel) has the one-click installer `./install.sh` and has been verified, running as a regular user signed into the desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. Linux and Windows have no installer support yet and are unverified; in principle systemd or Task Scheduler could replace the macOS login service. Community testing and contributions are welcome.
+- **Computer and system:** not tied to one OS by design; the engine ships macOS / Linux / Windows builds, and the relay is pure Python. Only macOS (Apple Silicon or Intel) has the one-click installer `./install.sh`, run as a regular user signed into the desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. On Debian Linux, the relay's messaging has been verified inside an existing team, including real two-way messages with the cloud; installing the local side on Linux (creating the team, wiring agents, generating and copying the signing key, running the relay as a service) is not supported yet. In principle systemd could replace the macOS login service. Windows is unverified; Task Scheduler could play the same role. Community testing and contributions are welcome.
 - **Git and Python 3.9+**, including the `ssl` and `sqlite3` standard-library modules. Check with:
 
   ```bash
@@ -141,6 +141,7 @@ Five design choices make this work:
   ```
 
   If it fails, see [Troubleshooting](#troubleshooting). The probe checks one endpoint, not worldwide availability.
+- Reason Network 0.12 uses Reason's own relays by default (`relay-sfo1`, `relay-iad1`, `relay-fra1` and `relay-sin1` under `compute.reasonmachines.com`) instead of n0's `*.iroh.link`. The pinned version is still 0.10.7, so this matters once you upgrade the engine; allowing both domains now avoids a surprise. `./check.sh` probes the relay the installed engine actually uses and names it.
 
 ## Install
 
@@ -256,19 +257,21 @@ The relay log records message ids, lengths and checksums, not bodies. `FWD_COPY_
 
 ### Network and usage
 
-- The pinned open-source engine runs locally in account-free mode, and in that mode it sends no data to Reason. Traffic may pass through iroh public relays; upstream describes the content as encrypted. This project has not independently audited those relays. `reason-network relay <URL>` selects a self-hosted relay.
+- The pinned open-source engine runs locally in account-free mode, and in that mode it sends no data to Reason. Messages are end-to-end encrypted between the engines and a relay only forwards them, as upstream describes it; this project has not independently audited the relays.
+- Relays: version 0.10.7 uses n0's public iroh relays by default, 0.12 uses Reason's. A team can pick its own relay with `reason-network relay <URL>` (`reason-network relay default` goes back to the engine's default). Every machine in the team, including `[BOT-CLOUD]`, must run the same command; a machine that was offline must run it when it comes back. With an explicit relay, short invite codes do not work; use the long invite form, which `./install.sh --cloud-prompt` prints anyway.
+- **Forgotten sessions (Reason Network 0.12 only):** an ordinary agent session that has been offline for more than a day is forgotten, and its unread messages are deleted with it. The engine starts doing this once its daemon has been running for six hours. The relay's mailbox on `[LOCAL]` and the cloud's mailboxes on `[BOT-CLOUD]` (sessions started with `listen --as`) are exempt. Version 0.10.7 never forgets sessions, so the rule applies only after an upgrade. Read a session's messages before leaving it offline for long.
 - Each Grok Bot wake-up consumes usage. The relay defaults to at most 20 wake-ups per hour.
 - Report security problems privately as described in the [security policy](SECURITY.md), not in a public issue.
 
 ## Troubleshooting
 
-- **Cannot reach the iroh relay:** retry the probe with the VPN/proxy disabled. If that resolves it, add a direct/bypass rule covering `iroh.link` and all subdomains, including in TUN, virtual-NIC, enhanced, or global modes. Exclude the domain from HTTPS decryption/MITM too. Check the certificate issuer:
+- **Cannot reach the relay:** `./check.sh` and `install.sh` name the relay they probed. Retry the probe with the VPN/proxy disabled. If that resolves it, add a direct/bypass rule covering `iroh.link` and `reasonmachines.com` with all subdomains, including in TUN, virtual-NIC, enhanced, or global modes. Exclude both domains from HTTPS decryption/MITM too. Check the certificate issuer (use the probed relay's address in place of `aps1-1`):
 
   ```bash
   curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer
   ```
 
-  Expect a public certificate authority (currently Let's Encrypt) rather than your proxy's CA. If it still fails without the proxy, investigate DNS, firewall rules, or the network. The engine can use several relays; allowing only the probe host is insufficient.
+  Expect a public certificate authority (currently Let's Encrypt) rather than your proxy's CA. If it still fails without the proxy, investigate DNS, firewall rules, or the network. The engine can use several relays; allowing only the probe host is insufficient. `check.sh` reports SKIP `relay reachability unknown` when it cannot tell which relay a 0.12 engine uses (it has not logged one yet); allow both domains and run it again later.
 - **Cloud join reports `couldn't reach the machine that made the invite`:** usually the Mac's VPN or proxy is intercepting `*.iroh.link` again. Fix it as in the previous item, run `reason-network stop` on the Mac, then have Grok Bot retry with the same invite while valid.
 - **Session missing from `who`:** reopen sessions started before `setup`. Codex also needs to complete a turn before appearing.
 - **`fetch` reports `missing`:** inspect `refwd`. `ack=resent` means the relay resent it; retry after 60 seconds. `no-copy`, `limit`, `failed`, or `skipped` means recovery did not succeed; ask the sender to resend. No `refwd` field means the Mac was not connected.

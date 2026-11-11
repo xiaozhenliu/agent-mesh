@@ -1,8 +1,8 @@
 # agent-mesh
 
-agent-mesh version: 0.5.2 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
+agent-mesh version: 0.6.0 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
 
-> Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. macOS, Reason Network v0.10.7. MIT.
+> Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. Local: macOS installer (relay messaging verified on Debian Linux; Linux local install not supported yet); cloud: Linux. Reason Network v0.10.7. MIT.
 
 If you are an agent asked to install this: read AGENT-INSTALL.md (English) or AGENT-INSTALL.zh-CN.md (Simplified Chinese) and follow it stage by stage. Speak the user's language. Pass --lang en or --lang zh-CN on every installer invocation to select prompts; diagnostics and protocol fields stay English. Never read env or key files.
 

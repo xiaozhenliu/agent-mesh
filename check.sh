@@ -24,16 +24,24 @@ else
   bad "Python 3.9+ missing or incomplete" "install Python 3.9+ and ensure python3 is on PATH; see README prerequisites"
 fi
 case ":$PATH:" in *":$HOME/.local/bin:"*) ok "PATH includes ~/.local/bin";; *) bad "PATH lacks ~/.local/bin" "add ~/.local/bin to PATH using your shell's startup file; see README prerequisites";; esac
-if curl -sS -o /dev/null -m 10 -w '%{http_code}' https://aps1-1.relay.n0.iroh.link/ 2>/dev/null | grep -q '^200$'; then
-  ok "iroh relay reachable"
+relay_hint="allow direct connections (no HTTPS decryption) to the whole iroh.link and reasonmachines.com domains; see README.md: Troubleshooting (Chinese: README.zh-CN.md)"
+pinned="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$(dirname "$0")/install.sh" | head -n 1)"
+if relays="$(python3 "$(dirname "$0")/scripts/relay_targets.py" --rn "$RN" --home "$HOME/.reason/network" --pinned "${pinned:-unknown}" 2>/dev/null)"; then
+  source="$(printf '%s\n' "$relays" | head -n 1)"
+  down=""
+  for url in $(printf '%s\n' "$relays" | tail -n +2); do
+    curl -sS -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null | grep -q '^200$' || down="$down $url"
+  done
+  [ -z "$down" ] && ok "relay reachable: $source" || bad "relay not reachable ($source):$down" "$relay_hint"
 else
-  bad "iroh relay not reachable" "check VPN/proxy bypass rules for the whole iroh.link domain and exclude it from HTTPS decryption; see README.md: Troubleshooting (Chinese: README.zh-CN.md)"
+  skip "relay reachability unknown" "${relays:-relay_targets.py failed}; $relay_hint"
 fi
 
 # engine and team
 if [ -x "$RN" ]; then
   ok "reason-network $("$RN" --version 2>/dev/null | awk '{print $2}')"
   if team="$("$RN" team 2>/dev/null)"; then
+    team="$(printf '%s\n' "$team" | sed -E 's/^([[:space:]]+[^[:space:]]+) \(verified\)([[:space:]])/\1\2/')"
     [ -n "$PERSON" ] && ok "team name: $PERSON" || bad "no person in $CFG" "run ./install.sh"
     echo "$team" | grep -Eq "^\s+$PERSON\s+cloud\s" && ok "cloud machine joined" || skip "cloud machine" "not joined yet: send the text from ./install.sh --cloud-prompt to Grok Bot"
     # Rows are "  <person>  <machine>  <link>"; only this machine and the person's cloud belong here.

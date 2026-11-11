@@ -179,6 +179,8 @@ class Roster:
         me, rows = None, []
         for line in lines[1:]:
             parts = line.split()
+            if len(parts) >= 4 and parts[1] == "(verified)":
+                del parts[1]
             if len(parts) < 3:
                 continue
             person, machine, status = parts[0], parts[1], " ".join(parts[2:])

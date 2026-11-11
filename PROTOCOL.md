@@ -157,7 +157,7 @@ Test vector:
 
 ### RN-GOT v1
 
-Cloud receipt to `bot`, sent without `--from` (as a `<team-name>/terminal` session, which the engine may number, for example `terminal-3`); the relay accepts it from `terminal`, `terminal-<n>`, `bot-cloud` and `bot-inbox`:
+Cloud receipt to `bot`, sent without `--from` (as a `<team-name>/terminal` session; older engines may number it, for example `terminal-3`, and newer receiving engines show it as `terminal@<CLOUD_MACHINE>`); the relay accepts it from `terminal`, `terminal-<n>`, `terminal@<CLOUD_MACHINE>` (only the configured cloud machine name), `bot-cloud` and `bot-inbox`:
 
 ```text
 RN-GOT v1

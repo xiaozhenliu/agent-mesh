@@ -7,7 +7,8 @@
 #   ./install.sh --purge-copies   delete the relay's kept copies of forwarded messages (re-forward then says no-copy)
 #   --repo-url https://...       public distribution URL accessible from the Bot's cloud computer
 #   ./install.sh --version      print agent-mesh and pinned Reason Network versions; no installation
-#   ./install.sh --restart-relay  (used by update.sh) install this checkout's relay and restart it; rolls back on failure
+#   ./install.sh --restart-relay  (used by update.sh) install this checkout's relay and restart it; rolls back if it
+#                                 does not come up or does not register under its name
 #   ./install.sh --preflight      (used by update.sh) check this Mac and the existing installation; changes nothing
 # --lang selects prompt language in every mode. Default: AGENT_MESH_LANG, otherwise en. Diagnostics stay English.
 # The team name is also your name inside the team: 1-40 chars, lowercase letters and digits joined by single '-',
@@ -245,7 +246,8 @@ start_relay() {
   trap 'rm -f "$new_relay" "$new_plist"; relay_interrupted 143' TERM
   trap 'rm -f "$new_relay" "$new_plist"; relay_interrupted 129' HUP
   launchctl bootout "$(service)" 2>/dev/null || true
-  if mv -f "$new_relay" "$RELAY" && mv -f "$new_plist" "$PLIST" && bootstrap_and_wait; then
+  if mv -f "$new_relay" "$RELAY" && mv -f "$new_plist" "$PLIST" && bootstrap_and_wait \
+      && { [ "${1:-}" != verify ] || verify_registration; }; then
     trap - INT TERM HUP
     rm -rf "$ROLLBACK"
     echo "relay up (log: $LOG)"
@@ -261,20 +263,32 @@ start_relay() {
   return 1
 }
 
-check_registered() {
-  local actual="" rc=0 waited=0
+registration() {
+  local rc=0 waited=0
+  REG_ACTUAL=""
   while :; do
-    rc=0; actual="$(relay_names registered "$RELAY_NAME" 2>&1)" || rc=$?
-    if [ "$rc" = 0 ] && [ -n "$actual" ]; then break; fi
+    rc=0; REG_ACTUAL="$(relay_names registered "$RELAY_NAME" 2>&1)" || rc=$?
+    if [ "$rc" = 0 ] && [ -n "$REG_ACTUAL" ]; then break; fi
     [ "$waited" -lt "${AGENT_MESH_REGISTER_WAIT:-15}" ] || break
     sleep 1; waited=$((waited + 1))
   done
-  if [ "$rc" = 0 ] && [ "$actual" = "$RELAY_NAME" ]; then
+  if [ "$rc" = 0 ] && [ "$REG_ACTUAL" = "$RELAY_NAME" ]; then
     echo "relay registered as $(current_person)/$RELAY_NAME"
     return 0
   fi
-  if [ "$rc" != 0 ]; then actual="nothing ($actual)"; elif [ -z "$actual" ]; then actual=nothing; fi
-  die "the relay registered as $actual instead of $(current_person)/$RELAY_NAME; another session in the team may use this name (reason-network who --all). The relay keeps running but gets no mail for $RELAY_NAME; see README: Troubleshooting"
+  if [ "$rc" != 0 ]; then REG_ACTUAL="nothing ($REG_ACTUAL)"; elif [ -z "$REG_ACTUAL" ]; then REG_ACTUAL=nothing; fi
+  return 1
+}
+
+check_registered() {
+  registration && return 0
+  die "the relay registered as $REG_ACTUAL instead of $(current_person)/$RELAY_NAME; another session in the team may use this name (reason-network who --all). The relay keeps running but gets no mail for $RELAY_NAME; see README: Troubleshooting"
+}
+
+verify_registration() {
+  registration && return 0
+  echo "the new relay registered as $REG_ACTUAL instead of $(current_person)/$RELAY_NAME; another session in the team may use this name (reason-network who --all)"
+  return 1
 }
 
 webhook_step() {
@@ -449,7 +463,7 @@ case "$MODE" in
       exit 0
     fi
     chmod 600 "$ENV_FILE"
-    start_relay || die "the relay was not switched; see the lines above"
+    start_relay verify || die "the relay was not switched; see the lines above"
     exit 0 ;;
 esac
 
@@ -458,9 +472,15 @@ valid_name "$NAME" && valid_name "$MACHINE" \
   || die "the name must be 1-40 chars of lowercase letters and digits, joined by single '-' (no '-' at the start or end, none repeated: Reason Network would merge them)"
 
 say "1/6 network"
-code="$(curl -sS -o /dev/null -m 10 -w '%{http_code}' https://aps1-1.relay.n0.iroh.link/ 2>/dev/null || true)"
-[ "$code" = 200 ] || die "cannot reach the iroh relay (HTTP '$code'). Check VPN/proxy bypass rules for the whole iroh.link domain and exclude it from HTTPS decryption. Confirm the curl check prints 200, then run this again. See README.md: Troubleshooting (Chinese: README.zh-CN.md)."
-echo "ok"
+if relays="$("$PYTHON" "$HERE/scripts/relay_targets.py" --rn "$RN" --home "$HOME/.reason/network" --pinned "${VERSION#v}")"; then
+  for url in $(printf '%s\n' "$relays" | tail -n +2); do
+    code="$(curl -sS -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null || true)"
+    [ "$code" = 200 ] || die "cannot reach the relay $url (HTTP '$code'; $(printf '%s\n' "$relays" | head -n 1)). Allow direct connections to the whole iroh.link and reasonmachines.com domains and exclude them from HTTPS decryption. Confirm the curl check prints 200, then run this again. See README.md: Troubleshooting (Chinese: README.zh-CN.md)."
+  done
+  echo "ok ($(printf '%s\n' "$relays" | head -n 1))"
+else
+  echo "relay not checked: ${relays:-relay_targets.py failed}. If the engine cannot connect, allow direct connections to the whole iroh.link and reasonmachines.com domains; see README.md: Troubleshooting (Chinese: README.zh-CN.md)."
+fi
 
 say "2/6 Reason Network $VERSION"
 if [ -x "$RN" ] && [ "$("$RN" --version 2>/dev/null | awk '{print $2}')" = "${VERSION#v}" ]; then

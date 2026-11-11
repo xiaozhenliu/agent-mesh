@@ -157,7 +157,7 @@ sig: <hex>
 
 ### RN-GOT v1
 
-云端发给 `bot` 的回执，不带 `--from` 发送（即以 `<team-name>/terminal` 会话身份，引擎可能给它加编号，例如 `terminal-3`）；relay 接受来自 `terminal`、`terminal-<n>`、`bot-cloud` 和 `bot-inbox` 的回执：
+云端发给 `bot` 的回执，不带 `--from` 发送（即以 `<team-name>/terminal` 会话身份；旧版引擎可能给它加编号，例如 `terminal-3`，新版引擎在收信端显示为 `terminal@<CLOUD_MACHINE>`）；relay 接受来自 `terminal`、`terminal-<n>`、`terminal@<CLOUD_MACHINE>`（仅限配置的云端机器名）、`bot-cloud` 和 `bot-inbox` 的回执：
 
 ```text
 RN-GOT v1

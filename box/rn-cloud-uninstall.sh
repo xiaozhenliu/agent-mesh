@@ -212,6 +212,7 @@ export REASON_NETWORK_HOME="$B/state" REASON_NETWORK_NO_PROMPT=1 REASON_NETWORK_
 INTEAM=none
 if [ -f "$B/state/machine.key" ] && [ -x "$RN" ]; then
   if out="$("$RN" team 2>&1)"; then
+    out="$(printf '%s\n' "$out" | sed -E 's/^([[:space:]]+[^[:space:]]+) \(verified\)([[:space:]])/\1\2/')"
     INTEAM=yes
     printf '%s\n' "$out"
     first="$(awk 'NR == 1 {print $2}' <<<"$out")"

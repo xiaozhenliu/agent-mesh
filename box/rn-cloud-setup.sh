@@ -131,6 +131,7 @@ PY
 skip_join=""
 if [ "$decision" = same ]; then
   team_out="$("$RN" team 2>&1)" || team_out=""
+  team_out="$(printf '%s\n' "$team_out" | sed -E 's/^([[:space:]]+[^[:space:]]+) \(verified\)([[:space:]])/\1\2/')"
   me="$(awk '/this machine$/ { print $1 "/" $2; exit }' <<<"$team_out")"
   if [ "$me" = "$PERSON/$MACHINE_NAME" ]; then
     skip_join=1

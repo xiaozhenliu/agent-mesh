@@ -4,6 +4,30 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.6.0 — 2026-11-11
+
+为 Reason Network 0.12 做准备：relay、自检和云端脚本能读懂新旧两个引擎版本的输出。固定的引擎版本仍是 0.10.7，`install.sh` 和 `update.sh` 仍要求这个版本；换引擎留到之后的版本。
+
+### 新增
+
+- `scripts/relay_targets.py`：告诉 `check.sh` 和 `install.sh` 已装引擎实际使用哪台中继。团队用 `reason-network relay <URL>` 指定了中继时以它为准；否则按引擎版本判断（0.10.x 用 n0 的中继；0.12.x 用守护进程日志里最后记下的中继，没有时读 `relays.json` 里的列表）；引擎还没装时用固定版本的默认中继。`reason-network team` 第一行的默认中继文字由客户端二进制生成，不拿来判断。判断不出来时，`check.sh` 报 SKIP 并说明要放行什么，不把备用地址可达当作通过（#20）。
+- README：Reason Network 0.12 的默认中继（`*.compute.reasonmachines.com`）；团队怎样指定或换回中继；消息端到端加密，中继只转发；0.12 会遗忘离线超过一天的普通会话及其未读信（relay 和云端的信箱不受影响，0.10.7 从不遗忘）。常见问题覆盖两个中继域名（#20）。
+
+### 变更
+
+- relay：云端回执（`RN-GOT v1`）也接受来自 `<team-name>/terminal@<CLOUD_MACHINE>` 的，这是新版引擎给终端发件人的写法。只接受配置的云端机器名，`terminal@<其他机器>` 仍然拒绝；`terminal` 和 `terminal-<n>` 照旧接受（[PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md#补寄与回执)）（#20）。
+- `check.sh` 和 `install.sh`：网络检查探测按上面方法找到的中继，并在结果里写出是哪一台，不再总是探测 n0 的 `aps1-1`（#20）。
+- `./install.sh --restart-relay`（`update.sh` 调用它）：新 relay 还要以自己的名字注册成功，切换才算完成。注册成别的名字时，恢复原来的 relay 和它的 launchd 状态，命令返回失败；以前切换照样保留，要等之后的检查才发现（#20）。
+- DeepSeek Harness 插件：来自 `terminal`、`terminal-<n>` 或 `terminal@<机器>` 的消息都显示为在终端里输入（#20）。
+
+### 修复
+
+- `check.sh`、`box/rn-cloud-setup.sh`、`box/rn-cloud-uninstall.sh` 和 `./uninstall.sh` 能读懂人名后带 `(verified)` 的 `reason-network team` 列表，Reason Network 0.12 会这样标出用 Reason 登录过的人。以前遇到这种列表，`check.sh` 找不到云端机器，还把它报成多余的成员；云端安装和卸载步骤会认错自己所在的机器（#20）。
+
+### 升级说明
+
+改动的有 relay、`check.sh`、`install.sh`、`scripts/uninstall.py`、新增的 `scripts/relay_targets.py`、`box/rn-cloud-setup.sh`、`box/rn-cloud-uninstall.sh` 和 DeepSeek Harness 插件。云端脚本 `box/rn-cloud.sh`、`box/rn-fetch.py` 和 routine 提示词没有变，云端不用更新。`./update.sh` 会重启 relay；因为 `box/rn-cloud-setup.sh` 变了，它会问云端是否已按这个版本设置好：这一版没有云端设置迁移，回答 yes 即可。云端下次运行安装步骤时会用到新的安装脚本。
+
 ## v0.5.2 — 2026-11-11
 
 让引导式云端更新和自检如实反映实际情况。

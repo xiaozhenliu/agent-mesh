@@ -22,8 +22,8 @@ Re-forward: a copy of every forwarded text is kept for FWD_COPY_DAYS (dir 0700, 
           If the first forward fails, the doorbell still rings (flagged forward_failed) and the cloud's fetch
           asks for the copy the same way.
 Receipts: every forwarded message stays pending until the cloud reports it done (signed RN-GOT v1 from
-          <CLOUD_NAME>, <INBOX_NAME> or a <team-name>/terminal session; the engine may number it, e.g. terminal-3) or a
-          valid RN-OUT replies to it. Without a "stored"
+          <CLOUD_NAME>, <INBOX_NAME> or a <team-name>/terminal session; older engines may number it, e.g. terminal-3,
+          newer ones name it terminal@<CLOUD_MACHINE>) or a valid RN-OUT replies to it. Without a "stored"
           receipt GOT_TIMEOUT_SECONDS after its doorbell went out, the relay forwards the copy again and rings
           again (field rering); without "done" GOT_DONE_SECONDS after a stored message's doorbell, it rings again.
           After GOT_MAX_RERINGS re-rings it gives up with an alert. Alerts are kept outside the spool, go out in
@@ -511,7 +511,8 @@ class Relay:
         self.me = f"{cfg['PERSON']}/{cfg['LISTEN_NAME']}"
         self.cloud = f"{cfg['PERSON']}/{cfg['CLOUD_NAME']}"
         self.inbox = f"{cfg['PERSON']}/{cfg.get('INBOX_NAME', 'bot-inbox')}"
-        self.terminal = re.compile(re.escape(cfg["PERSON"]) + r"/terminal(-[0-9]+)?")
+        self.terminal = re.compile(re.escape(cfg["PERSON"]) + r"/terminal(-[0-9]+|@"
+                                   + re.escape(cfg.get("CLOUD_MACHINE", "cloud")) + r")?")
         self.fwd_to = f"{self.inbox}@{cfg.get('CLOUD_MACHINE', 'cloud')}"
         self.log = logging.getLogger("agent-relay")
         self.copies = Copies(cfg.get("FWD_COPY_DAYS", 7))
