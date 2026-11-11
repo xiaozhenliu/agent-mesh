@@ -86,25 +86,24 @@ is_connected() {     # starts the daemon if needed and waits (<=90s) until the M
 }
 wait_connected() { is_connected || die "the Mac is not connected (is it awake and is reason-network running there?)"; }
 
-now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
 check_registered() {
   local actual
-  actual="$(python3 - "$REASON_NETWORK_HOME/network.db" "$1" "$2" <<'PY'
+  actual="$(python3 - "$REASON_NETWORK_HOME/network.db" "$1" <<'PY'
 import sqlite3, sys
 from pathlib import Path
-db, name, since = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+db, name = Path(sys.argv[1]), sys.argv[2]
 try:
     con = sqlite3.connect(f"{db.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
     try:
-        row = con.execute("SELECT name, last_seen FROM sessions WHERE key = ? ORDER BY last_seen DESC LIMIT 1",
+        row = con.execute("SELECT name FROM sessions WHERE key = ? ORDER BY last_seen DESC LIMIT 1",
                           ("cli:" + name,)).fetchone()
     finally:
         con.close()
 except sqlite3.Error as e:
     print(f"nothing (the session table cannot be read: {e})")
     sys.exit(0)
-print(row[0] if row is not None and row[1] >= since else "nothing")
+print(row[0] if row is not None else "nothing")
 PY
 )" || actual="nothing"
   [ "$actual" = "$1" ] \
@@ -112,18 +111,17 @@ PY
 }
 
 register() {         # makes <team-name>/$CLOUD a live sender here; anything mistakenly sent to it is kept, not dropped
-  local out t0; t0="$(now_ms)"; out="$("$RN" listen --as "$CLOUD" --wait 0)"
+  local out; out="$("$RN" listen --as "$CLOUD" --wait 0)"
   case "$out" in
     "No messages."*) ;;
     *) mkdir -p "$STRAY"; { echo "== $(date -Iseconds)"; echo "$out"; } >> "$STRAY/$CLOUD.log"
        echo "rn-cloud: note: mail sent to $PERSON/$CLOUD (send-only) saved to $STRAY/$CLOUD.log" >&2 ;;
   esac
-  check_registered "$CLOUD" "$t0"
+  check_registered "$CLOUD"
 }
 register_inbox() {   # bodies stay in network.db for rn-fetch
-  local t0; t0="$(now_ms)"
   "$RN" listen --as "$INBOX" --wait 0 >/dev/null
-  check_registered "$INBOX" "$t0"
+  check_registered "$INBOX"
 }
 
 outbox_count() {

@@ -951,7 +951,7 @@ elif args[:1] == ["listen"]:
     name = json.loads(os.environ.get("FAKE_REGISTER", "{}")).get(who, who)
     if name != "-":
         db = sqlite3.connect(os.path.join(os.environ["REASON_NETWORK_HOME"], "network.db"))
-        db.execute("INSERT OR REPLACE INTO sessions (name, key, last_seen) VALUES (?, ?, ?)",
+        db.execute("INSERT OR IGNORE INTO sessions (name, key, last_seen) VALUES (?, ?, ?)",
                    (name, "cli:" + who, int(time.time() * 1000)))
         db.commit()
         db.close()
@@ -1277,6 +1277,10 @@ class Cloud(unittest.TestCase):
                  ({"alice-cloud": "alice-cloud-2"}, "", "fetch", "registered alice-cloud-2 instead of demo/alice-cloud"))
         for register, listen_out, cmd, want in cases:
             with self.subTest(register=register, listen_out=listen_out):
+                db = sqlite3.connect(self.box / "state" / "network.db")
+                db.execute("DELETE FROM sessions")
+                db.commit()
+                db.close()
                 self.env.update(FAKE_REGISTER=json.dumps(register), FAKE_LISTEN_OUT=listen_out)
                 p = self.cloud(cmd, "A") if cmd == "fetch" else self.cloud(cmd)
                 self.assertNotEqual(p.returncode, 0)
@@ -1284,18 +1288,32 @@ class Cloud(unittest.TestCase):
                 self.assertIn("another session may use this name", p.stderr)
                 self.assertNotIn(listen_out or "unused", p.stdout + p.stderr)
 
-    def test_an_old_registration_does_not_count(self):
+    def test_an_earlier_registration_in_the_same_engine_run_counts(self):
         (self.box / "relay").write_text("alice\n")
         db = sqlite3.connect(self.box / "state" / "network.db")
-        db.execute("INSERT INTO sessions (name, key, last_seen) VALUES ('alice-inbox', 'cli:alice-inbox', 1)")
+        db.executemany("INSERT INTO sessions (name, key, last_seen) VALUES (?, ?, 1)",
+                       [("alice-inbox", "cli:alice-inbox"), ("alice-cloud", "cli:alice-cloud")])
         db.commit()
         db.close()
-        self.env["FAKE_REGISTER"] = json.dumps({"alice-inbox": "-"})
-        p = self.cloud("who")
-        self.assertNotEqual(p.returncode, 0)
-        self.assertIn("registered nothing instead of demo/alice-inbox", p.stderr)
-        self.env.pop("FAKE_REGISTER")
+        self.env["FAKE_REGISTER"] = json.dumps({"alice-inbox": "-", "alice-cloud": "-"})
         self.assertEqual(self.cloud("who").returncode, 0)
+        self.put_fwd("A", "question", to="demo/alice-inbox")
+        p = self.cloud("fetch", "A")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        p = self.cloud("send", "demo/other", "A", body="reply")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.listened(), ["alice-inbox", "alice-inbox", "alice-cloud", "alice-inbox",
+                                           "alice-cloud", "alice-inbox"])
+
+    def test_fetch_then_send_registers_each_session_again_in_one_engine_run(self):
+        self.put_fwd("A", "question")
+        p = self.cloud("fetch", "A")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        p = self.cloud("send", "demo/other", "A", body="reply")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        p = self.cloud("send", "demo/other", body="again")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(self.engine_sends()), 3)
 
     def test_registration_check_fails_when_the_session_table_cannot_be_read(self):
         db = sqlite3.connect(self.box / "state" / "network.db")

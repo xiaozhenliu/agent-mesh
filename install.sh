@@ -64,7 +64,6 @@ current_person() { if [ -f "$CFG" ]; then sed -n '/^person = "\(.*\)"/{s//\1/p;q
 render_prompt() { "$PYTHON" "$HERE/scripts/render_prompt.py" "$@" --lang "$DOC_LANG"; }
 deploy_state() { "$PYTHON" "$HERE/scripts/deploy_state.py" "$@"; }
 relay_names() { "$PYTHON" "$HERE/scripts/relay_names.py" "$@"; }
-now_ms() { "$PYTHON" -c 'import time; print(int(time.time() * 1000))'; }
 
 rename_refused() {
   die "this installation uses the Bot address name '$1'. Renaming is not supported, also not for an unfinished
@@ -265,7 +264,7 @@ start_relay() {
 check_registered() {
   local actual="" rc=0 waited=0
   while :; do
-    rc=0; actual="$(relay_names registered "$RELAY_NAME" --since "$1" 2>&1)" || rc=$?
+    rc=0; actual="$(relay_names registered "$RELAY_NAME" 2>&1)" || rc=$?
     if [ "$rc" = 0 ] && [ -n "$actual" ]; then break; fi
     [ "$waited" -lt "${AGENT_MESH_REGISTER_WAIT:-15}" ] || break
     sleep 1; waited=$((waited + 1))
@@ -302,10 +301,8 @@ webhook_step() {
     write_env "$url" "$key"
   fi
   chmod 600 "$ENV_FILE"
-  local t0
-  t0="$(now_ms)"
   start_relay
-  check_registered "$t0"
+  check_registered
 }
 
 cloud_prompt() {

@@ -214,11 +214,11 @@ class Cli(unittest.TestCase):
         db = self.base / "network.db"
         result = self.run_cli("registered", "alice", "--db", str(db))
         self.assertEqual(result.returncode, 3)
-        session_db(db, [("alice-2", "cli:alice", 2000), ("alice", "cli:alice", 1000), ("alice-x", "cli:other", 3000)])
+        session_db(db, [("alice-2", "cli:alice", 2000), ("alice", "cli:alice", 1000), ("alice-x", "cli:other", 3000),
+                        ("carol", "cli:carol", 1)])
         self.assertEqual(self.run_cli("registered", "alice", "--db", str(db)).stdout, "alice-2\n")
-        self.assertEqual(self.run_cli("registered", "alice", "--db", str(db), "--since", "2000").stdout, "alice-2\n")
-        self.assertEqual(self.run_cli("registered", "alice", "--db", str(db), "--since", "2001").stdout, "\n")
         self.assertEqual(self.run_cli("registered", "bob", "--db", str(db)).stdout, "\n")
+        self.assertEqual(self.run_cli("registered", "carol", "--db", str(db)).stdout, "carol\n")
         broken = self.base / "broken.db"
         broken.write_text("not a database")
         result = self.run_cli("registered", "alice", "--db", str(broken))

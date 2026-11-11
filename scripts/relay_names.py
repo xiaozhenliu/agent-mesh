@@ -4,10 +4,9 @@
   relay_names.py check NAME            exit 0 if NAME is a valid Bot address name, else 1 with the reason
   relay_names.py env [PATH]            print the name the relay env uses (empty line: no env file); exit 1 if the
                                        env is incomplete or its three names are not derived from one name
-  relay_names.py registered NAME [--db PATH] [--since MS]
+  relay_names.py registered NAME [--db PATH]
                                        print the session name the engine registered for `listen --as NAME`
-                                       (empty: none, or only older than MS); exit 3 without a database, 2 if it
-                                       cannot be read
+                                       (empty: none); exit 3 without a database, 2 if it cannot be read
   relay_names.py conflicts NAME [--db PATH]
                                        read `reason-network who --all --json` on stdin; exit 1 with the reason if
                                        NAME, NAME-cloud or NAME-inbox is already taken, 2 if it cannot be checked
@@ -86,20 +85,18 @@ def default_db():
     return Path(os.environ.get("HOME", "~")).expanduser() / ".reason/network/network.db"
 
 
-def registered(db, name, since=None):
+def registered(db, name):
     """Latest session name the engine stored for key cli:<name> (same query as the engine's session_by_key), or
     None. Raises FileNotFoundError without a database and sqlite3.Error if it cannot be read."""
     if not Path(db).exists():
         raise FileNotFoundError(str(db))
     con = open_ro(db)
     try:
-        row = con.execute("SELECT name, last_seen FROM sessions WHERE key = ? ORDER BY last_seen DESC LIMIT 1",
+        row = con.execute("SELECT name FROM sessions WHERE key = ? ORDER BY last_seen DESC LIMIT 1",
                           (f"cli:{name}",)).fetchone()
     finally:
         con.close()
-    if row is None or (since is not None and row[1] < since):
-        return None
-    return row[0]
+    return row[0] if row is not None else None
 
 
 def conflicts(directory, name, db):
@@ -132,7 +129,7 @@ def conflicts(directory, name, db):
     return found
 
 
-def option(args, flag, convert=str):
+def option(args, flag):
     if flag not in args:
         return None
     i = args.index(flag)
@@ -140,7 +137,7 @@ def option(args, flag, convert=str):
         raise SystemExit(f"relay_names: {flag} needs a value")
     value = args[i + 1]
     del args[i:i + 2]
-    return convert(value)
+    return value
 
 
 def main(argv):
@@ -163,14 +160,13 @@ def main(argv):
         return 0
     if cmd in ("registered", "conflicts"):
         db = option(args, "--db") or default_db()
-        since = option(args, "--since", int) if cmd == "registered" else None
         if len(args) != 1:
             print(__doc__, file=sys.stderr)
             return 2
         name = args[0]
         if cmd == "registered":
             try:
-                print(registered(db, name, since) or "")
+                print(registered(db, name) or "")
             except FileNotFoundError:
                 print(f"no engine database at {db}", file=sys.stderr)
                 return 3

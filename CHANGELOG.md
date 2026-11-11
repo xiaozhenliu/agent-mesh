@@ -4,6 +4,18 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.1 — 2026-11-11
+
+Fixes the registration check added in v0.5.0, which stopped cloud replies after a fetch.
+
+### Fixed
+
+- Cloud scripts and installer: the registration check no longer fails when a name registers a second time while the same engine keeps running. The engine records the time only at a name's first registration in each run, so the check that v0.5.0 added refused every later one. On the cloud, `rn-cloud.sh send` failed after a `fetch`, and `./install.sh --webhook` failed on an existing installation. The check now accepts the session the engine has for the name when it carries exactly that name; it still refuses a numbered name or a missing session (#27).
+
+### Upgrade notes
+
+Only the cloud script and the installer changed; the relay, the routine prompt and the cloud setup script are unchanged. A cloud on v0.5.0 cannot send replies after a `fetch`, so update it soon: run `git pull`, then `./update.sh --lang <en|zh-CN>` in a terminal, and follow its guided steps to have Grok Bot pull the new commit.
+
 ## v0.5.0 — 2026-11-09
 
 Relay and cloud-script fixes, a choosable Bot address name and a tiered uninstaller.
@@ -15,6 +27,8 @@ Relay and cloud-script fixes, a choosable Bot address name and a tiered uninstal
 - Relay: when a nonce that was refused or failed is tried again and the result is unknown, the earlier refusal or failure alert is withdrawn and the unknown alert says it replaces it, so the Bot no longer gets "may resend" and "do not resend" for the same message (#15).
 - Relay: a `done` receipt also withdraws a doorbell still queued for a message whose pending entry an RN-OUT reply had already ended, so the Bot is not woken once more (#17).
 - Cloud scripts: send results are judged on the engine's status words only. A recipient or team name containing words such as `held` or `error` (for example a team called `sheldon`) no longer makes a queued receipt, re-forward request or `rn-cloud.sh send` count as failed. For receipts and re-forward requests, an `rn send` that exits 0 without a `→` line now counts as failed, as the relay already required (#18).
+- Relay: when `reason-network listen` shows a signed RN-OUT envelope in a rewritten form (it rewrites text that looks like its own message tags, such as `<reason-message …>`), the relay no longer refuses it as a bad signature. If the displayed envelope does not parse or verify, the relay verifies the body the engine stored for that message id instead: read-only, only a message from the cloud session to this relay, not held, exactly one row. Freshness, nonce, rate and address checks still apply, and an altered message is still refused (#11).
+- Installer: two more pipelines that could stop early under `set -o pipefail` no longer report a false failure (the team lookup and the signing-key check during `--rotate-key`), as for the cloud connection check in v0.4.1 (#24).
 - Installer: team and machine names with repeated hyphens (such as `a--b`) are refused before anything is downloaded. The engine merged the hyphens, so the team ended up with another name than the one the installer and the prompts used (#25).
 - `box/rn-cloud-setup.sh` can run again on a cloud that already joined the team: when the full invite link shows the same team and the cloud is already `<team-name>/cloud`, it skips `join` instead of stopping there. A short invite code cannot show this; the engine then decides as before, and the error names the cause.
 

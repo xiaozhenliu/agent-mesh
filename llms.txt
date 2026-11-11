@@ -1,6 +1,6 @@
 # agent-mesh
 
-agent-mesh version: 0.5.0 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
+agent-mesh version: 0.5.1 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.10.7.
 
 > Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. macOS, Reason Network v0.10.7. MIT.
 

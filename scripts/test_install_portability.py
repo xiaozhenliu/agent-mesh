@@ -1298,18 +1298,19 @@ exit 0""")
             self.assertEqual(lines.count(line), 1, line)
         for register, said in (("alice-2", "registered as alice-2 instead of demo/alice"),
                                ("-", "registered as nothing instead of demo/alice")):
+            db = self.sessions([])
+            con = sqlite3.connect(db)
+            con.execute("DELETE FROM sessions")
+            con.commit()
+            con.close()
             self.env["MOCK_REGISTER"] = register
             result = self.webhook()
             self.assertNotEqual(result.returncode, 0, register)
             self.assertIn(said, result.stderr, register)
-        db = self.sessions([("alice", "cli:alice", 1)])
-        con = sqlite3.connect(db)
-        con.execute("DELETE FROM sessions WHERE name = 'alice-2'")
-        con.commit()
-        con.close()
+        self.sessions([("alice", "cli:alice", 1)])
         result = self.webhook()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("registered as nothing instead", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("relay registered as demo/alice", result.stdout)
         db.unlink()
         result = self.webhook()
         self.assertNotEqual(result.returncode, 0)
@@ -1562,7 +1563,7 @@ db = home / ".reason/network/network.db"
 db.parent.mkdir(parents=True, exist_ok=True)
 con = sqlite3.connect(db)
 con.executescript("""{SESSIONS}""")
-con.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?, 'cli', '/', NULL, NULL, NULL, 'pull', ?)",
+con.execute("INSERT OR IGNORE INTO sessions VALUES (?, ?, 'cli', '/', NULL, NULL, NULL, 'pull', ?)",
             (name or listen, "cli:" + listen, int(time.time() * 1000)))
 con.commit()
 '''
