@@ -2,7 +2,12 @@
 # Read-only self-check for agent-mesh on the Mac. Changes nothing.
 #   ./check.sh      exit 0 = all PASS, 1 = at least one FAIL (each FAIL line says what to do)
 # Agents: run it after install.sh and after the cloud side joins; paste the output to the user as is.
+# It changes no deployment, configuration or state file and stops nothing. Engine commands it runs (team, who) may
+# start a stopped engine daemon, as any Reason Network command does.
 set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ENGINE="$HERE/box/rn-engine.py"
+LIB="$HOME/.local/lib/agent-mesh"
 RN="${RN_BIN:-$HOME/.local/bin/reason-network}"
 CFG="$HOME/.reason/network/config.toml"
 LABEL="com.local.agent-relay"
@@ -39,7 +44,16 @@ fi
 
 # engine and team
 if [ -x "$RN" ]; then
-  ok "reason-network $("$RN" --version 2>/dev/null | awk '{print $2}')"
+  have="$("$RN" --version 2>/dev/null | awk '{print $2}')"
+  case "$(python3 "$ENGINE" compare "$have" "${pinned#v}")" in
+    same) ok "reason-network $have (the version this release pins)" ;;
+    older) bad "reason-network $have is older than ${pinned#v}, the version this release pins" "run ./update.sh: it upgrades the engine with a backup and rolls back on failure (UPGRADE.md)" ;;
+    *) bad "reason-network ${have:-of an unknown version} is not supported by this release (it pins ${pinned#v})" "agent-mesh never downgrades the engine; use the agent-mesh release made for this engine version, or reinstall ${pinned#v}" ;;
+  esac
+  if [ -f "$LIB/engine-upgrade.json" ]; then
+    backup="$(python3 "$ENGINE" txn-get --txn "$LIB/engine-upgrade.json" backup 2>&1)"
+    bad "an engine upgrade did not finish" "run ./update.sh in a terminal: it rolls the switch back first (backup: ${backup:-unknown})"
+  fi
   if team="$("$RN" team 2>/dev/null)"; then
     team="$(printf '%s\n' "$team" | sed -E 's/^([[:space:]]+[^[:space:]]+) \(verified\)([[:space:]])/\1\2/')"
     [ -n "$PERSON" ] && ok "team name: $PERSON" || bad "no person in $CFG" "run ./install.sh"
@@ -56,6 +70,13 @@ if [ -x "$RN" ]; then
   else
     bad "not in a team" "run ./install.sh"
   fi
+  daemon="$(python3 "$ENGINE" info --home "$HOME/.reason/network" --bin "$RN" 2>&1)"
+  case "$daemon" in
+    *state=fresh) ok "engine daemon runs the installed binary (${daemon%% *})" ;;
+    *state=stale) bad "the engine daemon (${daemon%% *}) started before the binary was replaced, so it still runs the old version" "reason-network stop, then ./check.sh again (the next command starts it on the installed binary)" ;;
+    *state=none) skip "engine daemon" "not running" ;;
+    *) skip "engine daemon" "could not check: $daemon" ;;
+  esac
   [ -f "$CFG" ] && grep -q '^auto_update = false' "$CFG" && ok "auto_update off" || bad "auto_update not off" "set  auto_update = false  in $CFG"
   [ -f "$CFG" ] && grep -q '^lan = false' "$CFG" && ok "lan broadcast off" || bad "lan not off" "set  lan = false  in $CFG"
 else
@@ -79,7 +100,16 @@ else
   bad "relay not configured" "run ./install.sh --webhook"
 fi
 [ -s "$key" ] && ok "signing key present" || bad "signing key missing" "run ./install.sh"
-[ -f "$HOME/.local/lib/agent-mesh/agent_relay.py" ] && ok "relay installed" || bad "relay file missing" "run ./install.sh --webhook"
+installed="$LIB/agent_relay.py"
+if [ ! -f "$installed" ]; then
+  bad "relay file missing" "run ./install.sh --webhook"
+elif cmp -s "$installed" "$HERE/agent_relay.py"; then
+  ok "relay installed (this checkout's version)"
+elif ! grep -qF '/terminal(-[0-9]+|@' "$installed"; then
+  bad "the installed relay predates Reason Network 0.12 terminal addresses" "run ./update.sh (it installs this checkout's relay)"
+else
+  skip "relay version" "the installed relay differs from this checkout; ./update.sh installs this one"
+fi
 launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && ok "relay service loaded" || bad "relay service not loaded" "run ./install.sh --webhook"
 log="$HOME/Library/Logs/agent-relay.log"
 if [ -f "$log" ]; then
@@ -106,20 +136,52 @@ fi
 # sessions
 if [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then
   registered="$(python3 "$names" registered "$NAME" 2>&1)"; rc=$?
-  if [ "$rc" = 3 ]; then
-    skip "relay session" "the engine has no session database yet"
-  elif [ "$rc" != 0 ]; then
-    skip "relay session" "cannot read the engine's session table: $registered"
-  elif [ -n "$registered" ] && [ "$registered" != "$NAME" ]; then
-    bad "relay registered under another name: $PERSON/$registered" "another session took $NAME; the relay gets no mail for $PERSON/$NAME (README: Troubleshooting)"
-  elif [ -n "$registered" ] && echo "$who" | grep -Eq "^\s+$NAME\s+cli\s"; then
-    ok "relay listening as $PERSON/$NAME"
+  relay_pid="$(launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1)"
+  if [ -z "$relay_pid" ]; then
+    reg="fail the relay service has no running process"
   else
-    skip "relay session" "appears a few seconds after the relay starts"
+    reg="$(python3 "$ENGINE" registered --home "$HOME/.reason/network" \
+      --marker "$HOME/Library/Application Support/agent-relay/registered" --name "$PERSON/$NAME" \
+      --relay-pid "$relay_pid" 2>&1)" || reg="fail $reg"
+  fi
+  if [ "$rc" = 0 ] && [ -n "$registered" ] && [ "$registered" != "$NAME" ]; then
+    bad "relay registered under another name: $PERSON/$registered" "another session took $NAME; the relay gets no mail for $PERSON/$NAME (README: Troubleshooting)"
+  else
+    case "$reg" in
+      ok\ *) ok "relay listening as $PERSON/$NAME (registered on the running engine daemon)" ;;
+      wait\ *) skip "relay registration" "${reg#wait }" ;;
+      *) bad "relay not registered on the running engine: ${reg#fail }" "if ./update.sh has not run for this checkout, run it; otherwise see tail -n 30 ~/Library/Logs/agent-relay.log and ./install.sh --restart-relay (README: Troubleshooting)" ;;
+    esac
   fi
   n=$(echo "$who" | grep -Ec 'claude-code|codex|pi |dsh')
   [ "$n" -gt 0 ] && ok "$n agent session(s) on the roster" || skip "agent sessions" "open a Claude Code / Codex session, then rerun"
 fi
+
+# deployment record
+cengine="$(python3 - "$LIB/deployed.json" <<'PY' 2>&1
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except FileNotFoundError:
+    print("none")
+    raise SystemExit
+except (OSError, ValueError) as error:
+    print(f"unreadable {error}")
+    raise SystemExit
+value = data.get("cloud_engine") if isinstance(data, dict) else None
+if not isinstance(value, dict):
+    print("none")
+else:
+    print(value.get("state") or "?", value.get("version") or "?")
+PY
+)"
+case "$cengine" in
+  "confirmed ${pinned#v}") ok "cloud engine last confirmed at ${pinned#v}" ;;
+  confirmed\ *) bad "cloud engine last confirmed at ${cengine#confirmed }, not ${pinned#v}" "run ./update.sh: its cloud engine step has Grok Bot run box/rn-cloud-setup.sh --upgrade-engine" ;;
+  pending\ *) skip "cloud engine" "the cloud setup the installer printed is not confirmed yet; ./update.sh asks about it" ;;
+  none) skip "cloud engine" "no confirmed cloud engine version recorded; ./update.sh's cloud engine step records it" ;;
+  *) skip "cloud engine" "could not read $LIB/deployed.json: $cengine" ;;
+esac
 
 echo
 [ "$fail" = 0 ] && echo "RESULT ok" || echo "RESULT fix the FAIL lines above"

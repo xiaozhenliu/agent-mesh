@@ -10,6 +10,8 @@
 #   ./install.sh --restart-relay  (used by update.sh) install this checkout's relay and restart it; rolls back if it
 #                                 does not come up or does not register under its name
 #   ./install.sh --preflight      (used by update.sh) check this Mac and the existing installation; changes nothing
+#   ./install.sh --fetch-engine DIR  (used by update.sh) download the pinned Reason Network for this Mac, verify its
+#                                 sha256 and version, and unpack it into DIR; changes nothing else
 # --lang selects prompt language in every mode. Default: AGENT_MESH_LANG, otherwise en. Diagnostics stay English.
 # The team name is also your name inside the team: 1-40 chars, lowercase letters and digits joined by single '-',
 # not your real name. It is fixed once the team exists.
@@ -20,7 +22,7 @@
 # prints what to send to Grok Bot. Re-running is safe.
 set -euo pipefail
 
-VERSION="v0.10.7"
+VERSION="v0.12.17"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_VERSION="$(cat "$HERE/VERSION")"
 BIN_DIR="$HOME/.local/bin"; RN="$BIN_DIR/reason-network"
@@ -29,6 +31,7 @@ LIB_DIR="$HOME/.local/lib/agent-mesh"; RELAY="$LIB_DIR/agent_relay.py"
 LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/agent-relay.log"
 ROLLBACK="$LIB_DIR/rollback"
+MARKER="$HOME/Library/Application Support/agent-relay/registered"
 CFG="$HOME/.reason/network/config.toml"
 export REASON_NETWORK_NO_PROMPT=1
 
@@ -46,10 +49,11 @@ while [ $# -gt 0 ]; do
     --purge-copies) MODE=purge; shift ;;
     --restart-relay) MODE=restart; shift ;;
     --preflight) MODE=preflight; shift ;;
+    --fetch-engine) MODE=fetch; FETCH_DIR="${2:?directory}"; shift 2 ;;
     --repo-url) REPO_URL="${2:?public HTTPS repository URL}"; shift 2 ;;
     --version) echo "agent-mesh $PROJECT_VERSION (Reason Network ${VERSION#v})"; exit 0 ;;
     --lang) [ $# -ge 2 ] || { echo "install: --lang needs en or zh-CN" >&2; exit 2; }; DOC_LANG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1"; sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
@@ -65,6 +69,36 @@ current_person() { if [ -f "$CFG" ]; then sed -n '/^person = "\(.*\)"/{s//\1/p;q
 render_prompt() { "$PYTHON" "$HERE/scripts/render_prompt.py" "$@" --lang "$DOC_LANG"; }
 deploy_state() { "$PYTHON" "$HERE/scripts/deploy_state.py" "$@"; }
 relay_names() { "$PYTHON" "$HERE/scripts/relay_names.py" "$@"; }
+rn_engine() { "$PYTHON" "$HERE/box/rn-engine.py" "$@"; }
+
+pinned_sha256() {   # the same table is in box/rn-cloud-setup.sh; change both with VERSION
+  case "$1" in
+    v0.12.17/aarch64-apple-darwin) echo 6676e806abba74b313ee027b5b4020634077b0ef4c01c0a9eb4dd61ec77ea705 ;;
+    v0.12.17/x86_64-apple-darwin) echo e71fbd5c7c080048c1220025e2aa716c3af6b18901f18e5beece1323cfcdd96f ;;
+    v0.12.17/aarch64-unknown-linux-musl) echo e53ef46ee57eb9e9cd3b13d45acfe5ce4766c18861b46926560e34903adaa151 ;;
+    v0.12.17/x86_64-unknown-linux-musl) echo 2234527ff9330c78bff8581cc060bf1396e15d8091c27fb5acdb989010f5018f ;;
+    *) return 1 ;;
+  esac
+}
+
+fetch_engine() {   # $1: empty directory; leaves the verified binary at $1/reason-network
+  local target want got
+  case "$(uname -m)" in
+    arm64) target=aarch64-apple-darwin ;;
+    x86_64) target=x86_64-apple-darwin ;;
+    *) die "unsupported CPU $(uname -m)" ;;
+  esac
+  want="$(pinned_sha256 "$VERSION/$target")" || die "no pinned sha256 for Reason Network $VERSION on $target"
+  curl -fsSL "https://github.com/reason-machines/reason-network/releases/download/$VERSION/reason-network-$target.tar.gz" \
+    -o "$1/e.tgz" || die "could not download Reason Network $VERSION; nothing was installed"
+  got="$(shasum -a 256 "$1/e.tgz" | cut -d' ' -f1)"
+  [ "$got" = "$want" ] || die "checksum mismatch for reason-network-$target.tar.gz (expected $want, got $got); nothing was installed. Run again to download it again; if it keeps failing, do not install it"
+  tar xzf "$1/e.tgz" -C "$1" reason-network || die "the downloaded archive has no reason-network binary; nothing was installed"
+  rm -f "$1/e.tgz"
+  chmod 755 "$1/reason-network"
+  [ "$("$1/reason-network" --version 2>&1 | awk '{print $2}')" = "${VERSION#v}" ] \
+    || die "the downloaded binary does not report Reason Network ${VERSION#v}; nothing was installed"
+}
 
 rename_refused() {
   die "this installation uses the Bot address name '$1'. Renaming is not supported, also not for an unfinished
@@ -143,6 +177,7 @@ record_pending() {
 service() { echo "gui/$(id -u)/$LABEL"; }
 relay_loaded() { launchctl print "$(service)" >/dev/null 2>&1; }
 relay_running() { launchctl print "$(service)" 2>/dev/null | grep 'state = running' >/dev/null; }
+relay_pid() { launchctl print "$(service)" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1; }
 
 log_inode() { "$PYTHON" -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$LOG"; }
 
@@ -204,6 +239,7 @@ restore_relay() {
     || { echo "the saved copy in $ROLLBACK failed verification; nothing was restored, restore it by hand"; return 1; }
   launchctl bootout "$(service)" 2>/dev/null || true
   if relay_loaded; then echo "could not unload the relay service; the previous files stay in $ROLLBACK"; return 1; fi
+  rm -f "$MARKER"
   restore_file agent_relay.py "$RELAY" && restore_file agent.plist "$PLIST" \
     || { echo "could not put the previous files back from $ROLLBACK"; return 1; }
   if [ "$(cat "$ROLLBACK/loaded")" = 1 ] && [ -f "$PLIST" ]; then
@@ -246,6 +282,7 @@ start_relay() {
   trap 'rm -f "$new_relay" "$new_plist"; relay_interrupted 143' TERM
   trap 'rm -f "$new_relay" "$new_plist"; relay_interrupted 129' HUP
   launchctl bootout "$(service)" 2>/dev/null || true
+  rm -f "$MARKER"
   if mv -f "$new_relay" "$RELAY" && mv -f "$new_plist" "$PLIST" && bootstrap_and_wait \
       && { [ "${1:-}" != verify ] || verify_registration; }; then
     trap - INT TERM HUP
@@ -263,20 +300,34 @@ start_relay() {
   return 1
 }
 
-registration() {
-  local rc=0 waited=0
+registration() {   # the new relay's own marker (removed before it started), then the engine's session row
+  local rc=0 waited=0 want mark m_name m_pid _ pid
+  want="$(current_person)/$RELAY_NAME"
   REG_ACTUAL=""
   while :; do
-    rc=0; REG_ACTUAL="$(relay_names registered "$RELAY_NAME" 2>&1)" || rc=$?
-    if [ "$rc" = 0 ] && [ -n "$REG_ACTUAL" ]; then break; fi
-    [ "$waited" -lt "${AGENT_MESH_REGISTER_WAIT:-15}" ] || break
+    rc=0; mark="$(relay_names marker "$MARKER" 2>&1)" || rc=$?
+    if [ "$rc" = 0 ]; then
+      read -r m_name m_pid _ <<< "$mark"
+      if [ "$m_name" != "$want" ]; then REG_ACTUAL="$m_name"; return 1; fi
+      pid="$(relay_pid)"
+      if [ -z "$pid" ]; then
+        REG_ACTUAL="nothing (the relay service has no running process)"
+      elif [ "$pid" = "$m_pid" ]; then
+        rc=0; REG_ACTUAL="$(relay_names registered "$RELAY_NAME" 2>&1)" || rc=$?
+        if [ "$rc" = 0 ] && [ "$REG_ACTUAL" = "$RELAY_NAME" ]; then
+          echo "relay registered as $want"
+          return 0
+        fi
+        if [ "$rc" != 0 ]; then REG_ACTUAL="nothing ($REG_ACTUAL)"
+        elif [ -n "$REG_ACTUAL" ]; then REG_ACTUAL="$(current_person)/$REG_ACTUAL"; return 1; fi
+      fi
+    elif [ "$rc" != 3 ]; then
+      REG_ACTUAL="nothing ($mark)"
+    fi
+    [ "$waited" -lt "${AGENT_MESH_REGISTER_WAIT:-45}" ] || break
     sleep 1; waited=$((waited + 1))
   done
-  if [ "$rc" = 0 ] && [ "$REG_ACTUAL" = "$RELAY_NAME" ]; then
-    echo "relay registered as $(current_person)/$RELAY_NAME"
-    return 0
-  fi
-  if [ "$rc" != 0 ]; then REG_ACTUAL="nothing ($REG_ACTUAL)"; elif [ -z "$REG_ACTUAL" ]; then REG_ACTUAL=nothing; fi
+  [ -n "$REG_ACTUAL" ] || REG_ACTUAL="nothing (the new relay reported no registration within ${AGENT_MESH_REGISTER_WAIT:-45} s)"
   return 1
 }
 
@@ -328,6 +379,7 @@ cloud_prompt() {
   [ -n "$invite" ] || invite="$("$RN" invite --me)"
   record_pending cloud
   record_pending cloud_setup
+  record_pending cloud_engine
   echo "[GROK-UI] User: send this to Grok Bot as one message. The Bot executes it on [BOT-CLOUD], its cloud computer. The first line is the invite, valid 24 hours while [LOCAL], your Mac, is online:"
   echo "----------------------------------------------------------------"
   echo "$invite"
@@ -420,6 +472,13 @@ PYTHON="$(python3 -c 'import sys; print(sys.executable)')" \
   || die "python3 cannot start; finish or repair its installation before retrying"
 "$PYTHON" -c 'import sys, ssl, sqlite3, plistlib; sys.exit(sys.version_info < (3, 9))' \
   || die "Python 3.9+ with ssl and sqlite3 is required; install it and put python3 on PATH"
+if [ "$MODE" = fetch ]; then
+  [ -d "$FETCH_DIR" ] && "$PYTHON" -c 'import os, sys; sys.exit(bool(os.listdir(sys.argv[1])))' "$FETCH_DIR" \
+    || die "--fetch-engine needs an existing empty directory"
+  fetch_engine "$FETCH_DIR"
+  echo "$FETCH_DIR/reason-network"
+  exit 0
+fi
 launchctl print "gui/$(id -u)" >/dev/null 2>&1 \
   || die "no macOS GUI login session; sign in to the Mac desktop as this user first"
 [ "${REASON_NETWORK_HOME:-$HOME/.reason/network}" = "$HOME/.reason/network" ] \
@@ -444,9 +503,19 @@ esac
 # Never replace a user's different engine version or create a second PATH installation silently.
 existing="$(command -v reason-network || true)"
 [ -z "$existing" ] || [ "$existing" = "$RN" ] || die "reason-network already exists at $existing; review that installation before using $RN"
+ENGINE_STATE=absent
 if [ -x "$RN" ]; then
-  installed_version="$("$RN" --version 2>/dev/null | awk '{print $2}')"
-  [ "$installed_version" = "${VERSION#v}" ] || die "existing Reason Network is $installed_version; this release requires ${VERSION#v}. Review an explicit version change before retrying; it has not been overwritten"
+  installed_version="$("$RN" --version 2>/dev/null | awk '{print $2}')" || installed_version=""
+  ENGINE_STATE="$(rn_engine compare "$installed_version" "${VERSION#v}")"
+  case "$ENGINE_STATE" in
+    same) ;;
+    older)
+      case "$MODE" in
+        full) die "existing Reason Network is $installed_version; this release requires ${VERSION#v}. Run ./update.sh to upgrade it (it keeps a backup and rolls back on failure); it has not been overwritten" ;;
+        preflight) echo "engine: Reason Network $installed_version is older than ${VERSION#v}; ./update.sh upgrades it" ;;
+      esac ;;
+    *) die "existing Reason Network is ${installed_version:-of an unknown version}; this release supports ${VERSION#v} and never downgrades or replaces a newer or unrecognised engine. Review that installation first; it has not been changed" ;;
+  esac
 fi
 
 case "$MODE" in
@@ -486,17 +555,8 @@ say "2/6 Reason Network $VERSION"
 if [ -x "$RN" ] && [ "$("$RN" --version 2>/dev/null | awk '{print $2}')" = "${VERSION#v}" ]; then
   echo "already installed: $("$RN" --version)"
 else
-  case "$(uname -m)" in
-    arm64) target=aarch64-apple-darwin ;;
-    x86_64) target=x86_64-apple-darwin ;;
-    *) die "unsupported CPU $(uname -m)" ;;
-  esac
-  base="https://github.com/reason-machines/reason-network/releases/download/$VERSION"
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-  curl -fsSL "$base/reason-network-$target.tar.gz" -o "$tmp/e.tgz"
-  curl -fsSL "$base/reason-network-$target.tar.gz.sha256" -o "$tmp/sum"
-  [ "$(cut -d' ' -f1 "$tmp/sum")" = "$(shasum -a 256 "$tmp/e.tgz" | cut -d' ' -f1)" ] || die "checksum mismatch, not installing"
-  tar xzf "$tmp/e.tgz" -C "$tmp"
+  fetch_engine "$tmp"
   mkdir -p "$BIN_DIR"; install -m 755 "$tmp/reason-network" "$RN"
   echo "installed $("$RN" --version) at $RN"
 fi

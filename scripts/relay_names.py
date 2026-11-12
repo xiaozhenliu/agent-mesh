@@ -7,6 +7,8 @@
   relay_names.py registered NAME [--db PATH]
                                        print the session name the engine registered for `listen --as NAME`
                                        (empty: none); exit 3 without a database, 2 if it cannot be read
+  relay_names.py marker [PATH]         print "<name> <pid> <mtime>" from the relay's registered marker (default in
+                                       the relay state directory); exit 3 if there is none, 2 if it is not valid
   relay_names.py conflicts NAME [--db PATH]
                                        read `reason-network who --all --json` on stdin; exit 1 with the reason if
                                        NAME, NAME-cloud or NAME-inbox is already taken, 2 if it cannot be checked
@@ -99,6 +101,27 @@ def registered(db, name):
     return row[0] if row is not None else None
 
 
+def default_marker():
+    home = Path(os.environ.get("HOME", "~")).expanduser()
+    state = os.environ.get("AGENT_RELAY_STATE") or home / "Library/Application Support/agent-relay"
+    return Path(state) / "registered"
+
+
+def marker(path):
+    """(name, pid, mtime) the relay wrote after its last listen. Raises FileNotFoundError or ValueError."""
+    path = Path(path)
+    st = path.stat()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"{path} is not valid: {error}")
+    name, pid = (data.get("name"), data.get("pid")) if isinstance(data, dict) else (None, None)
+    if (not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*", name)
+            or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0):
+        raise ValueError(f"{path} has no valid name and pid")
+    return name, pid, int(st.st_mtime)
+
+
 def conflicts(directory, name, db):
     """Reasons why NAME cannot be used, from `who --all --json` and the local session table. Raises ValueError if
     the listing has an unexpected shape."""
@@ -157,6 +180,16 @@ def main(argv):
             print(error, file=sys.stderr)
             return 1
         print(name or "")
+        return 0
+    if cmd == "marker" and len(args) <= 1:
+        path = Path(args[0]) if args else default_marker()
+        try:
+            print(*marker(path))
+        except FileNotFoundError:
+            return 3
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 2
         return 0
     if cmd in ("registered", "conflicts"):
         db = option(args, "--db") or default_db()

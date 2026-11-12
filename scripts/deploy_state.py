@@ -2,6 +2,7 @@
 """Deployment record for update.sh: what this Mac installed locally and last confirmed on the cloud side."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -14,7 +15,8 @@ from render_prompt import ROOT, render_prompt
 from write_launch_agent import launch_agent_bytes
 
 SCHEMA = 1
-REMOTE = ("cloud", "cloud_setup", "prompt")
+REMOTE = ("cloud", "cloud_setup", "prompt", "cloud_engine")
+NEEDS = ("cloud", "prompt", "cloud_engine")
 STATES = ("pending", "confirmed")
 TXN_KEYS = ("stage", "relay_was_loaded", "need", "lang", "commit", "target")
 STAGES = ("stopping", "relay_stopped", "routine_paused", "cloud_done", "prompt_done", "routine_resumed")
@@ -26,6 +28,43 @@ def home():
 
 def lib_dir():
     return home() / ".local/lib/agent-mesh"
+
+
+def engine_txn_path():
+    return lib_dir() / "engine-upgrade.json"
+
+
+def rn_engine():
+    spec = importlib.util.spec_from_file_location("rn_engine", ROOT / "box/rn-engine.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def pinned():
+    m = re.search(r'^VERSION="v(\d+\.\d+\.\d+)"$', (ROOT / "install.sh").read_text(encoding="utf-8"), re.M)
+    if not m:
+        raise ValueError("install.sh has no pinned Reason Network VERSION")
+    return m.group(1)
+
+
+def engine_status():
+    """older | stale | unchanged | refused, and the installed version (or -)."""
+    eng = rn_engine()
+    binary = home() / ".local/bin/reason-network"
+    if not binary.exists():
+        return "refused", "-"
+    have = eng.version_of(binary)
+    state = eng.compare(have, pinned())
+    if state == "older":
+        return "older", have
+    if state != "same":
+        return "refused", have or "-"
+    try:
+        _, _, _, running = eng.info(home() / ".reason/network", binary)
+    except OSError:
+        return "unchanged", have
+    return ("stale" if running == "stale" else "unchanged"), have
 
 
 def record_path():
@@ -72,6 +111,8 @@ def digest(field, lang, relay=None):
         return sha((ROOT / "box/rn-cloud-setup.sh").read_bytes())
     if field == "prompt":
         return sha(prompt_text(lang, relay).encode("utf-8"))
+    if field == "cloud_engine":
+        return sha(f"reason-network {pinned()}\n{sha((ROOT / 'box/rn-engine.py').read_bytes())}".encode())
     raise ValueError(f"unknown field: {field}")
 
 
@@ -154,7 +195,7 @@ def dsh_status():
 
 def valid_txn(txn):
     return (isinstance(txn, dict) and txn.get("stage") in STAGES and isinstance(txn.get("relay_was_loaded"), bool)
-            and isinstance(txn.get("need"), list) and all(part in ("cloud", "prompt") for part in txn["need"])
+            and isinstance(txn.get("need"), list) and all(part in NEEDS for part in txn["need"])
             and txn.get("lang") in ("en", "zh-CN") and isinstance(txn.get("commit"), str)
             and isinstance(txn.get("target"), dict))
 
@@ -169,6 +210,17 @@ def txn_of(data, warn=False):
     return None
 
 
+def engine_txn_stage():
+    path = engine_txn_path()
+    if not path.exists():
+        return "-"
+    try:
+        stage = json.loads(path.read_text(encoding="utf-8")).get("stage")
+    except (OSError, ValueError, AttributeError):
+        return "damaged"
+    return stage if isinstance(stage, str) and re.fullmatch(r"[a-z_]+", stage) else "damaged"
+
+
 def cmd_status(args):
     data = load()
     print(f"relay {relay_status(args.python)}")
@@ -177,6 +229,11 @@ def cmd_status(args):
         print(f"{field} {remote_status(data, field, args.lang)}")
     txn = txn_of(data, warn=True)
     print(f"txn {txn['stage'] if txn else '-'}")
+    state, have = engine_status()
+    print(f"engine {state} {have} {pinned()}")
+    print(f"etxn {engine_txn_stage()}")
+    recorded = entry(data, "cloud_engine")
+    print(f"cloud_engine_version {recorded.get('version') or '-' if recorded else '-'}")
     status = name_status(data)
     print(f"name {status}" if status.startswith("changed ") else f"name {status} {relay_name()}")
 
@@ -189,6 +246,8 @@ def cmd_mark(args):
         raise SystemExit(f"update: the Bot address name changed from {recorded} (recorded when this Mac was "
                          f"installed) to {current}; renaming is not supported, nothing was recorded")
     value = {"hash": digest(args.field, args.lang, args.relay_name), "state": args.state}
+    if args.field == "cloud_engine":
+        value["version"] = pinned()
     old = entry(data, args.field)
     if args.expect and args.expect != value["hash"]:
         raise SystemExit(f"update: this checkout changed after {args.field} was shown; nothing was recorded, "
@@ -252,9 +311,12 @@ def cmd_txn_set(args):
 
 
 CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py")
+ENGINE_FILES = ("box/rn-cloud-setup.sh", "box/rn-engine.py")
+ENGINE_LINE = re.compile(r"engine: reason-network (\S+) running \(daemon pid \d+, started ")
 
 
-def reply_problems(text, commit):
+def reply_problems(text, commit, engine=None):
+    found_engine = set(ENGINE_LINE.findall(text))
     text = text.lower()
     commit = commit.lower()
     problems = []
@@ -264,7 +326,7 @@ def reply_problems(text, commit):
     elif commits != {commit}:
         others = ", ".join(sorted(other[:12] for other in commits - {commit}))
         problems.append(f"the reply shows commit {others}, not {commit[:12]}")
-    for name in CLOUD_FILES:
+    for name in CLOUD_FILES + (ENGINE_FILES if engine else ()):
         want = sha((ROOT / name).read_bytes())
         pattern = r"(?<![0-9a-f])([0-9a-f]{64})[ \t]+\*?(?:\./)?" + re.escape(name) + r"(?=$|[\s`'\"),;])"
         found = set(re.findall(pattern, text, re.M))
@@ -272,16 +334,28 @@ def reply_problems(text, commit):
             problems.append(f"no checksum for {name} in the reply")
         elif found != {want}:
             problems.append(f"the checksum of {name} differs from this checkout")
+    if engine:
+        if not found_engine:
+            problems.append("no line 'engine: reason-network <version> running (daemon pid ...' in the reply")
+        elif found_engine != {engine}:
+            problems.append(f"the cloud engine runs {', '.join(sorted(found_engine))}, not {engine}")
     return problems
 
 
 def cmd_cloud_reply(args):
-    problems = reply_problems(sys.stdin.read(), args.commit)
+    engine = pinned() if args.engine else None
+    problems = reply_problems(sys.stdin.read(), args.commit, engine)
     if problems:
         for problem in problems:
             print(f"  mismatch: {problem}")
         raise SystemExit(1)
-    print("  match: commit and both checksums")
+    print(f"  match: commit, checksums{' and engine ' + engine if engine else ''}")
+
+
+def cmd_set_engine(args):
+    data = load(warn=False)
+    data["engine"] = {"version": args.version}
+    save(data)
 
 
 def cmd_txn_clear(_args):
@@ -302,6 +376,10 @@ def main(argv=None):
     p.add_argument("field", choices=REMOTE)
     p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
     p.set_defaults(run=lambda a: print(digest(a.field, a.lang)))
+    sub.add_parser("pinned").set_defaults(run=lambda a: print(pinned()))
+    p = sub.add_parser("set-engine")
+    p.add_argument("version")
+    p.set_defaults(run=cmd_set_engine)
     p = sub.add_parser("mark")
     p.add_argument("field", choices=REMOTE)
     p.add_argument("state", choices=STATES)
@@ -334,6 +412,7 @@ def main(argv=None):
     sub.add_parser("txn-clear").set_defaults(run=cmd_txn_clear)
     p = sub.add_parser("cloud-reply")
     p.add_argument("--commit", required=True)
+    p.add_argument("--engine", action="store_true")
     p.set_defaults(run=cmd_cloud_reply)
     args = parser.parse_args(argv)
     try:

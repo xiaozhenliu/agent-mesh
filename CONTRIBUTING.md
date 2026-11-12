@@ -10,7 +10,7 @@ English uses the original filenames (`README.md`, `AGENT-INSTALL.md`, and so on)
 
 ## Release versions
 
-`VERSION` is the agent-mesh project version (`major.minor.patch`); the installer reports it with `./install.sh --version`. Reason Network v0.10.7 is a separate pinned dependency. For a release, update `VERSION`, both README version labels, `llms.txt`, and both changelogs together. Record compatibility changes and upgrade instructions. The documentation checker verifies the README and changelog versions. Use `v<VERSION>` for an annotated tag on the public release commit, and preserve existing tags.
+`VERSION` is the agent-mesh project version (`major.minor.patch`); the installer reports it with `./install.sh --version`. Reason Network v0.12.17 is a separate pinned dependency: `VERSION` in `install.sh` and `box/rn-cloud-setup.sh`, each with the same table of release SHA-256 checksums for all four targets. Change both scripts together; `scripts/test_engine.py` checks that they agree. For a release, update `VERSION`, both README version labels, `llms.txt`, and both changelogs together. Record compatibility changes and upgrade instructions. The documentation checker verifies the README and changelog versions. Use `v<VERSION>` for an annotated tag on the public release commit, and preserve existing tags.
 
 ## Translation rules
 

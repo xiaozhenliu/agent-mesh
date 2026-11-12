@@ -564,6 +564,9 @@ class Inventory:
             self.version = f"relay sha {digest} ({known})"
         if self.record_present:
             self.version += "; deployed.json present (v0.4.0 or newer)"
+        if (p.lib / "engine-upgrade.json").exists():
+            self.notes.append("an engine upgrade did not finish (engine-upgrade.json); ~/.local/bin/reason-network may "
+                              "be the new version. Run ./update.sh first to roll it back if you keep the engine")
         if p.rollback.exists() or p.rollback_tmp.exists():
             self.notes.append("an earlier relay switch did not finish (rollback/ exists); it is removed, "
                               "not restored")
@@ -670,7 +673,7 @@ class Uninstaller:
              "stop and remove"),
             ("relay program, temporary files, rollback/", "present" if p.relay.exists() or p.temp_files()
              or p.rollback.exists() or p.rollback_tmp.exists() else "absent", remove),
-            ("deployment record, update lock (~/.local/lib/agent-mesh)",
+            ("deployment record, update lock, engine backups (~/.local/lib/agent-mesh)",
              "present" if p.lib.exists() else "absent", remove if deep else keep),
             ("relay settings and signing key (~/.config/agent-relay)", "present" if p.conf.exists() else "absent",
              remove if deep else keep),
@@ -1037,7 +1040,7 @@ class Uninstaller:
             setup_ok = self.setup_step()
         self.engine_stop()
         self.remove_paths("relay program, temporary files, rollback/", self.program_paths(), skip_key="program")
-        self.remove_paths("deployment record and update lock", [p.lib], skip_key="program")
+        self.remove_paths("deployment record, update lock and engine backups", [p.lib], skip_key="program")
         self.remove_paths("relay settings and signing key", [p.conf], credential=True)
         if inv.custom_key:
             self.result("signing key outside ~/.config/agent-relay", "skipped",

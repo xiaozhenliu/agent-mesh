@@ -38,6 +38,10 @@ Crash safety: `listen` marks a batch read as soon as it returns. Each message is
           failed, the relay reads the engine's network.db (read-only) for messages to itself that were marked read
           but never handled, from the later of its first start on this version and FWD_COPY_DAYS ago, and handles
           them. Messages the engine holds for inbound approval are left to listen.
+Registration: the first listen, and the one after a failed listen, uses --wait 0. Every listen that returns
+          writes the session name the engine reported on its last line, with this relay's pid, to
+          <state dir>/registered (mode 0600, atomic). install.sh removes it before starting a new relay and waits for
+          it; check.sh compares its time with the engine daemon's start.
 
 Standard library only. Config: ~/.config/agent-relay/env (mode 0600). Never logs secrets or message bodies.
 Message formats: README.md, appendix.
@@ -49,6 +53,7 @@ HOME = Path.home()
 ENV_FILE = Path(os.environ.get("AGENT_RELAY_ENV", HOME / ".config/agent-relay/env"))
 STATE_DIR = Path(os.environ.get("AGENT_RELAY_STATE", HOME / "Library/Application Support/agent-relay"))
 LOG_FILE = Path(os.environ.get("AGENT_RELAY_LOG", HOME / "Library/Logs/agent-relay.log"))
+REGISTERED = STATE_DIR / "registered"            # name and pid from the last listen that returned
 RN_DB = HOME / ".reason/network/network.db"     # the engine's message store; RN_DB in the config is for tests only
 RECONCILE_PAGE = 200                             # network.db rows read per query during recovery
 
@@ -57,6 +62,9 @@ OUT_TO = re.compile(rf"{NAME_SEG}/{NAME_SEG}(?:@{NAME_SEG})?")
 OUT_REPLY_TO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
 BLOCK = re.compile(r'<reason-message ([^>]*)>\n(.*?)\n</reason-message>', re.S)
 ATTR = re.compile(r'(\w+)="([^"]*)"')
+LISTEN_IDLE = re.compile(rf"No messages(?: in \d+s)?\. You are ({NAME_SEG}/{NAME_SEG})"
+                         r"(?:\.|; run this again to keep listening\.)")
+LISTEN_REPLY = re.compile(rf'From .* Reply if useful: \S+ send \S+ --from ({NAME_SEG}/{NAME_SEG}) "<reply>"')
 
 
 def load_env():
@@ -481,6 +489,15 @@ def parse(out):
     return msgs
 
 
+def listen_address(out):
+    """The session name the engine reports on the last line of a listen: idle line or reply hint."""
+    lines = [l.strip() for l in (out or "").splitlines() if l.strip()]
+    if not lines:
+        return None
+    m = LISTEN_IDLE.fullmatch(lines[-1]) or LISTEN_REPLY.fullmatch(lines[-1])
+    return m.group(1) if m else None
+
+
 def sign(key, to, reply_to, ts, nonce, body):
     msg = "\n".join(["v1", to, reply_to, ts, nonce, body]).encode()
     return hmac.new(key.encode(), msg, hashlib.sha256).hexdigest()
@@ -518,6 +535,7 @@ class Relay:
         self.copies = Copies(cfg.get("FWD_COPY_DAYS", 7))
         self.last_prune = 0
         self.db_noticed = False
+        self.reg_seen = None
         if self.got_timeout() <= 0 and any(not p.get("keep") for p in self.s.pending.values()):
             self.log.info("GOT_TIMEOUT_SECONDS is 0: %d pending message(s) keep being re-rung until done",
                           len(self.s.pending))
@@ -1154,17 +1172,42 @@ class Relay:
             batch.append(it)
         return batch
 
+    def registered(self, out):
+        name = listen_address(out)
+        if name is None:
+            if self.reg_seen is not False:
+                self.log.warning("listen did not report a session name; %s not written", REGISTERED.name)
+                self.reg_seen = False
+            return
+        if name != self.me and self.reg_seen != name:
+            self.log.warning("the engine registered this relay as %s, not %s", name, self.me)
+        try:
+            tmp = REGISTERED.with_name(f".{REGISTERED.name}.{os.getpid()}")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"name": name, "pid": os.getpid(), "at": int(time.time())}, f)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, REGISTERED)
+        except OSError as e:
+            self.log.warning("could not write %s: %s", REGISTERED, e)
+            return
+        if self.reg_seen != name:
+            self.log.info("registered with the engine as %s", name)
+            self.reg_seen = name
+
     def run(self):
         self.log.info("agent-relay up: listening as %s, proxying for %s, forwarding to %s, copies kept %d days",
                       self.me, self.cloud, self.fwd_to, self.c.get("FWD_COPY_DAYS", 7))
         self.reconcile()                   # messages marked read before a crash, before anything new
         self.check_pending()
         wait = self.next_wait(self.flush())   # deliver anything restored from the spool before the first listen
+        fresh = True                          # first listen, and the one after a failure, returns at once
         while True:
+            w = 0 if fresh else wait
             try:
-                r = self.rn("listen", "--as", self.c["LISTEN_NAME"], "--wait", str(wait), timeout=wait + 60)
+                r = self.rn("listen", "--as", self.c["LISTEN_NAME"], "--wait", str(w), timeout=w + 60)
             except subprocess.TimeoutExpired:
-                self.log.warning("listen timed out after %d s; retrying", wait + 60)
+                self.log.warning("listen timed out after %d s; retrying", w + 60)
                 r = None
             except Exception:
                 self.log.exception("listen failed")
@@ -1175,7 +1218,10 @@ class Relay:
                     self.log.warning("listen rc=%s: %s", r.returncode, (r.stderr or r.stdout).strip()[:300])
                     time.sleep(15)
                 self.reconcile()           # listen may have marked a batch read before it failed
+                fresh = True
             else:
+                fresh = False
+                self.registered(r.stdout)
                 try:
                     self.handle(parse(r.stdout))
                 except Exception:          # each message is isolated in handle(); this is the final save()

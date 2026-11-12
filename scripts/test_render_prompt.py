@@ -17,7 +17,7 @@ class Prompts(unittest.TestCase):
                                 env=dict(os.environ, AGENT_MESH_LANG="invalid"),
                                 capture_output=True, text=True, check=True)
         version = (ROOT / "VERSION").read_text().strip()
-        self.assertEqual(result.stdout, f"agent-mesh {version} (Reason Network 0.10.7)\n")
+        self.assertEqual(result.stdout, f"agent-mesh {version} (Reason Network 0.12.17)\n")
         self.assertNotIn("1/6", result.stdout)
 
     def test_both_languages_preserve_recovery_and_permission_rules(self):

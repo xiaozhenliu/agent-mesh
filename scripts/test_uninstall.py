@@ -36,7 +36,7 @@ def save():
     json.dump(s, open(state_path, "w"))
 cmd = args[0] if args else ""
 if cmd == "--version":
-    print("reason-network 0.10.7")
+    print("reason-network 0.12.17")
 elif cmd == "team":
     if fail.get("team"):
         print(fail["team"]); sys.exit(1)
@@ -77,13 +77,15 @@ case "$1" in
   print)
     case "$2" in
       */com.local.agent-relay) [ -f "$S/loaded" ] || { echo "Could not find service" >&2; exit 113; }
-        echo "gui/501/com.local.agent-relay = {"; [ ! -s "$S/loaded" ] || echo "	path = $(cat "$S/loaded")"; echo "	state = running" ;;
+        echo "gui/501/com.local.agent-relay = {"; [ ! -s "$S/loaded" ] || echo "	path = $(cat "$S/loaded")"; echo "	state = running"; echo "	pid = 4242" ;;
     esac ;;
   bootout)
     [ ! -f "$S/stuck" ] || exit 5
     rm -f "$S/loaded"
     [ ! -f "$S/grow.py" ] || python3 "$S/grow.py" ;;
-  bootstrap) printf '%s' "$3" > "$S/loaded"; echo "agent-relay up" >> "$MOCK_LOG" ;;
+  bootstrap) printf '%s' "$3" > "$S/loaded"; echo "agent-relay up" >> "$MOCK_LOG"
+    mkdir -p "$HOME/Library/Application Support/agent-relay"
+    printf '{"name": "demo/bot", "pid": 4242}' > "$HOME/Library/Application Support/agent-relay/registered" ;;
 esac
 exit 0'''
 

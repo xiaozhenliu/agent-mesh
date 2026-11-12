@@ -4,6 +4,35 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.0 — 2026-11-12
+
+Pins Reason Network 0.12.17 and upgrades installed engines on the Mac and on the cloud, with a backup and a rollback on failure. Version 0.10.7 is affected by the upstream security advisory GHSA-84r9-56w3-xqp9 (fixed in 0.12.12).
+
+### Added
+
+- `./update.sh` upgrades an older engine on the Mac: it switches the relay on the current engine first, lists other processes that use the engine (they do not block it), downloads 0.12.17 and checks the pinned SHA-256, backs up the binary and `~/.reason/network` to `~/.local/lib/agent-mesh/engine-backup-<time>/`, replaces the binary, restarts the daemon and checks that the running daemon is the new one, then starts the relay and checks that it registered on the new daemon. On failure or Ctrl-C only the old binary is put back and the relay starts again; mail received after the switch stays. A switch that could not be undone is recorded in `~/.local/lib/agent-mesh/engine-upgrade.json` and rolled back by the next run. It always asks in a terminal, also with `--yes`, never downgrades, and offers to restart a daemon that still runs a replaced binary ([UPGRADE.md](UPGRADE.md#reason-network-engine)) (#20).
+- `box/rn-cloud-setup.sh --upgrade-engine` checks or upgrades the cloud engine the same way (backup in `box/engine-backup-<time>/`). `./update.sh` adds it to the guided cloud step and compares Grok Bot's reply, which must show the checksums of `box/rn-cloud-setup.sh` and `box/rn-engine.py` and the line `engine: reason-network 0.12.17 running (daemon pid …)`. `deployed.json` records the cloud engine version (#20).
+- `box/rn-engine.py`: the engine checks and switches shared by `update.sh`, `check.sh` and the cloud setup. A daemon counts as the new one only when it holds the engine's lock and started after the binary was replaced. A daemon that does not exit after `reason-network stop` is ended with SIGTERM, then SIGKILL; when a rollback cannot be confirmed, the printed manual steps quote every path.
+- `check.sh` reports the engine version against the pinned one, whether the running daemon runs the installed binary, an unfinished engine upgrade with its backup, whether the relay registered on the running daemon (SKIP for up to 11 minutes after a restart), whether the installed relay reads 0.12 terminal addresses, and the cloud engine version this Mac last confirmed (#20, #30).
+- `./install.sh --fetch-engine <empty directory>` downloads and checks the pinned engine without installing it; `./update.sh` uses it.
+
+### Changed
+
+- The pinned Reason Network is 0.12.17 instead of 0.10.7; new installs get 0.12.17 on both computers (#20).
+- Engine downloads are checked against SHA-256 values written in `install.sh` and `box/rn-cloud-setup.sh` for all four targets, instead of the `.sha256` file published next to the archive.
+- `install.sh` checks the engine version only where it matters: a full install stops on an older engine and points to `./update.sh`, and on a newer or unrecognised one. `--restart-relay`, `--webhook`, `--cloud-prompt` and `--preflight` work with an older engine, so `./update.sh` can switch the relay before the engine. Before, every mode stopped when the version differed (#20).
+- The full install marks the cloud engine as pending with the cloud setup it prints; `./update.sh` confirms them together.
+- `./uninstall.sh --level identity` also removes the engine backups, on the Mac with the deployment record and on `[BOT-CLOUD]` (`box/engine-backup-*`).
+
+### Fixed
+
+- `box/rn-cloud-setup.sh` no longer unpacks the pinned engine over an existing one. A rerun keeps an engine of the pinned version, stops on an older one and points to `--upgrade-engine`, and stops on a newer or unrecognised one. Before, every run replaced the binary with the pinned archive, also a newer engine.
+- `./install.sh --restart-relay` (and so `./update.sh`) could accept a relay that never listened: the engine keeps a session row after the old relay stops, and that row satisfied the registration check. The relay now writes a marker each time `listen` reports its name; the installer removes it before the new relay starts and needs it back, with the new relay's name and process, before checking the session row. After a failed `listen`, for example when the daemon restarts, the relay registers again at once instead of waiting for the next long poll (#30).
+
+### Upgrade notes
+
+Run `./update.sh` in a terminal. It goes in this order: the new relay on the engine you have, the Mac engine, then the guided cloud step, where you pause the routine, Grok Bot pulls this commit and runs `box/rn-cloud-setup.sh --upgrade-engine`, you paste its reply, and you resume the routine. The cloud scripts `box/rn-cloud.sh` and `box/rn-fetch.py` and the routine prompt are unchanged. Before upgrading, allow `*.compute.reasonmachines.com` alongside `*.iroh.link` (README: Network). Afterwards restart open Claude Code and Codex sessions, check with `./check.sh`, and delete the engine backups once it passes. After the upgrade, Reason Network 0.12 forgets ordinary sessions that stay offline for more than a day, together with their unread messages; the relay's and the cloud's mailboxes are exempt.
+
 ## v0.6.0 — 2026-11-11
 
 Prepares for Reason Network 0.12: the relay, the self-check and the cloud scripts read what both engine versions produce. The pinned engine stays 0.10.7, and `install.sh` and `update.sh` still require it; switching the engine comes in a later release.

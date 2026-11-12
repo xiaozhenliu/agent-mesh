@@ -34,19 +34,19 @@ class Installation(unittest.TestCase):
         self.bin.mkdir()
         for name in ("dirname", "sed", "head", "awk", "tar", "shasum", "openssl", "mkdir",
                      "chmod", "cp", "date", "grep", "cat", "install", "sleep", "tail", "wc", "mktemp", "rm", "mv",
-                     "cmp", "ps"):
+                     "cmp", "ps", "gzip"):
             found = shutil.which(name)
             if found:
                 (self.bin / name).symlink_to(found)
         (self.bin / "python3").symlink_to(sys.executable)
         self.env = {"PATH": str(self.bin), "HOME": str(self.home),
-                    "MOCK_OS": "Darwin", "MOCK_ARCH": "arm64", "MOCK_VERSION": "0.10.7",
+                    "MOCK_OS": "Darwin", "MOCK_ARCH": "arm64", "MOCK_VERSION": "0.12.17", "AGENT_MESH_REGISTER_WAIT": "2",
                     "CALL_LOG": str(self.base / "calls")}
         self.tool("uname", 'if [ "$1" = -s ]; then echo "$MOCK_OS"; else echo "$MOCK_ARCH"; fi')
         self.tool("id", "echo 501")
         self.tool("launchctl", 'echo "launchctl $*" >> "$CALL_LOG"; exit 0')
         self.tool("plutil", "exit 0")
-        self.tool("curl", 'echo "curl $*" >> "$CALL_LOG"; case "$*" in *https://aps1-1*) printf 200 ;; *) exit 73 ;; esac')
+        self.tool("curl", 'echo "curl $*" >> "$CALL_LOG"; case "$*" in *https://aps1-1*|*.compute.reasonmachines.com/*) printf 200 ;; *) exit 73 ;; esac')
         self.tool("git", 'echo "unexpected git call" >> "$CALL_LOG"; exit 99')
 
     def tool(self, name, body, path=None):
@@ -125,11 +125,12 @@ S="$MOCK_LAUNCHD"
 case "$1" in
   print)
     case "$2" in
-      */com.local.agent-relay) [ -f "$S/loaded" ] || exit 113; [ ! -s "$S/loaded" ] || echo "	path = $(cat "$S/loaded")"; [ -f "$S/dead" ] || echo "state = running" ;;
+      */com.local.agent-relay) [ -f "$S/loaded" ] || exit 113; [ ! -s "$S/loaded" ] || echo "	path = $(cat "$S/loaded")"; [ -f "$S/dead" ] || {{ echo "state = running"; [ -f "$S/nopid" ] || echo "	pid = $(cat "$S/pid")"; }} ;;
     esac ;;
   bootout) rm -f "$S/loaded" ;;
   bootstrap)
     rm -f "$S/dead"
+    echo "$$" > "$S/pid"
     if [ -f "$S/fail-bootstrap" ]; then rm -f "$S/fail-bootstrap"; exit 5; fi
     if [ -f "$S/hang" ]; then rm -f "$S/hang"; : > "$S/hanging"; while [ ! -f "$S/go" ]; do /bin/sleep 0.1; done; fi
     printf '%s' "$3" > "$S/loaded"
@@ -230,6 +231,12 @@ exit 0""")
         self.env["MOCK_VERSION"] = "9.9.9"
         result = self.run_script("install.sh", "--name", "demo")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("never downgrades or replaces a newer or unrecognised engine", result.stderr)
+        self.assertEqual(engine.read_bytes(), before)
+        self.env["MOCK_VERSION"] = "0.10.7"
+        result = self.run_script("install.sh", "--name", "demo")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("this release requires 0.12.17. Run ./update.sh", result.stderr)
         self.assertIn("has not been overwritten", result.stderr)
         self.assertEqual(engine.read_bytes(), before)
         self.assertNotIn("curl", self.calls())
@@ -279,8 +286,10 @@ exit 0""")
         for arch, target in (("arm64", "aarch64-apple-darwin"), ("x86_64", "x86_64-apple-darwin")):
             self.env["MOCK_ARCH"] = arch
             result = self.run_script("install.sh", "--name", "demo")
-            self.assertEqual(result.returncode, 73, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("could not download Reason Network v0.12.17; nothing was installed", result.stderr)
             self.assertIn(f"reason-network-{target}.tar.gz", self.calls())
+            self.assertNotIn(".sha256", self.calls())
 
     def test_unsupported_cloud_os_and_cpu_stop_before_writes(self):
         for system, arch, error in (("Darwin", "arm64", "requires Linux"), ("Linux", "riscv64", "unsupported cloud CPU")):
@@ -296,7 +305,7 @@ exit 0""")
             result = self.run_script("install.sh", *args)
             self.assertNotEqual(result.returncode, 0, args)
             self.assertIn("none repeated", result.stderr, args)
-        self.assertEqual(self.run_script("install.sh", "--name", "x" * 40).returncode, 73)
+        self.assertIn("could not download", self.run_script("install.sh", "--name", "x" * 40).stderr)
         self.tool("sha256sum", "exit 0")
         self.env.update(MOCK_OS="Linux", MOCK_ARCH="x86_64")
         (self.base / "calls").unlink()
@@ -310,7 +319,7 @@ exit 0""")
         """A cloud directory with this checkout's rn-cloud-setup.sh, a fake download and a fake engine."""
         self.box = self.base / "workspace" / "box"
         self.box.mkdir(parents=True)
-        shutil.copy(ROOT / "box/rn-cloud-setup.sh", self.box / "rn-cloud-setup.sh")
+        shutil.copy(ROOT / "box/rn-engine.py", self.box / "rn-engine.py")
         self.mock = self.base / "mock"
         self.mock.mkdir()
         archive = io.BytesIO()
@@ -319,6 +328,10 @@ exit 0""")
             item.mode, item.size = 0o755, len(CLOUD_ENGINE)
             tar.addfile(item, io.BytesIO(CLOUD_ENGINE.encode()))
         (self.mock / "e.tgz").write_bytes(archive.getvalue())
+        setup = (ROOT / "box/rn-cloud-setup.sh").read_text()
+        line = next(l for l in setup.splitlines() if "/x86_64-unknown-linux-musl) echo " in l)
+        fake = hashlib.sha256(archive.getvalue()).hexdigest()
+        (self.box / "rn-cloud-setup.sh").write_text(setup.replace(line, line.rsplit(" echo ", 1)[0] + f" echo {fake} ;;"))
         for name in ("cut", "gzip"):
             found = shutil.which(name)
             if found and not (self.bin / name).exists():
@@ -326,7 +339,7 @@ exit 0""")
         self.tool("curl", 'echo "curl $*" >> "$CALL_LOG"; out=""; prev=""\n'
                           'for a in "$@"; do [ "$prev" != -o ] || out="$a"; prev="$a"; done\n'
                           'case "$*" in *.sha256*) echo "fakesum  e.tgz" > "$out" ;; *) cat "$MOCK_BOX/e.tgz" > "$out" ;; esac')
-        self.tool("sha256sum", 'echo "fakesum  $1"')
+        self.tool("sha256sum", 'python3 -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], \'rb\').read()).hexdigest() + \'  \' + sys.argv[1])" "$1"')
         real_sed, real_mv = shutil.which("sed"), shutil.which("mv")
         self.tool("sed", f'[ "$1" != -i ] || exit 0\nexec "{real_sed}" "$@"')
         self.tool("mv", f'eval "last=\\${{$#}}"\n'
@@ -357,7 +370,8 @@ exit 0""")
                               capture_output=True, text=True, timeout=30)
 
     def names_files(self):
-        return {f.name: f.read_text() for f in self.box.iterdir() if f.is_file() and f.name != "rn-cloud-setup.sh"}
+        return {f.name: f.read_text() for f in self.box.iterdir()
+                if f.is_file() and f.name not in ("rn-cloud-setup.sh", "rn-engine.py")}
 
     def test_cloud_setup_writes_the_relay_name_then_the_team_name(self):
         self.cloud_box()
@@ -382,7 +396,7 @@ exit 0""")
         result = self.setup(invite(), "demo", "alice")
         self.assertEqual(result.returncode, 0, result.stderr)
         moves = [l.rsplit("/", 1)[-1] for l in self.calls().splitlines() if l.startswith("mv ")]
-        self.assertEqual(moves, ["relay", "person"])
+        self.assertEqual(moves, ["reason-network", "relay", "person"])
         self.assertEqual([f.name for f in self.box.iterdir() if f.name.startswith(".")], [])
 
     def test_cloud_setup_rerun_in_the_same_team_skips_join(self):
@@ -720,7 +734,7 @@ exit 0""")
         result = self.run_script("install.sh", "--restart-relay", root=repo)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         if record:
-            for field in ("cloud", "cloud_setup", "prompt"):
+            for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
                 self.mark(repo, field, "confirmed")
         (self.base / "calls").unlink()
         return repo
@@ -767,14 +781,38 @@ exit 0""")
     def sha(self, path):
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
-    def cloud_reply(self, repo, commit="a" * 40, fetch_sum=None):
-        return ["Done. Output:", "```", commit, "",
-                f"{self.sha(repo / 'box/rn-cloud.sh')}  box/rn-cloud.sh",
-                f"{fetch_sum or self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py", "```", "."]
+    def cloud_reply(self, repo, commit="a" * 40, fetch_sum=None, engine=True):
+        lines = ["Done. Output:", "```", commit, "",
+                 f"{self.sha(repo / 'box/rn-cloud.sh')}  box/rn-cloud.sh",
+                 f"{fetch_sum or self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py"]
+        if engine:
+            lines += [f"{self.sha(repo / 'box/rn-cloud-setup.sh')}  box/rn-cloud-setup.sh",
+                      f"{self.sha(repo / 'box/rn-engine.py')}  box/rn-engine.py", "```",
+                      "engine: reason-network 0.12.17 running (daemon pid 4321, started 2026-11-12T08:00:00Z, "
+                      "binary replaced 2026-11-12T07:59:58Z)"]
+        else:
+            lines.append("```")
+        return lines + ["."]
 
     def cloud_reply_check(self, repo, text):
         return subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "cloud-reply",
                                "--commit", "a" * 40], input=text, env=self.env, capture_output=True, text=True)
+
+    def test_restart_relay_needs_the_relay_pid_from_launchd(self):
+        repo = self.installed()
+        relay, _ = self.relay_files()
+        old_relay = relay.read_bytes()
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        (self.state / "nopid").write_text("")
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("the relay service has no running process", result.stdout + result.stderr)
+        self.assertIn("previous relay restored", result.stdout)
+        self.assertEqual(relay.read_bytes(), old_relay)
+        (self.state / "nopid").unlink()
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_restart_relay_rolls_back_each_failed_start(self):
         repo = self.installed()
@@ -809,7 +847,7 @@ exit 0""")
         self.env.update(MOCK_REGISTER="bot-2", AGENT_MESH_REGISTER_WAIT="1")
         result = self.run_script("install.sh", "--restart-relay", root=repo)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("the new relay registered as bot-2 instead of demo/bot", result.stdout)
+        self.assertIn("the new relay registered as demo/bot-2 instead of demo/bot", result.stdout)
         self.assertIn("previous relay restored", result.stdout)
         self.assertNotIn("relay up (log:", result.stdout)
         self.assertEqual((relay.read_bytes(), plist.read_bytes()), (old_relay, old_plist))
@@ -1029,12 +1067,14 @@ exit 0""")
 
     def test_update_guided_flow_runs_in_order_and_records_each_step(self):
         repo = self.installed(record=False)
-        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("match: commit and both checksums", result.stdout)
+        self.assertIn("match: commit, checksums and engine", result.stdout)
         self.assertIn("checkout main first", result.stdout)
+        self.assertIn("rn-cloud-setup.sh --upgrade-engine", result.stdout)
         data = self.record()
-        for field in ("cloud", "cloud_setup", "prompt"):
+        self.assertEqual(data["cloud_engine"]["version"], "0.12.17")
+        for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
             self.assertEqual(data[field]["state"], "confirmed", field)
         self.assertNotIn("txn", data)
         lines = self.service_changes()
@@ -1047,7 +1087,7 @@ exit 0""")
     def test_update_stop_restores_the_relay_and_rerun_continues(self):
         repo = self.installed(record=False)
         relay, _ = self.relay_files()
-        result = self.run_tty(repo, "--no-pull", answers=["y", "n"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertTrue(self.loaded())
         self.assertEqual(self.started()[-1], self.sha(relay))
@@ -1060,12 +1100,13 @@ exit 0""")
 
     def paused_after_cloud(self):
         repo = self.installed(record=False)
-        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "n"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *self.cloud_reply(repo), "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("The routine is still paused", result.stdout)
         self.assertTrue(self.loaded())
         data = self.record()
         self.assertEqual((data["txn"]["stage"], data["cloud"]["state"]), ("cloud_done", "confirmed"))
+        self.assertEqual(data["cloud_engine"]["state"], "confirmed")
         (self.base / "calls").unlink()
         return repo
 
@@ -1082,7 +1123,7 @@ exit 0""")
         repo = self.paused_after_cloud()
         with open(repo / "box/rn-cloud.sh", "a") as stream:
             stream.write("\n")
-        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo, engine=False), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Send this to Grok Bot", result.stdout)
         self.assertEqual(self.record()["cloud"]["hash"],
@@ -1104,7 +1145,7 @@ exit 0""")
                     answer = self.cloud_reply(repo, commit="b" * 40)
                 elif label == "wrong checksum":
                     answer = self.cloud_reply(repo, fetch_sum="c" * 64)
-                result = self.run_tty(repo, "--no-pull", answers=["y", "y", *answer, "y", "y"])
+                result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *answer, "y", "y"])
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("mismatch:", result.stdout)
                 self.assertIn("The routine is still paused", result.stdout)
@@ -1123,7 +1164,7 @@ exit 0""")
                 self.setUp()
                 repo = self.installed(record=False)
                 partial = self.cloud_reply(repo)[:4]
-                rc, out, err = self.run_tty_until(repo, "--no-pull", answers=["y", "y", *partial],
+                rc, out, err = self.run_tty_until(repo, "--no-pull", answers=["y", "y", "y", *partial],
                                                   wait_for="Paste Grok Bot's reply", sig=sig)
                 self.assertEqual(rc, code, out + err)
                 self.assertIn("The routine is still paused", out)
@@ -1165,7 +1206,7 @@ exit 0""")
 
     def test_update_terminated_while_waiting_restores_the_relay(self):
         repo = self.installed(record=False)
-        code, out, err = self.run_tty_until(repo, "--no-pull", answers=["y"], wait_for="Pause the routine")
+        code, out, err = self.run_tty_until(repo, "--no-pull", answers=["y", "y"], wait_for="Pause the routine")
         self.assertEqual(code, 143, out + err)
         self.assertTrue(self.loaded())
         self.assertEqual(self.record()["txn"]["stage"], "relay_stopped")
@@ -1226,12 +1267,12 @@ exit 0""")
 
     def test_update_asks_once_about_steps_the_installer_printed(self):
         repo = self.installed(record=False)
-        for field in ("cloud", "cloud_setup", "prompt"):
+        for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
             self.mark(repo, field, "pending")
         result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         data = self.record()
-        for field in ("cloud", "cloud_setup", "prompt"):
+        for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
             self.assertEqual(data[field]["state"], "confirmed", field)
         self.assertEqual(self.service_changes(), [])
         data["prompt"]["state"] = "pending"
@@ -1265,13 +1306,14 @@ exit 0""")
         self.assertEqual(self.calls().count("git pull"), 1)
         self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
 
-    def test_update_stops_when_the_engine_version_differs(self):
+    def test_update_stops_when_the_engine_is_newer_or_unknown(self):
         repo = self.installed()
-        self.env["MOCK_VERSION"] = "0.12.17"
-        result = self.run_script("update.sh", "--no-pull", root=repo)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("this release requires 0.10.7", result.stderr)
-        self.assertEqual(self.service_changes(), [])
+        for version in ("0.13.0", "garbage"):
+            self.env["MOCK_VERSION"] = version
+            result = self.run_script("update.sh", "--no-pull", root=repo)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("never downgrades or replaces a newer or unrecognised engine", result.stderr)
+            self.assertEqual(self.service_changes(), [])
 
     def test_update_replaces_only_the_dsh_plugin_file(self):
         repo = self.installed()
@@ -1412,8 +1454,9 @@ exit 0""")
         for line in ("LISTEN_NAME=alice", "CLOUD_NAME=alice-cloud", "INBOX_NAME=alice-inbox",
                      "WEBHOOK_URL=https://example.invalid/hook"):
             self.assertEqual(lines.count(line), 1, line)
-        for register, said in (("alice-2", "registered as alice-2 instead of demo/alice"),
-                               ("-", "registered as nothing instead of demo/alice")):
+        for register, said in (("alice-2", "registered as demo/alice-2 instead of demo/alice"),
+                               ("-", "registered as nothing (the new relay reported no registration within 2 s) "
+                                     "instead of demo/alice")):
             db = self.sessions([])
             con = sqlite3.connect(db)
             con.execute("DELETE FROM sessions")
@@ -1423,11 +1466,13 @@ exit 0""")
             result = self.webhook()
             self.assertNotEqual(result.returncode, 0, register)
             self.assertIn(said, result.stderr, register)
+        self.env["MOCK_REGISTER"] = ""
         self.sessions([("alice", "cli:alice", 1)])
         result = self.webhook()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("relay registered as demo/alice", result.stdout)
         db.unlink()
+        self.env["MOCK_NO_DB"] = "1"
         result = self.webhook()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("registered as nothing (no engine database", result.stderr)
@@ -1603,8 +1648,30 @@ exit 0""")
         self.assertEqual(self.record(), before)
         self.assertEqual(self.service_changes(), [])
 
+    def fake_daemon(self):
+        home = self.home / ".reason/network"
+        home.mkdir(parents=True, exist_ok=True)
+        code = ("import fcntl, os, sys, time\n"
+                "f = open(sys.argv[1], 'a+')\n"
+                "fcntl.flock(f, fcntl.LOCK_EX)\n"
+                "f.truncate(0); f.write(str(os.getpid())); f.flush()\n"
+                "print('locked', flush=True)\n"
+                "time.sleep(300)\n")
+        proc = subprocess.Popen([sys.executable, "-c", code, str(home / "daemon.lock")], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (proc.kill(), proc.wait(), proc.stdout.close()))
+        self.assertEqual(proc.stdout.readline().strip(), "locked")
+        return proc
+
+    def write_marker(self, name, pid=None):
+        marker = self.home / "Library/Application Support/agent-relay/registered"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"name": name, "pid": pid or os.getpid(), "at": int(time.time())}))
+        return marker
+
     def test_check_reports_the_relay_name_and_its_registration(self):
         self.configured(relay="alice")
+        (self.state / "loaded").write_text("")
+        (self.state / "pid").write_text(str(os.getpid()))
         text = self.who / "text"
         now = int(time.time() * 1000)
 
@@ -1613,19 +1680,35 @@ exit 0""")
 
         out = check()
         self.assertIn("PASS  relay name: alice", out)
-        self.assertIn("SKIP  relay session (the engine has no session database yet)", out)
+        self.assertIn("FAIL  relay not registered on the running engine: no engine daemon is running", out)
+        self.fake_daemon()
+        self.assertIn("SKIP  relay registration (the engine daemon or the relay restarted", check())
+        time.sleep(1.1)
+        marker = self.write_marker("demo/alice")
         text.write_text("  alice  cli  ~/work  idle\n  repo-claude  claude-code  ~/repo  idle\n")
+        out = check()
+        self.assertIn("PASS  relay listening as demo/alice (registered on the running engine daemon)", out)
+        self.assertIn("PASS  1 agent session(s) on the roster", out)
+        self.write_marker("demo/alice-2")
+        self.assertIn("FAIL  relay not registered on the running engine: the relay registered as demo/alice-2, "
+                      "not demo/alice", check())
+        marker.write_text("{")
+        self.assertIn("is unreadable", check())
+        self.write_marker("demo/alice")
         db = self.sessions([("alice", "cli:alice", now)])
         self.assertIn("PASS  relay listening as demo/alice", check())
-        text.write_text("  repo-claude  claude-code  ~/repo  idle\n")
-        self.assertIn("SKIP  relay session (appears a few seconds", check())
         for who in ("  alice  cli  ~/work  idle\n", ""):
             text.write_text(who)
             self.sessions([("alice-2", "cli:alice", now + 1)])
             self.assertIn("FAIL  relay registered under another name: demo/alice-2", check(), who)
         db.unlink()
-        self.sessions([("bob", "cli:bob", now)])
-        self.assertIn("SKIP  relay session (appears a few seconds", check())
+        self.assertIn("PASS  relay listening as demo/alice", check())
+        (self.state / "dead").write_text("")
+        self.assertIn("FAIL  relay not registered on the running engine: the relay service has no running process", check())
+        (self.state / "dead").unlink()
+        self.write_marker("demo/alice", pid=os.getppid())
+        self.assertNotIn("PASS  relay listening", check())
+        self.write_marker("demo/alice")
         env = self.env_file()
         env.write_text(env.read_text() + "LISTEN_NAME=x\n")
         out = check()
@@ -1652,9 +1735,11 @@ exit 0""")
 
     def test_check_probes_the_relay_the_engine_actually_uses(self):
         self.configured()
+        self.env["MOCK_VERSION"] = "0.10.7"
         out = self.run_script("check.sh").stdout
         self.assertIn("PASS  relay reachable: n0 public relays (Reason Network 0.10.7)", out)
         self.env["MOCK_VERSION"] = "0.12.17"
+        self.tool("curl", 'echo "curl $*" >> "$CALL_LOG"; case "$*" in *https://aps1-1*) printf 200 ;; *) exit 73 ;; esac')
         log = self.home / ".reason/network/daemon.log"
         log.write_text("[1] net: on relay https://relay-sfo1.compute.reasonmachines.com/\n")
         out = self.run_script("check.sh").stdout
@@ -1673,8 +1758,9 @@ exit 0""")
 
     def test_install_probes_the_pinned_default_before_the_engine_exists(self):
         result = self.run_script("install.sh", "--name", "demo", "--yes")
-        self.assertIn("ok (default relays of Reason Network 0.10.7 (not installed yet))", result.stdout)
-        self.assertIn("curl -sS -o /dev/null -m 10 -w %{http_code} https://aps1-1.relay.n0.iroh.link/", self.calls())
+        self.assertIn("ok (default relays of Reason Network 0.12.17 (not installed yet))", result.stdout)
+        self.assertIn("curl -sS -o /dev/null -m 10 -w %{http_code} https://relay-sfo1.compute.reasonmachines.com/",
+                      self.calls())
 
     def test_check_judges_the_latest_webhook_post(self):
         self.configured()
@@ -1726,6 +1812,7 @@ def invite(team=TEAM_ID, cut=None):
 
 
 CLOUD_ENGINE = """#!/bin/sh
+[ "$1" != --version ] || { echo "reason-network ${MOCK_CLOUD_VERSION:-0.12.17}"; exit 0; }
 echo "rn $*" >> "$CALL_LOG"
 case "$1" in
   join) if [ -f "$MOCK_BOX/joined" ]; then echo "Error: already in team 'demo' (with demo/mac); leave it first"; exit 1; fi
@@ -1743,12 +1830,17 @@ SESSIONS = """CREATE TABLE IF NOT EXISTS sessions (name TEXT PRIMARY KEY, key TE
 cwd TEXT NOT NULL, repo TEXT, branch TEXT, doing TEXT, tier TEXT NOT NULL, last_seen INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);"""
 
-REGISTER = f'''import os, sqlite3, sys, time
+REGISTER = f'''import json, os, re, sqlite3, subprocess, sys, time
 from pathlib import Path
 home = Path(os.environ["HOME"])
 name = os.environ.get("MOCK_REGISTER", "")
 if name == "-":
     sys.exit(0)
+skip = Path(os.environ["MOCK_LAUNCHD"]) / "noreg-when"
+if skip.exists():
+    out = subprocess.run([str(home / ".local/bin/reason-network"), "--version"], capture_output=True, text=True).stdout
+    if skip.read_text().strip() in out.split():
+        sys.exit(0)
 listen = "bot"
 env = home / ".config/agent-relay/env"
 if env.exists():
@@ -1757,11 +1849,19 @@ if env.exists():
             listen = line.split("=", 1)[1]
 db = home / ".reason/network/network.db"
 db.parent.mkdir(parents=True, exist_ok=True)
-con = sqlite3.connect(db)
-con.executescript("""{SESSIONS}""")
-con.execute("INSERT OR IGNORE INTO sessions VALUES (?, ?, 'cli', '/', NULL, NULL, NULL, 'pull', ?)",
-            (name or listen, "cli:" + listen, int(time.time() * 1000)))
-con.commit()
+if not os.environ.get("MOCK_NO_DB"):
+    con = sqlite3.connect(db)
+    con.executescript("""{SESSIONS}""")
+    con.execute("INSERT OR IGNORE INTO sessions VALUES (?, ?, 'cli', '/', NULL, NULL, NULL, 'pull', ?)",
+                (name or listen, "cli:" + listen, int(time.time() * 1000)))
+    con.commit()
+if os.environ.get("MOCK_NO_MARKER"):
+    sys.exit(0)
+person = re.search(r'^person = "(.*)"', (home / ".reason/network/config.toml").read_text(), re.M).group(1)
+marker = home / "Library/Application Support/agent-relay/registered"
+marker.parent.mkdir(parents=True, exist_ok=True)
+pid = int((Path(os.environ["MOCK_LAUNCHD"]) / "pid").read_text())
+marker.write_text(json.dumps({{"name": f"{{person}}/{{name or listen}}", "pid": pid, "at": int(time.time())}}))
 '''
 
 GIT_STUB = r'''[ "$1" = -C ] && shift 2

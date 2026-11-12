@@ -4,6 +4,35 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.7.0 — 2026-11-12
+
+固定 Reason Network 0.12.17，并升级 Mac 和云端上已安装的引擎：先备份，失败时回滚。0.10.7 在上游安全公告 GHSA-84r9-56w3-xqp9 的影响范围内（0.12.12 修复）。
+
+### 新增
+
+- `./update.sh` 升级 Mac 上较旧的引擎：先在现有引擎上切换 relay；列出其他正在使用引擎的进程（不阻止升级）；下载 0.12.17 并按固定的 SHA-256 校验；把二进制和 `~/.reason/network` 备份到 `~/.local/lib/agent-mesh/engine-backup-<时间>/`；替换二进制，重启守护进程，核对正在运行的是新守护进程；然后启动 relay，确认它已在新守护进程上注册。失败或按 Ctrl-C 时只换回旧二进制并重新启动 relay，切换之后收到的信都保留。撤销不了的切换记在 `~/.local/lib/agent-mesh/engine-upgrade.json`，下次运行时先回滚。它一定在终端询问，加 `--yes` 也会问；从不降级；守护进程还在跑被替换前的二进制时，询问后重启（[UPGRADE.zh-CN.md](UPGRADE.zh-CN.md#reason-network-引擎)）（#20）。
+- `box/rn-cloud-setup.sh --upgrade-engine` 按同样的方式检查或升级云端引擎（备份在 `box/engine-backup-<时间>/`）。`./update.sh` 把它加进引导式云端步骤，并比对 Grok Bot 的回复：要包含 `box/rn-cloud-setup.sh`、`box/rn-engine.py` 的校验值和 `engine: reason-network 0.12.17 running (daemon pid …)` 这一行。`deployed.json` 记录云端引擎版本（#20）。
+- `box/rn-engine.py`：`update.sh`、`check.sh` 和云端初始化共用的引擎检查与切换。只有持有引擎的锁、并且在二进制替换之后启动的守护进程，才算新守护进程。守护进程在 `reason-network stop` 之后不退出时，先发 SIGTERM，再发 SIGKILL 结束它；确认不了回滚结果时，打印的手动步骤里每个路径都加了引号。
+- `check.sh` 报告：引擎版本是否与固定版本一致；正在运行的守护进程是否运行已安装的二进制；有没有未完成的引擎升级及其备份位置；relay 是否已在正在运行的守护进程上注册（重启后最多 11 分钟内报 SKIP）；已安装的 relay 能否识别 0.12 的终端地址；本机上次确认的云端引擎版本（#20、#30）。
+- `./install.sh --fetch-engine <空目录>` 下载并校验固定版本的引擎，但不安装；`./update.sh` 用它下载。
+
+### 变更
+
+- 固定的 Reason Network 从 0.10.7 换成 0.12.17；新安装在两台电脑上都装 0.12.17（#20）。
+- 引擎下载按写在 `install.sh` 和 `box/rn-cloud-setup.sh` 里的 SHA-256 校验，覆盖全部四个平台，不再用发布包旁边的 `.sha256` 文件。
+- `install.sh` 只在需要时检查引擎版本：完整安装遇到较旧的引擎会停止并提示 `./update.sh`，遇到更新或认不出的版本也会停止；`--restart-relay`、`--webhook`、`--cloud-prompt` 和 `--preflight` 在较旧的引擎上也能运行，所以 `./update.sh` 可以先换 relay 再换引擎。以前版本不一致时每种模式都会停止（#20）。
+- 完整安装在打印云端初始化步骤时，把云端引擎一并记为待确认；`./update.sh` 会一起确认。
+- `./uninstall.sh --level identity` 也会删除引擎备份：本机的随部署记录删除，`[BOT-CLOUD]` 上删除 `box/engine-backup-*`。
+
+### 修复
+
+- `box/rn-cloud-setup.sh` 不再把固定版本解压覆盖到已有的引擎上。重跑时，固定版本的引擎保持不动；较旧的引擎会让它停止并提示 `--upgrade-engine`；更新或认不出的版本也会让它停止。以前每次运行都用固定版本的包替换二进制，连更新的引擎也会被覆盖。
+- `./install.sh --restart-relay`（因而 `./update.sh`）可能接受一个从未 listen 的 relay：旧 relay 停止后引擎还留着会话行，这一行就满足了注册检查。现在 relay 每次 `listen` 报出自己的名字时写一个标记；安装器在新 relay 启动前删除它，要等标记重新出现、名字和进程都对应新 relay，才核对会话行。`listen` 失败时（例如守护进程重启），relay 立即重新注册，不再等下一次长轮询（#30）。
+
+### 升级说明
+
+在终端运行 `./update.sh`。它按这个顺序进行：在现有引擎上装新 relay，升级 Mac 引擎，然后是引导式云端步骤：你暂停 routine，Grok Bot 拉取这个提交并运行 `box/rn-cloud-setup.sh --upgrade-engine`，你粘贴它的回复，再恢复 routine。云端脚本 `box/rn-cloud.sh`、`box/rn-fetch.py` 和 routine 提示词都没有变化。升级前先在 `*.iroh.link` 之外放行 `*.compute.reasonmachines.com`（README：网络）。升级后重开正在运行的 Claude Code 和 Codex 会话，用 `./check.sh` 检查，全部通过后删掉引擎备份。升级之后，Reason Network 0.12 会遗忘离线超过一天的普通会话，连同未读信一起删除；relay 和云端的信箱不受影响。
+
 ## v0.6.0 — 2026-11-11
 
 为 Reason Network 0.12 做准备：relay、自检和云端脚本能读懂新旧两个引擎版本的输出。固定的引擎版本仍是 0.10.7，`install.sh` 和 `update.sh` 仍要求这个版本；换引擎留到之后的版本。

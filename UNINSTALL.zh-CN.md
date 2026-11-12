@@ -11,7 +11,7 @@
 | 级别 | 删除 | 保留 |
 |---|---|---|
 | `--level program` | relay 服务和 plist、relay 程序、它的临时文件和 `rollback/`。 | 其余全部：两台电脑上的团队身份、`~/.config/agent-relay`（webhook 配置和签名密钥）、队列、日志和 Reason Network。 |
-| `--level identity` | 另外删除部署记录、`~/.config/agent-relay`、relay 状态（队列、防重放记录、消息副本）和 dsh 插件块；本机退出团队，执行 `setup --remove`，删除 `~/.reason/network`。Bot 退出团队，删除云端的身份、密钥和名字（`box/state`、`box/bin`、`box/person`、`box/relay`、`box/outbound.key`）。 | relay 日志、引擎二进制，以及云端的 `inbox/`、`threads/` 和 `/workspace/agent-mesh`。 |
+| `--level identity` | 另外删除部署记录、`~/.config/agent-relay`、relay 状态（队列、防重放记录、消息副本）和 dsh 插件块；本机退出团队，执行 `setup --remove`，删除 `~/.reason/network`。Bot 退出团队，删除云端的身份、密钥和名字（`box/state`、`box/bin`、`box/person`、`box/relay`、`box/outbound.key`）以及引擎备份 `box/engine-backup-*`。本机的部署记录目录连同其中的引擎备份一起删除。 | relay 日志、引擎二进制，以及云端的 `inbox/`、`threads/` 和 `/workspace/agent-mesh`。 |
 | `--level all`（或 `--all`） | 另外删除 relay 日志、`~/.local/bin/reason-network`、dsh 插件的备份和日志；`[BOT-CLOUD]` 上另外删除 `inbox/`、`threads/` 和 `/workspace/agent-mesh`。 | 只保留下面列出的内容。 |
 
 任何级别都不会动当前代码目录、shell 启动文件里的 PATH 行、追加到各项目里的回复约定、`[BOT-CLOUD]` 上的外部收件目录，以及 Bot 长期记忆里的内容；`all` 级别会把它们列出来。只运行 `dsh/mac-uninstall.sh` 只会卸载 dsh 插件，见[插件指南](dsh/README.zh-CN.md#卸载)。

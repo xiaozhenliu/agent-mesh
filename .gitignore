@@ -21,6 +21,7 @@ box/person
 box/.person.*
 box/relay
 box/relay.damaged-*
+box/engine-backup-*/
 box/.relay.*
 *.db
 *.db-wal

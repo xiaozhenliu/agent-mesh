@@ -55,7 +55,7 @@ if mode == "tag":
 
 W, A = sys.argv[2], sys.argv[3]
 B = os.path.join(A, "box")
-RUNTIME = re.compile(r"^box/(bin|state)/|^box/(person|relay|outbound\.key)$|^box/relay\.damaged-|"
+RUNTIME = re.compile(r"^box/(bin|state)/|^box/(person|relay|outbound\.key)$|^box/relay\.damaged-|^box/engine-backup-|"
                      r"^box/\.(relay|person)\.[A-Za-z0-9]{6}$|^inbox/|^threads/|(^|/)__pycache__/|\.pyc$")
 INSIDE = (b"agent-mesh/box", b"box/state", b"box/bin")
 LIMIT = 20 * 1024 * 1024
@@ -245,7 +245,7 @@ if [ "$LEVEL" = all ]; then
   echo "FILES the user added or changed in $A (paths only):"
   if ! helper files "$W" "$A"; then NOUP=yes; fi
 fi
-echo "WILL REMOVE: box/state box/bin box/relay box/outbound.key box/person (the cloud's engine identity, key and names)"
+echo "WILL REMOVE: box/state box/bin box/engine-backup-* box/relay box/outbound.key box/person (the cloud's engine identity and its backups, key and names)"
 if [ "$LEVEL" = all ]; then
   echo "WILL REMOVE: inbox/ threads/ (received bodies and thread notes)"
   if [ "$NOUP" = yes ]; then echo "WILL KEEP: $A (see the KEEP lines)"; else echo "WILL REMOVE: $A"; fi
@@ -277,6 +277,9 @@ if [ -f "$B/state/machine.key" ] && [ -x "$RN" ]; then
   if ! out="$("$RN" stop 2>&1)"; then echo "NOTE: reason-network stop said: $out"; fi
 fi
 rm -rf "${B:?}/state" "${B:?}/bin"
+for d in "$B"/engine-backup-*; do
+  if [ -d "$d" ] && [ ! -L "$d" ]; then rm -rf "${d:?}"; fi
+done
 for f in "$B/relay" "$B"/relay.damaged-* "$B"/.relay.?????? "$B"/.person.??????; do
   if [ -f "$f" ] && [ ! -L "$f" ]; then rm -f "$f"; fi
 done

@@ -6,12 +6,51 @@
 # wiring, no service, auto-update/LAN/tray off. Records the team name in box/person and the Bot address name in
 # box/relay. Running it again with the same invite and names is safe; the Bot address name cannot be changed.
 # Nothing stays running: the daemon starts on demand while Grok Bot is awake.
+#   rn-cloud-setup.sh --upgrade-engine   # after an update: install the pinned engine version on a joined cloud.
+#                                        # Backs up the binary and box/state, replaces the binary, restarts the
+#                                        # daemon and checks it runs the new version; on failure only the old binary
+#                                        # is put back. The same version again only checks the running daemon.
+# The engine download is checked against the sha256 written below (the same table is in install.sh).
 set -euo pipefail
-LINK="${1:?team link}"; PERSON="${2:?team/person name from the Mac is required}"; RELAY_NAME="${3:-bot}"
-MACHINE_NAME="${MACHINE_NAME:-cloud}"           # shown in the roster instead of the box hostname
-VERSION="v0.10.7"
-BASE="${RN_CLOUD_BASE:-/workspace/agent-mesh/box}"
 die() { echo "cloud-setup: $*" >&2; exit 1; }
+MODE=setup
+if [ "${1:-}" = --upgrade-engine ]; then
+  [ $# = 1 ] || die "--upgrade-engine takes no other arguments"
+  MODE=upgrade; LINK=""; PERSON=""; RELAY_NAME=bot
+else
+  LINK="${1:?team link}"; PERSON="${2:?team/person name from the Mac is required}"; RELAY_NAME="${3:-bot}"
+fi
+MACHINE_NAME="${MACHINE_NAME:-cloud}"           # shown in the roster instead of the box hostname
+VERSION="v0.12.17"
+BASE="${RN_CLOUD_BASE:-/workspace/agent-mesh/box}"
+RN="$BASE/bin/reason-network"
+engine() { python3 "$BASE/rn-engine.py" "$@"; }
+
+pinned_sha256() {   # the same table is in install.sh; change both with VERSION
+  case "$1" in
+    v0.12.17/aarch64-apple-darwin) echo 6676e806abba74b313ee027b5b4020634077b0ef4c01c0a9eb4dd61ec77ea705 ;;
+    v0.12.17/x86_64-apple-darwin) echo e71fbd5c7c080048c1220025e2aa716c3af6b18901f18e5beece1323cfcdd96f ;;
+    v0.12.17/aarch64-unknown-linux-musl) echo e53ef46ee57eb9e9cd3b13d45acfe5ce4766c18861b46926560e34903adaa151 ;;
+    v0.12.17/x86_64-unknown-linux-musl) echo 2234527ff9330c78bff8581cc060bf1396e15d8091c27fb5acdb989010f5018f ;;
+    *) return 1 ;;
+  esac
+}
+
+fetch_engine() {   # $1: empty directory; leaves the verified binary at $1/reason-network
+  local want got
+  want="$(pinned_sha256 "$VERSION/$t")" || die "no pinned sha256 for Reason Network $VERSION on $t"
+  curl -fsSL "https://github.com/reason-machines/reason-network/releases/download/$VERSION/reason-network-$t.tar.gz" \
+    -o "$1/e.tgz" || die "could not download Reason Network $VERSION; nothing was changed"
+  got="$(sha256sum "$1/e.tgz" | cut -d' ' -f1)"
+  [ "$got" = "$want" ] || die "checksum mismatch for reason-network-$t.tar.gz (expected $want, got $got); nothing was changed. Run again to download it again; if it keeps failing, stop and tell the user"
+  tar --no-same-owner -xzf "$1/e.tgz" -C "$1" reason-network || die "the downloaded archive has no reason-network binary; nothing was changed"
+  rm -f "$1/e.tgz"
+  chmod 755 "$1/reason-network"
+  [ "$("$1/reason-network" --version 2>&1 | awk '{print $2}')" = "${VERSION#v}" ] \
+    || die "the downloaded binary does not report Reason Network ${VERSION#v}; nothing was changed"
+}
+
+installed_version() { "$RN" --version 2>/dev/null | awk '{print $2}' || true; }
 valid_relay_name() { [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#1}" -le 34 ] && ! [[ "$1" =~ ^terminal(-[0-9]+)?$ ]]; }
 [ "$(uname -s)" = Linux ] || die "[BOT-CLOUD] requires Linux; do not run this on the user's Mac"
 case "$(uname -m)" in
@@ -24,13 +63,74 @@ for tool in python3 curl tar sha256sum; do
 done
 python3 -c 'import sys, ssl, sqlite3; sys.exit(sys.version_info < (3, 9))' \
   || die "[BOT-CLOUD] requires Python 3.9+ with ssl and sqlite3"
-[[ "$PERSON" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#PERSON}" -le 40 ] \
-  || die "invalid team/person name: use the team name the Mac installer printed (lowercase letters and digits, single '-')"
+if [ "$MODE" = setup ]; then
+  [[ "$PERSON" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#PERSON}" -le 40 ] \
+    || die "invalid team/person name: use the team name the Mac installer printed (lowercase letters and digits, single '-')"
+fi
 valid_relay_name "$RELAY_NAME" \
   || die "invalid Bot address name '${RELAY_NAME:0:60}': use the name the Mac installer printed (1-34 lowercase letters and digits, groups joined by a single '-', not terminal)"
 [ "$MACHINE_NAME" = cloud ] || die "this deployment requires machine name cloud to match the Mac relay"
 [ "$(cd "$(dirname "$0")" && pwd)" = "$BASE" ] \
   || die "clone the public distribution at /workspace/agent-mesh first; cloud prompts require that persistent path"
+
+joined_team() {
+  python3 - "$BASE/state/network.db" <<'PY'
+import sqlite3, sys
+from pathlib import Path
+db = Path(sys.argv[1])
+try:
+    con = sqlite3.connect(f"{db.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        row = con.execute("SELECT value FROM kv WHERE key = 'team'").fetchone()
+    finally:
+        con.close()
+except sqlite3.Error:
+    row = None
+sys.exit(0 if row else 1)
+PY
+}
+
+upgrade_engine() {
+  [ -f "$BASE/person" ] && [ -f "$BASE/state/network.db" ] && joined_team \
+    || die "this cloud has not joined a team yet; run the setup with the invite first (nothing was changed)"
+  [ -x "$RN" ] || die "no engine at $RN; run the setup with the invite first (nothing was changed)"
+  export REASON_NETWORK_HOME="$BASE/state" REASON_NETWORK_NO_PROMPT=1 REASON_NETWORK_MACHINE="$MACHINE_NAME"
+  local have state backup base n rc=0
+  have="$(installed_version)"
+  state="$(engine compare "$have" "${VERSION#v}")"
+  case "$state" in
+    newer|unknown) die "this cloud has Reason Network ${have:-of an unknown version}; this release supports ${VERSION#v} and never downgrades or replaces it (nothing was changed)" ;;
+    same)
+      [ -n "$(engine pid --home "$BASE/state")" ] || "$RN" team >/dev/null 2>&1 || true
+      case "$(engine info --home "$BASE/state" --bin "$RN")" in
+        *state=stale)
+          echo "engine: Reason Network $have is installed, but the running daemon started before the binary was replaced; restarting it"
+          engine restart --home "$BASE/state" --bin "$RN" || die "the daemon did not come back on Reason Network $have"
+          ;;
+        *state=fresh) engine status --home "$BASE/state" --bin "$RN" ;;
+        *) die "could not start the engine daemon (reason-network team); see reason-network doctor" ;;
+      esac
+      echo "engine: nothing to upgrade"
+      return 0 ;;
+  esac
+  echo "engine: upgrading Reason Network $have to ${VERSION#v}"
+  UPGRADE_TMP="$(mktemp -d)"; trap 'rm -rf "$UPGRADE_TMP"' EXIT
+  fetch_engine "$UPGRADE_TMP"
+  backup="$BASE/engine-backup-$(date -u +%Y%m%dT%H%M%SZ)"; base="$backup"; n=1
+  while [ -e "$backup" ]; do n=$((n + 1)); backup="$base-$n"; done
+  engine switch --home "$BASE/state" --bin "$RN" --new "$UPGRADE_TMP/reason-network" --pinned "${VERSION#v}" \
+    --backup "$backup" || rc=$?
+  case "$rc" in
+    0) echo "engine: upgrade done" ;;
+    1) die "the upgrade failed and the previous engine is back (see the lines above)" ;;
+    *) die "the upgrade failed and the previous engine could not be confirmed; follow the steps above" ;;
+  esac
+}
+
+if [ "$MODE" = upgrade ]; then
+  upgrade_engine
+  exit 0
+fi
 if [ -f "$BASE/person" ] && [ "$(cat "$BASE/person")" != "$PERSON" ]; then
   die "this cloud directory belongs to another person; review the existing deployment before changing it"
 fi
@@ -72,13 +172,19 @@ fi
 export REASON_NETWORK_HOME="$BASE/state" REASON_NETWORK_NO_PROMPT=1 REASON_NETWORK_MACHINE="$MACHINE_NAME"
 mkdir -p "$BASE/bin" "$BASE/state" || die "[BOT-CLOUD] /workspace/agent-mesh must be writable and persistent"
 chmod 700 "$BASE/state"
-base="https://github.com/reason-machines/reason-network/releases/download/$VERSION"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-curl -fsSL "$base/reason-network-$t.tar.gz" -o "$tmp/e.tgz"
-curl -fsSL "$base/reason-network-$t.tar.gz.sha256" -o "$tmp/sum"
-[ "$(cut -d' ' -f1 "$tmp/sum")" = "$(sha256sum "$tmp/e.tgz" | cut -d' ' -f1)" ] || { echo "checksum mismatch"; exit 1; }
-tar xzf "$tmp/e.tgz" -C "$BASE/bin"
-RN="$BASE/bin/reason-network"
+if [ -x "$RN" ]; then
+  have="$(installed_version)"
+  case "$(engine compare "$have" "${VERSION#v}")" in
+    same) echo "Reason Network $have is already installed" ;;
+    older) die "this cloud already has Reason Network $have; this setup installs ${VERSION#v}. Upgrade it with: bash $BASE/rn-cloud-setup.sh --upgrade-engine (nothing was changed)" ;;
+    *) die "this cloud has Reason Network ${have:-of an unknown version}; this release supports ${VERSION#v} and never replaces it (nothing was changed)" ;;
+  esac
+else
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  fetch_engine "$tmp"
+  install -m 755 "$tmp/reason-network" "$BASE/bin/.reason-network.new.$$"
+  mv -f "$BASE/bin/.reason-network.new.$$" "$RN"
+fi
 "$RN" stop >/dev/null 2>&1 || true   # a daemon started without REASON_NETWORK_MACHINE would use the hostname
 
 decision="$(python3 - "$LINK" "$BASE/state/network.db" <<'PY'

@@ -10,7 +10,7 @@
 
 ## 发布版本
 
-`VERSION` 记录 agent-mesh 项目版本（`major.minor.patch`），可用 `./install.sh --version` 查询。Reason Network v0.10.7 是独立固定的依赖版本。发布时一并更新 `VERSION`、两份 README 中的版本标识、`llms.txt` 和两份更新日志，记录兼容性变化及升级说明。文档检查会核对 README 和更新日志版本。在公开发布提交上创建 `v<VERSION>` 格式的附注 tag，保留已有 tag。
+`VERSION` 记录 agent-mesh 项目版本（`major.minor.patch`），可用 `./install.sh --version` 查询。Reason Network v0.12.17 是独立固定的依赖版本：写在 `install.sh` 和 `box/rn-cloud-setup.sh` 的 `VERSION` 里，两个脚本各有一张相同的发布包 SHA-256 表，覆盖全部四个平台。两个脚本要一起改，`scripts/test_engine.py` 会核对二者一致。发布时一并更新 `VERSION`、两份 README 中的版本标识、`llms.txt` 和两份更新日志，记录兼容性变化及升级说明。文档检查会核对 README 和更新日志版本。在公开发布提交上创建 `v<VERSION>` 格式的附注 tag，保留已有 tag。
 
 ## 翻译规则
 
