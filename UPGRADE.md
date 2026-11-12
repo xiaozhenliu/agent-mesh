@@ -60,6 +60,14 @@ While one side runs 0.10.7 and the other 0.12.17, in either order, messages, rec
 
 Check the result with `./check.sh`. It reports the engine version against the pinned one, whether the running daemon runs the installed binary, an unfinished engine upgrade, whether the relay registered on the running daemon, and the cloud engine version this Mac last confirmed. For up to 11 minutes after a daemon or relay restart, the registration line is SKIP while the relay registers again.
 
+Known limitations:
+
+- The daemon's start time and the binary's change time are compared in whole seconds, so a daemon the old binary started in the same second as the replacement counts as fresh. On Linux a daemon still running a replaced binary is also caught because its program shows as deleted; macOS has no such check.
+- The relay records its registration after `listen` returns. If the daemon restarts in between, `./check.sh` can report a stale registration until the next `listen`, a few seconds later.
+- Relay startup work before the first registration (catching up on missed mail, re-sends, the webhook) can use up the 45-second registration wait; the restart then counts as failed and is rolled back. `AGENT_MESH_REGISTER_WAIT=<seconds>` raises the wait.
+- If a rollback succeeds but the relay does not start again, the upgrade record is already removed, so the next `./update.sh` does not retry; run `./install.sh --restart-relay` as the message says.
+- `./check.sh` does not compare the cloud scripts' checksums; it reports only the cloud engine version this Mac last confirmed. `./update.sh` compares the checksums when it guides the cloud step.
+
 ## Manual upgrade
 
 When the relay, the cloud scripts and the routine prompt all change, update them together in this order, so that no doorbell rings while some parts are old:

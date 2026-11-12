@@ -13,10 +13,20 @@ The relay keeps forwarded bodies for seven days. If `fetch` cannot retrieve one,
 - An alert delivered `GOT_MAX_RERINGS + 1` times without being confirmed is dropped and stays only in the relay log (`ALERT` lines).
 - Past 200 alerts waiting, only their count is sent; the individual alerts are in the relay log.
 - Re-ringing gives up after `GOT_MAX_RERINGS` and reports the message; it never retries forever.
+- The relay remembers the ids it handled for `FWD_COPY_DAYS` + 1 days (8 by default); the same id delivered again later is forwarded again.
+- Startup recovery (messages the engine marked read before the relay handled them) and the cloud's orphan scan pick messages by the sender's timestamp. A message from a sender whose clock runs behind can fall outside their windows (the relay's starts at its first start on this version or 7 days back, whichever is later; the orphan scan covers `RN_ORPHAN_DAYS`, 7 by default); it then comes back only if someone resends it.
+- If the relay cannot read the engine database, it skips startup recovery, logs the error and sends Grok Bot one notice per relay process; messages marked read just before the relay stopped may then not be forwarded.
 
 ## Claims and interrupted turns
 
 Wake-ups can overlap, and a retried webhook can ring twice for the same id. `fetch` claims each body it hands out for one hour (`RN_CLAIM_LEASE`), so an overlapping turn gets `claimed` and skips it; a finished message reports `handled`. The Bot runs `rn-cloud.sh working <id>` before acting, and `rn-cloud.sh send` marks a reply as started before the engine sees it. If a turn stops after either point without recording completion, later turns report `uncertain`: the Bot checks its thread notes or asks the user rather than acting again. Every `fetch` also hands out verified bodies from the last seven days that no doorbell asked for and nobody handled, such as after a lost doorbell (`"orphan": true`; `RN_ORPHAN_DAYS` sets the days and `RN_ORPHANS=0` turns this off). This is not exactly-once: a message whose turn stopped before `working` is handed out again after the claim expires, and one whose turn stopped later waits for the user's decision.
+
+Known limitations:
+
+- Message folders that existed before claims were introduced are marked `legacy` on the first run after the upgrade: the orphan scan skips them, and they are handed out only when a doorbell asks for them.
+- A message that fails verification (`mismatch`) is reported once by the scans no doorbell asked for (the orphan scan and `wait`/`fetch` without ids). Ids asked for explicitly, and the diagnostic `scan`, report it every time, so a lasting id collision is reported again on each re-ring.
+- A scan records a bad message before printing it; a run that stops in between loses that one notice. The message stays in the engine database, and the diagnostic `scan` still shows it.
+- The upgrade step does not record bad messages already there, so the first scan after the upgrade reports each of them once.
 
 ## Message formats
 
