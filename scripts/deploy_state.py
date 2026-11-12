@@ -95,6 +95,16 @@ def recorded_name(data):
     return value if isinstance(value, str) and relay_names.problem(value) is None else None
 
 
+def recorded_grok(data):
+    value = data.get("grok_name")
+    return value if relay_names.grok_problem(value) is None else None
+
+
+def bot_label(person, name, grok):
+    address = f"{person}/{name}" if person else name
+    return f"{address} → Grok: {grok}" if grok else address
+
+
 def name_status(data, fallback=None):
     current = relay_name(fallback)
     recorded = recorded_name(data)
@@ -263,6 +273,64 @@ def cmd_mark(args):
     save(data)
 
 
+def load_strict():
+    path = record_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path} is unreadable ({exc}); nothing was recorded. Run ./update.sh --plan to see "
+                         "what it reports, or restore the file from a backup")
+    if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+        raise ValueError(f"{path} has an unknown format; nothing was recorded")
+    return data
+
+
+def cmd_set_grok_name(args):
+    why = relay_names.grok_problem(args.grok_name)
+    if why:
+        raise ValueError(why)
+    data = load_strict()
+    status = name_status(data, args.relay_name)
+    if status.startswith("changed "):
+        _, recorded, current = status.split()
+        raise ValueError(f"the Bot address name changed from {recorded} to {current}; renaming is not supported, "
+                         "nothing was recorded")
+    if args.check:
+        return
+    data["grok_name"] = args.grok_name
+    if status == "unknown":
+        data["relay_name"] = relay_name(args.relay_name)
+    save(data)
+
+
+def utf8_stdout():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+
+def cmd_label(args):
+    data = load(warn=False)
+    name = relay_names.from_env(env_path()) or recorded_name(data) or args.relay_name
+    if not name:
+        raise SystemExit(3)
+    utf8_stdout()
+    print(bot_label(args.person, name, recorded_grok(data)))
+
+
+def cmd_recorded_name(_args):
+    try:
+        data = load_strict()
+    except ValueError as error:
+        print(str(error).replace("; nothing was recorded", ""), file=sys.stderr)
+        raise SystemExit(4)
+    name = recorded_name(data)
+    if not name:
+        raise SystemExit(3)
+    print(name)
+
+
 def cmd_check_name(args):
     print(name_status(load(warn=False), args.relay_name))
 
@@ -391,6 +459,16 @@ def main(argv=None):
     p = sub.add_parser("check-name")
     p.add_argument("--relay-name")
     p.set_defaults(run=cmd_check_name)
+    p = sub.add_parser("set-grok-name")
+    p.add_argument("grok_name")
+    p.add_argument("--relay-name")
+    p.add_argument("--check", action="store_true")
+    p.set_defaults(run=cmd_set_grok_name)
+    p = sub.add_parser("label")
+    p.add_argument("--person", default="")
+    p.add_argument("--relay-name")
+    p.set_defaults(run=cmd_label)
+    sub.add_parser("recorded-name").set_defaults(run=cmd_recorded_name)
     p = sub.add_parser("show-prompt")
     p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
     p.add_argument("--relay-name")

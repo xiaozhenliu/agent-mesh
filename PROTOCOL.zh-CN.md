@@ -30,7 +30,7 @@ relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到�
 
 ## 消息格式
 
-示例使用默认的 Bot 地址名。用了其他名字时，把 `bot`、`bot-cloud` 和 `bot-inbox` 依次换成 `<name>`、`<name>-cloud` 和 `<name>-inbox`。
+示例使用 Bot 地址名 `bot`（v0.8.0 以前的默认名）。用了其他名字时，把 `bot`、`bot-cloud` 和 `bot-inbox` 依次换成 `<name>`、`<name>-cloud` 和 `<name>-inbox`。
 
 ### 签名规则
 

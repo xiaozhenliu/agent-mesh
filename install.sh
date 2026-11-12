@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # agent-mesh: install the Mac side in one run.
-#   ./install.sh --name <team-name> [--relay-name bot] [--machine mac] [--yes] [--lang en|zh-CN]
+#   ./install.sh --name <team-name> --relay-name <address> --grok-name <name> [--machine mac] [--yes] [--lang en|zh-CN]
+#   ./install.sh --grok-name <name>  record or change the Bot's name in Grok (a label; the address stays)
 #   ./install.sh --webhook        enter (or change) the routine's Webhook URL and key, then (re)start the relay
 #   ./install.sh --cloud-prompt   print the invite and the text to send to Grok Bot again
 #   ./install.sh --rotate-key     replace the signing key, restart the relay, print how to copy it to the cloud
@@ -15,8 +16,11 @@
 # --lang selects prompt language in every mode. Default: AGENT_MESH_LANG, otherwise en. Diagnostics stay English.
 # The team name is also your name inside the team: 1-40 chars, lowercase letters and digits joined by single '-',
 # not your real name. It is fixed once the team exists.
-# --relay-name picks the Bot's address <team-name>/<name> (default bot; the cloud uses <name>-cloud and
-# <name>-inbox): 1-34 chars, the same character rules, not terminal. It cannot be changed once chosen.
+# --relay-name picks the Bot's address <team-name>/<name> (the cloud uses <name>-cloud and <name>-inbox): 1-34
+# chars, the same character rules, not terminal. Use the Bot's own name so agents can tell Bots apart. A new
+# installation needs it; an existing one keeps its name (including bot). It cannot be changed once chosen.
+# --grok-name is the Bot's name as Grok shows it, in any language; it is stored as given and not used for routing.
+# check.sh and the reply convention show <team-name>/<address> → Grok: <name>.
 # What it does: installs Reason Network, creates your private team, wires your local agents (after showing the
 # plan), generates the signing key, asks for the routine's webhook, installs the relay as a login service, then
 # prints what to send to Grok Bot. Re-running is safe.
@@ -35,13 +39,15 @@ MARKER="$HOME/Library/Application Support/agent-relay/registered"
 CFG="$HOME/.reason/network/config.toml"
 export REASON_NETWORK_NO_PROMPT=1
 
-NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG="${AGENT_MESH_LANG:-en}"; RELAY_NAME_ARG=""
+NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG="${AGENT_MESH_LANG:-en}"; RELAY_NAME_ARG=""; GROK_NAME=""; GROK_SET=0
 REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="${2:?}"; shift 2 ;;
     --machine) MACHINE="${2:?}"; shift 2 ;;
     --relay-name) RELAY_NAME_ARG="${2:?Bot address name}"; shift 2 ;;
+    --grok-name) [ $# -ge 2 ] || { echo "install: --grok-name needs the Bot's name in Grok" >&2; exit 2; }
+      GROK_NAME="$2"; GROK_SET=1; shift 2 ;;
     --yes|-y) YES=1; shift ;;
     --webhook) MODE=webhook; shift ;;
     --cloud-prompt) MODE=cloud; shift ;;
@@ -53,14 +59,21 @@ while [ $# -gt 0 ]; do
     --repo-url) REPO_URL="${2:?public HTTPS repository URL}"; shift 2 ;;
     --version) echo "agent-mesh $PROJECT_VERSION (Reason Network ${VERSION#v})"; exit 0 ;;
     --lang) [ $# -ge 2 ] || { echo "install: --lang needs en or zh-CN" >&2; exit 2; }; DOC_LANG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $1"; sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $1"; sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
 case "$DOC_LANG" in
   en|zh-CN) ;;
   *) echo "install: unsupported language '$DOC_LANG'; choose en or zh-CN" >&2; exit 2 ;;
 esac
+if [ "$GROK_SET" = 1 ]; then
+  case "$MODE" in
+    full) [ -n "$NAME" ] || MODE=label ;;
+    webhook|cloud) ;;
+    *) echo "install: --grok-name works with a full install, --webhook or --cloud-prompt, or on its own" >&2; exit 2 ;;
+  esac
+fi
 
 say() { printf '\n== %s\n' "$*"; }
 die() { echo "install: $*" >&2; exit 1; }
@@ -167,6 +180,31 @@ write_env() {   # $1 url, $2 key; keeps the user's optional settings (e.g. DOORB
     FWD_COPY_DAYS REFWD_MAX_PER_ID REFWD_MAX_PER_HOUR GOT_TIMEOUT_SECONDS GOT_DONE_SECONDS GOT_MAX_RERINGS \
     NONCE_KEEP_SECONDS)" || die "cannot read $ENV_FILE; nothing changed"
   put_env "$1" "$2" "$kept"
+}
+
+bot_label() {
+  deploy_state label --person "$(current_person)" --relay-name "$RELAY_NAME" 2>/dev/null \
+    || echo "$(current_person)/$RELAY_NAME"
+}
+
+reply_templates() {
+  "$PYTHON" "$HERE/scripts/reply_convention.py" install \
+    || echo "note: could not write the reply convention with this Bot's address to $LIB_DIR/templates"
+}
+
+new_install_stop() {
+  local hint="" suggested=""
+  if [ "$GROK_SET" = 1 ]; then
+    if suggested="$(relay_names suggest "$GROK_NAME")"; then
+      hint=" From --grok-name, the suggested address is: --relay-name $suggested"
+    else
+      hint=" The Grok name has no Latin letters or digits to build an address from: give this Bot a letter address yourself (for example its name in pinyin or English)."
+    fi
+  fi
+  die "a new installation needs the Bot's address name. What is your Grok Bot called? Run again with
+--relay-name <address> --grok-name '<its name in Grok>'. The address is lowercase letters and digits joined by
+single '-', at most 34 characters (for example nova for Nova); it is how your agents find this Bot and cannot be
+changed later.$hint"
 }
 
 record_pending() {
@@ -347,6 +385,7 @@ webhook_step() {
     || die "team or signing key missing; run ./install.sh --name <team-name> first"
   mkdir -p "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
   seed_env
+  reply_templates
   if [ "$MODE" = webhook ] || ! have_webhook; then
     record_pending prompt
     echo "[GROK-UI] User: create a webhook-triggered routine in Grok Bot and paste this prompt. The Bot executes it on [BOT-CLOUD], its cloud computer:"
@@ -387,7 +426,14 @@ cloud_prompt() {
   render_prompt cloud-setup --team-name "$person" --mac-home "$HOME" --repo-url "$repo" --relay-name "$RELAY_NAME"
   echo "----------------------------------------------------------------"
   echo "[GROK-UI] User: approve CopyToBox from [LOCAL] $KEY_FILE to [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key. Afterwards the installing agent runs ./check.sh on [LOCAL]."
-  echo "Bot address: $person/$RELAY_NAME (cloud sessions $RELAY_NAME-cloud, $RELAY_NAME-inbox)"
+  echo "Bot address: $(bot_label) (cloud sessions $RELAY_NAME-cloud, $RELAY_NAME-inbox)"
+}
+
+grok_label() {
+  echo "Bot address: $(bot_label)"
+  [ -z "$(current_person)" ] || reply_templates
+  echo "Copies of the reply convention in your repositories' AGENTS.md keep the old text until you run"
+  echo "  python3 scripts/reply_convention.py refresh <repository>/AGENTS.md"
 }
 
 # The relay reads the key only at start, so a new key always means a restart. The old key is not kept: rotation is
@@ -488,15 +534,19 @@ case "$REPO_URL" in https://*) ;; *) die "--repo-url must be a public HTTPS clon
 if [ -n "$RELAY_NAME_ARG" ]; then
   why="$(relay_names check "$RELAY_NAME_ARG" 2>&1)" || die "--relay-name: $why"
 fi
+if [ "$GROK_SET" = 1 ]; then
+  why="$(relay_names grok-check "$GROK_NAME" 2>&1)" || die "--grok-name: $why"
+fi
 CURRENT="$(relay_names env "$ENV_FILE" 2>&1)" \
   || die "$CURRENT. The installer manages only <name>, <name>-cloud, <name>-inbox; make LISTEN_NAME/CLOUD_NAME/INBOX_NAME match or remove all three, then run again"
 [ -z "$RELAY_NAME_ARG" ] || [ -z "$CURRENT" ] || [ "$RELAY_NAME_ARG" = "$CURRENT" ] || rename_refused "$CURRENT"
-RELAY_NAME="${CURRENT:-${RELAY_NAME_ARG:-bot}}"
+RECORDED_NAME="$(deploy_state recorded-name 2>/dev/null)" || RECORDED_NAME=""
+RELAY_NAME="${CURRENT:-${RELAY_NAME_ARG:-${RECORDED_NAME:-bot}}}"
 recorded="$(deploy_state check-name --relay-name "$RELAY_NAME" 2>&1)" || die "$recorded"
 case "$recorded" in
   "changed "*)
     recorded="${recorded#changed }"; recorded="${recorded%% *}"
-    [ -n "$CURRENT" ] || die "this Mac was installed with the Bot address name '$recorded' (recorded in $LIB_DIR/deployed.json), and $ENV_FILE is gone. Renaming is not supported: run again with --relay-name $recorded, or remove the installation including its identity (README: Uninstall) and install again."
+    [ -n "$CURRENT" ] || die "this Mac was installed with the Bot address name '$recorded' (recorded in $LIB_DIR/deployed.json), not '$RELAY_NAME'. Renaming is not supported: run again with --relay-name $recorded or without --relay-name, or remove the installation including its identity (README: Uninstall) and install again."
     die "this Mac was installed with the Bot address name '$recorded', but $ENV_FILE now gives '$CURRENT'. Renaming is not supported: put LISTEN_NAME/CLOUD_NAME/INBOX_NAME back to '$recorded', or remove the installation including its identity (README: Uninstall) and install again." ;;
 esac
 
@@ -518,9 +568,23 @@ if [ -x "$RN" ]; then
   esac
 fi
 
+record_grok() {
+  [ "$GROK_SET" = 1 ] || return 0
+  [ -n "$CURRENT" ] || [ "$recorded" != unknown ] || die "no installation to label yet: install with ./install.sh --name <team-name> --relay-name <address> --grok-name '<its name in Grok>' first; nothing was recorded"
+  why="$(deploy_state set-grok-name --relay-name "$RELAY_NAME" -- "$GROK_NAME" 2>&1)" || die "--grok-name: $why"
+}
+
 case "$MODE" in
-  webhook) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; webhook_step; exit 0 ;;
-  cloud) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; cloud_prompt; exit 0 ;;
+  label) record_grok; grok_label; exit 0 ;;
+  webhook)
+    [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"
+    [ -n "$(current_person)" ] && [ -s "$KEY_FILE" ] || die "team or signing key missing; run ./install.sh --name <team-name> first"
+    record_grok; webhook_step; exit 0 ;;
+  cloud)
+    [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"
+    [ -n "$(current_person)" ] || die "not in a team yet; run the full install first"
+    if [ "$GROK_SET" = 1 ]; then record_grok; reply_templates; fi
+    cloud_prompt; exit 0 ;;
   rotate) [ -x "$RN" ] || die "Reason Network is not installed; run the full install first"; rotate_key; exit 0 ;;
   purge) purge_copies; exit 0 ;;
   restart|preflight)
@@ -539,6 +603,12 @@ esac
 [ -n "$NAME" ] || die "need --name <team-name> (run with --help)"
 valid_name "$NAME" && valid_name "$MACHINE" \
   || die "the name must be 1-40 chars of lowercase letters and digits, joined by single '-' (no '-' at the start or end, none repeated: Reason Network would merge them)"
+if [ -z "$CURRENT" ] && [ -z "$RELAY_NAME_ARG" ] && [ "$recorded" = unknown ] && [ -z "$(current_person)" ]; then
+  new_install_stop
+fi
+if [ "$GROK_SET" = 1 ]; then
+  why="$(deploy_state set-grok-name --check --relay-name "$RELAY_NAME" -- "$GROK_NAME" 2>&1)" || die "--grok-name: $why"
+fi
 
 say "1/6 network"
 if relays="$("$PYTHON" "$HERE/scripts/relay_targets.py" --rn "$RN" --home "$HOME/.reason/network" --pinned "${VERSION#v}")"; then
@@ -603,6 +673,10 @@ mkdir -p "$CONF_DIR" "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents
 [ -s "$KEY_FILE" ] || ( umask 077; openssl rand -hex 32 > "$KEY_FILE" )
 chmod 600 "$KEY_FILE"
 seed_env
+if [ "$GROK_SET" = 1 ]; then
+  why="$(deploy_state set-grok-name --relay-name "$RELAY_NAME" -- "$GROK_NAME" 2>&1)" \
+    || echo "note: the Grok name was not recorded ($why); run ./install.sh --grok-name '<name>' later"
+fi
 webhook_step
 
 say "6/6 cloud side"

@@ -12,6 +12,9 @@
   relay_names.py conflicts NAME [--db PATH]
                                        read `reason-network who --all --json` on stdin; exit 1 with the reason if
                                        NAME, NAME-cloud or NAME-inbox is already taken, 2 if it cannot be checked
+  relay_names.py grok-check NAME       exit 0 if NAME can be stored as the Bot's name in Grok, else 1 with the reason
+  relay_names.py suggest GROK_NAME     print a Bot address name derived from the Bot's name in Grok; exit 1 if none
+                                       can be derived (for example a name without Latin letters or digits)
 Only names are printed, never other values from the env file.
 """
 import json
@@ -19,6 +22,7 @@ import os
 import re
 import sqlite3
 import sys
+import unicodedata
 from pathlib import Path
 
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -28,6 +32,7 @@ DEFAULT = "bot"
 KEYS = ("LISTEN_NAME", "CLOUD_NAME", "INBOX_NAME")
 RELAY_DEFAULTS = {"LISTEN_NAME": "bot", "CLOUD_NAME": "bot-cloud", "INBOX_NAME": "bot-inbox"}
 CLOUD_MACHINE = "cloud"
+GROK_MAX_LEN = 64
 
 
 def problem(name):
@@ -41,6 +46,26 @@ def problem(name):
     if RESERVED.fullmatch(name):
         return f"the Bot address name {name!r} is reserved: Reason Network uses terminal and terminal-<number>"
     return None
+
+
+def grok_problem(name):
+    if not isinstance(name, str) or not name.strip():
+        return "the Bot's name in Grok is empty"
+    if len(name) > GROK_MAX_LEN:
+        return f"the Bot's name in Grok is longer than {GROK_MAX_LEN} characters"
+    if name != name.strip():
+        return "the Bot's name in Grok starts or ends with a space"
+    if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in name):
+        return "the Bot's name in Grok contains a line break or another control character"
+    return None
+
+
+def suggest(grok_name):
+    text = unicodedata.normalize("NFKD", grok_name)
+    text = "".join(c for c in text if not unicodedata.combining(c)).lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    text = text[:MAX_LEN].rstrip("-")
+    return text if problem(text) is None else None
 
 
 def derived(name):
@@ -171,6 +196,18 @@ def main(argv):
         if why:
             print(why, file=sys.stderr)
             return 1
+        return 0
+    if cmd == "grok-check" and len(args) == 1:
+        why = grok_problem(args[0])
+        if why:
+            print(why, file=sys.stderr)
+            return 1
+        return 0
+    if cmd == "suggest" and len(args) == 1:
+        name = suggest(args[0])
+        if name is None:
+            return 1
+        print(name)
         return 0
     if cmd == "env" and len(args) <= 1:
         path = Path(args[0]) if args else Path(os.environ.get("HOME", "~")).expanduser() / ".config/agent-relay/env"

@@ -9,6 +9,7 @@
 # the relay before the engine, keeps a backup and rolls back on failure. When the cloud scripts, the cloud engine or
 # the routine prompt changed, it walks you through the [GROK-UI] steps in order (terminal required) and starts the
 # previous relay again if you stop.
+# It also refreshes the filled-in reply convention in ~/.local/lib/agent-mesh/templates.
 # Exit: 0 done or already up to date, 1 not fully done (see the summary), 2 usage, 3 needs a terminal (nothing changed).
 set -euo pipefail
 
@@ -28,7 +29,7 @@ parse_args() {
       --yes|-y) YES=1; shift ;;
       --no-pull) PULL=0; shift ;;
       --plan) PLAN=1; shift ;;
-      -h|--help) sed -n '2,10p' "$HERE/update.sh" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      -h|--help) sed -n '2,13p' "$HERE/update.sh" | sed 's/^# \{0,1\}//'; exit 0 ;;
       *) echo "update: unknown option: $1 (see ./update.sh --help)" >&2; exit 2 ;;
     esac
   done
@@ -458,6 +459,8 @@ main() {
     echo "[LOCAL] User: run   ./update.sh --lang $DOC_LANG   in this repository in Terminal."
     exit 3
   fi
+  "$PYTHON" "$HERE/scripts/reply_convention.py" install \
+    || echo "note: could not refresh the reply convention with this Bot's address in $LIB_DIR/templates"
   if [ "$interactive" = 0 ] && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ]; then
     echo "already up to date"
     exit 0

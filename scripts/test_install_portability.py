@@ -285,7 +285,7 @@ exit 0""")
     def test_both_mac_architectures_select_their_own_release(self):
         for arch, target in (("arm64", "aarch64-apple-darwin"), ("x86_64", "x86_64-apple-darwin")):
             self.env["MOCK_ARCH"] = arch
-            result = self.run_script("install.sh", "--name", "demo")
+            result = self.run_script("install.sh", "--name", "demo", "--relay-name", "nova")
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("could not download Reason Network v0.12.17; nothing was installed", result.stderr)
             self.assertIn(f"reason-network-{target}.tar.gz", self.calls())
@@ -305,7 +305,7 @@ exit 0""")
             result = self.run_script("install.sh", *args)
             self.assertNotEqual(result.returncode, 0, args)
             self.assertIn("none repeated", result.stderr, args)
-        self.assertIn("could not download", self.run_script("install.sh", "--name", "x" * 40).stderr)
+        self.assertIn("could not download", self.run_script("install.sh", "--name", "x" * 40, "--relay-name", "nova").stderr)
         self.tool("sha256sum", "exit 0")
         self.env.update(MOCK_OS="Linux", MOCK_ARCH="x86_64")
         (self.base / "calls").unlink()
@@ -710,6 +710,7 @@ exit 0""")
 
     def write_record(self, data):
         path = self.home / ".local/lib/agent-mesh/deployed.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data))
 
     def mark(self, repo, field, state, lang="en"):
@@ -1499,12 +1500,16 @@ exit 0""")
         self.assertIn("installed with the Bot address name 'alice', but", result.stderr)
         self.assertIn("now gives 'bob'", result.stderr)
         env.unlink()
-        for args in ((), ("--relay-name", "bob")):
-            result = self.run_script("install.sh", "--name", "demo", "--yes", *args)
-            self.assertNotEqual(result.returncode, 0, args)
-            self.assertIn("is gone", result.stderr, args)
-            self.assertIn("--relay-name alice", result.stderr, args)
-            self.assertFalse(env.exists(), args)
+        result = self.run_script("install.sh", "--name", "demo", "--yes", "--relay-name", "bob")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("installed with the Bot address name 'alice'", result.stderr)
+        self.assertIn("not 'bob'", result.stderr)
+        self.assertIn("--relay-name alice or without --relay-name", result.stderr)
+        self.assertFalse(env.exists())
+        result = self.run_script("install.sh", "--name", "demo", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("LISTEN_NAME=alice", env.read_text())
+        self.assertEqual(self.record()["relay_name"], "alice")
 
     def test_relay_name_on_an_install_without_name_keys_is_bot(self):
         self.configured()
@@ -1517,6 +1522,288 @@ exit 0""")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("uses the Bot address name 'bot'. Renaming is not supported", result.stderr)
         self.assertEqual(self.record()["relay_name"], "bot")
+
+    def test_new_install_without_an_address_name_stops_with_a_suggestion(self):
+        self.fresh()
+        (self.home / ".reason/network/config.toml").unlink()
+        for extra, said in (((), "What is your Grok Bot called?"),
+                            (("--grok-name", "Zoë Bot"), "the suggested address is: --relay-name zoe-bot"),
+                            (("--grok-name", "小助手"), "has no Latin letters or digits")):
+            result = self.run_script("install.sh", "--name", "demo", "--yes", *extra)
+            self.assertEqual(result.returncode, 1, extra)
+            self.assertIn("a new installation needs the Bot's address name", result.stderr, extra)
+            self.assertIn(said, result.stderr, extra)
+            self.assertIn("--relay-name <address> --grok-name", result.stderr, extra)
+        self.assertNotIn("curl", self.calls())
+        self.assertEqual(self.rn_calls(), [])
+        self.assertFalse((self.home / ".local/lib").exists())
+        self.assertFalse(self.env_file().exists())
+
+    def test_existing_installations_keep_their_address_without_relay_name(self):
+        self.fresh()
+        result = self.run_script("install.sh", "--name", "demo", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("LISTEN_NAME=bot", self.env_file().read_text())
+        self.assertEqual(self.record()["relay_name"], "bot")
+        self.assertNotIn("grok_name", self.record())
+        self.assertIn("<team-name>/bot-cloud", result.stdout)
+        for relay in (None, "alice"):
+            shutil.rmtree(self.home / ".local/lib/agent-mesh")
+            shutil.rmtree(self.home / ".config")
+            shutil.rmtree(self.home / ".reason")
+            self.configured(relay)
+            want = relay or "bot"
+            for args in (("--cloud-prompt",), ("--name", "demo", "--yes")):
+                result = self.run_script("install.sh", *args)
+                self.assertEqual(result.returncode, 0, (relay, args, result.stdout + result.stderr))
+                self.assertIn(f"Bot address: demo/{want} (cloud sessions", result.stdout, (relay, args))
+                self.assertEqual(self.record()["relay_name"], want, (relay, args))
+
+    def test_grok_name_is_stored_as_given_and_shown_next_to_the_address(self):
+        self.fresh()
+        cfg = self.home / ".reason/network/config.toml"
+        cfg.unlink()
+        real = self.home / ".local/bin/reason-network"
+        real.rename(self.base / "real-rn")
+        self.tool("reason-network", f'case "$1" in team) [ -f "{cfg}" ] || exit 1 ;; '
+                                    f'init) printf \'person = "demo"\\n\' >> "{cfg}" ;; esac\n'
+                                    f'exec "{self.base / "real-rn"}" "$@"', real)
+        grok = '小助手 "Bot" it\'s'
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "xiaozhushou", "--grok-name", grok,
+                                 "--yes", "--lang", "zh-CN")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = self.record()
+        self.assertEqual((data["relay_name"], data["grok_name"]), ("xiaozhushou", grok))
+        self.assertNotIn(grok, self.env_file().read_text())
+        self.assertEqual(self.state_cmd("show-prompt", "--lang", "zh-CN").stdout,
+                         render_prompt("routine", "zh-CN", relay_name="xiaozhushou"))
+        templates = self.home / ".local/lib/agent-mesh/templates"
+        en = (templates / "AGENTS.reason-network.md").read_text()
+        zh = (templates / "AGENTS.reason-network.zh-CN.md").read_text()
+        self.assertIn(f"- This team's Grok Bot address: `demo/xiaozhushou` (called “{grok}” in Grok).\n", en)
+        self.assertIn(f"- 本团队 Grok Bot 的地址：`demo/xiaozhushou`（在 Grok 里叫「{grok}」）。\n", zh)
+        for text, name in ((en, "AGENTS.reason-network.md"), (zh, "AGENTS.reason-network.zh-CN.md")):
+            source = (ROOT / "templates" / name).read_text().splitlines()
+            lines = text.splitlines()
+            self.assertEqual(len(lines), len(source), name)
+            self.assertEqual([i for i, (a, b) in enumerate(zip(lines, source)) if a != b],
+                             [i for i, line in enumerate(source) if "<relay-name>" in line], name)
+        result = self.run_script("install.sh", "--cloud-prompt")
+        self.assertIn(f"Bot address: demo/xiaozhushou → Grok: {grok} (cloud sessions", result.stdout)
+        self.assertIn(f"PASS  Bot address: demo/xiaozhushou → Grok: {grok}\n", self.run_script("check.sh").stdout)
+
+    def test_grok_name_on_its_own_only_labels_an_existing_installation(self):
+        result = self.run_script("install.sh", "--grok-name", "Nova")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no installation to label yet", result.stderr)
+        self.assertIsNone(self.record())
+        key = self.configured()
+        before = self.env_file().read_bytes()
+        calls = self.base / "calls"
+        if calls.exists():
+            calls.unlink()
+        for bad, said in (("", "is empty"), (" Nova", "starts or ends with a space"), ("a\nb", "contains a line break"),
+                          ("x" * 65, "is longer than 64")):
+            result = self.run_script("install.sh", "--grok-name", bad)
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertIn(f"--grok-name: the Bot's name in Grok {said}", result.stderr, repr(bad))
+            self.assertIsNone(self.record(), bad)
+        result = self.run_script("install.sh", "--rotate-key", "--grok-name", "Nova")
+        self.assertEqual(result.returncode, 2)
+        self.assertIsNone(self.record())
+        result = self.run_script("install.sh", "--grok-name", "Nova")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Bot address: demo/bot → Grok: Nova", result.stdout)
+        self.assertIn("reply_convention.py refresh", result.stdout)
+        self.assertEqual(self.record(), {"schema": 1, "relay_name": "bot", "grok_name": "Nova"})
+        result = self.run_script("install.sh", "--grok-name", "Nova 2")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.record()["grok_name"], "Nova 2")
+        self.assertIn("`demo/bot` (called “Nova 2” in Grok)",
+                      (self.home / ".local/lib/agent-mesh/templates/AGENTS.reason-network.md").read_text())
+        self.assertEqual(self.env_file().read_bytes(), before)
+        self.assertEqual(key.read_text(), "a" * 64 + "\n")
+        self.assertEqual(self.service_changes(), [])
+        self.assertEqual(self.rn_calls(), [])
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        path.write_text("{")
+        result = self.run_script("install.sh", "--grok-name", "Nova 3")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is unreadable", result.stderr)
+        self.assertEqual(path.read_text(), "{")
+
+    def test_reply_convention_refresh_replaces_only_the_block(self):
+        self.configured(relay="alice")
+        self.write_record({"schema": 1, "relay_name": "alice", "grok_name": "Alice"})
+        script = ROOT / "scripts/reply_convention.py"
+
+        def refresh(path):
+            return subprocess.run([sys.executable, str(script), "refresh", str(path)], env=self.env,
+                                  capture_output=True, text=True)
+
+        agents = self.base / "AGENTS.md"
+        template = (ROOT / "templates/AGENTS.reason-network.zh-CN.md").read_text()
+        before, after = "# My rules\r\n\r\nKeep it short.\r\n\r\n", "\r\n## Other\r\nUser notes stay.\r\n"
+        original = before + template.replace("\n", "\r\n") + after
+        agents.write_bytes(original.encode())
+        agents.chmod(0o640)
+        result = refresh(agents)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        placeholder = [line for line in template.splitlines() if "<relay-name>" in line]
+        self.assertEqual(len(placeholder), 1)
+        want = original.replace(placeholder[0], "- 本团队 Grok Bot 的地址：`demo/alice`（在 Grok 里叫「Alice」）。")
+        self.assertEqual(agents.read_bytes().decode(), want)
+        self.assertEqual(agents.stat().st_mode & 0o777, 0o640)
+        self.assertIn("already shows", refresh(agents).stdout)
+        for content in ("# no block\n", template + template,
+                        template.replace("<!-- /agent-mesh:bot-address -->\n", ""),
+                        template.replace("lang=zh-CN", "lang=fr")):
+            agents.write_text(content)
+            result = refresh(agents)
+            self.assertEqual(result.returncode, 1, content[:40])
+            self.assertIn("nothing was changed", result.stderr)
+            self.assertEqual(agents.read_text(), content)
+        result = subprocess.run([sys.executable, str(script), "render", "--lang", "en"], env=self.env,
+                                capture_output=True, text=True)
+        self.assertIn("`demo/alice` (called “Alice” in Grok).", result.stdout)
+
+    def test_update_refreshes_the_filled_in_templates_but_plan_does_not(self):
+        repo = self.installed(relay="alice")
+        templates = self.home / ".local/lib/agent-mesh/templates"
+        shutil.rmtree(templates, ignore_errors=True)
+        result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(templates.exists())
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("reply convention with this Bot's address", result.stdout)
+        self.assertIn("`demo/alice`.", (templates / "AGENTS.reason-network.md").read_text())
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertNotIn("reply convention with this Bot's address", result.stdout)
+        self.assertIn("already up to date", result.stdout)
+        self.assertEqual(self.service_changes(), [])
+
+    def test_grok_name_with_webhook_or_cloud_prompt_needs_an_installation(self):
+        for args in (("--webhook",), ("--cloud-prompt",)):
+            result = self.run_script("install.sh", *args, "--grok-name", "Nova")
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertIsNone(self.record(), args)
+        self.engine()
+        for args, said in ((("--webhook",), "team or signing key missing"),
+                           (("--cloud-prompt",), "no installation to label yet")):
+            result = self.run_script("install.sh", *args, "--grok-name", "Nova")
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertIn(said, result.stderr, args)
+            self.assertIsNone(self.record(), args)
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "nova", "--grok-name", "Nova",
+                                 "--cloud-prompt")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(self.record())
+
+    def test_webhook_with_grok_name_checks_its_prerequisites_before_recording(self):
+        key = self.configured(relay="alice")
+        self.write_record({"schema": 1, "relay_name": "alice", "grok_name": "Old"})
+        key.unlink()
+        result = self.run_script("install.sh", "--webhook", "--grok-name", "New")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("team or signing key missing", result.stderr)
+        self.assertEqual(self.record()["grok_name"], "Old")
+
+    def test_full_install_with_grok_name_refuses_an_unreadable_record_before_any_change(self):
+        self.fresh()
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        for content in ("{", json.dumps({"schema": 99, "relay_name": "bot"})):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            result = self.run_script("install.sh", "--name", "demo", "--relay-name", "nova", "--grok-name", "Nova",
+                                     "--yes")
+            self.assertNotEqual(result.returncode, 0, content)
+            self.assertIn("--grok-name:", result.stderr, content)
+            self.assertEqual(path.read_text(), content)
+            self.assertFalse(self.env_file().exists(), content)
+            self.assertEqual(self.rn_calls(), [], content)
+            self.assertNotIn("curl", self.calls(), content)
+
+    def test_grok_names_starting_with_a_hyphen_are_stored(self):
+        self.configured()
+        for name in ("-Nova", "--help", "-- x"):
+            result = self.run_script("install.sh", "--grok-name", name)
+            self.assertEqual(result.returncode, 0, (name, result.stdout + result.stderr))
+            self.assertEqual(self.record()["grok_name"], name)
+            self.assertIn(f"Bot address: demo/bot → Grok: {name}", result.stdout)
+
+    def test_cloud_prompt_with_grok_name_refreshes_the_filled_in_templates(self):
+        self.configured(relay="alice")
+        self.write_record({"schema": 1, "relay_name": "alice", "grok_name": "Old"})
+        result = self.run_script("install.sh", "--cloud-prompt", "--grok-name", "New")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.record()["grok_name"], "New")
+        self.assertIn("Bot address: demo/alice → Grok: New (cloud sessions", result.stdout)
+        text = (self.home / ".local/lib/agent-mesh/templates/AGENTS.reason-network.md").read_text()
+        self.assertIn("`demo/alice` (called “New” in Grok).", text)
+
+    def test_check_reports_an_unreadable_record_instead_of_no_address(self):
+        self.engine()
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("{")
+        out = self.run_script("check.sh").stdout
+        self.assertIn("FAIL  Bot address", out)
+        self.assertIn("is unreadable", out)
+        self.assertNotIn("no address name chosen yet", out)
+        self.assertIn("SKIP  relay registration (the Bot address name is not known)", out)
+
+    def test_reply_convention_refresh_keeps_the_file_and_refuses_what_it_cannot_change(self):
+        self.configured(relay="alice")
+        script = ROOT / "scripts/reply_convention.py"
+
+        def refresh(path):
+            return subprocess.run([sys.executable, str(script), "refresh", str(path)], env=self.env,
+                                  capture_output=True, text=True)
+
+        template = (ROOT / "templates/AGENTS.reason-network.md").read_text()
+        agents = self.base / "AGENTS.md"
+        agents.write_text(template)
+        link = self.base / "hardlink.md"
+        os.link(agents, link)
+        inode = agents.stat().st_ino
+        result = refresh(agents)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(agents.stat().st_ino, inode)
+        self.assertIn("`demo/alice`.", link.read_text())
+        agents.write_text(template)
+        agents.chmod(0o444)
+        result = refresh(agents)
+        if os.geteuid() != 0:
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(agents.read_text(), template)
+        agents.chmod(0o644)
+        bad = template.encode() + b"\xff\n"
+        agents.write_bytes(bad)
+        result = refresh(agents)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is not UTF-8 text; nothing was changed", result.stderr)
+        self.assertEqual(agents.read_bytes(), bad)
+        agents.write_text(template)
+        symlink = self.base / "symlink.md"
+        symlink.symlink_to(agents)
+        result = refresh(symlink)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is not a regular file; nothing was changed", result.stderr)
+        self.assertEqual(agents.read_text(), template)
+        result = refresh(self.base)
+        self.assertEqual(result.returncode, 1)
+
+    def test_update_still_finishes_when_the_filled_in_templates_cannot_be_written(self):
+        repo = self.installed(relay="alice")
+        templates = self.home / ".local/lib/agent-mesh/templates"
+        shutil.rmtree(templates, ignore_errors=True)
+        templates.write_text("not a directory")
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("note: could not refresh the reply convention", result.stdout)
+        self.assertIn("already up to date", result.stdout)
+        self.assertEqual(templates.read_text(), "not a directory")
 
     def test_invalid_relay_names_stop_before_any_download(self):
         for name in ("Bot", "a--b", "terminal", "terminal-3", "x" * 35, "a_b"):
@@ -1679,7 +1966,7 @@ exit 0""")
             return self.run_script("check.sh").stdout
 
         out = check()
-        self.assertIn("PASS  relay name: alice", out)
+        self.assertIn("PASS  Bot address: demo/alice (no Grok name recorded;", out)
         self.assertIn("FAIL  relay not registered on the running engine: no engine daemon is running", out)
         self.fake_daemon()
         self.assertIn("SKIP  relay registration (the engine daemon or the relay restarted", check())
@@ -1715,7 +2002,16 @@ exit 0""")
         self.assertIn("FAIL  relay names in env are not derived from one name", out)
         self.assertNotIn("0123456789", out)
         env.unlink()
-        self.assertIn("PASS  relay name: bot (default)", check())
+        out = check()
+        self.assertIn("SKIP  Bot address (no address name chosen yet", out)
+        self.assertIn("SKIP  relay registration (the Bot address name is not known)", out)
+        self.write_record({"schema": 1, "relay_name": "alice", "grok_name": "Alice"})
+        out = check()
+        self.assertIn("PASS  Bot address: demo/alice → Grok: Alice", out)
+        self.assertIn("relay listening as demo/alice", out)
+        env.write_text(f"RN_BIN={self.home}/.local/bin/reason-network\n")
+        self.write_record({"schema": 1, "relay_name": "bot", "grok_name": "Nova"})
+        self.assertIn("PASS  Bot address: demo/bot → Grok: Nova", check())
 
     def test_check_reads_team_lists_with_and_without_verified_names(self):
         self.configured()
@@ -1757,7 +2053,7 @@ exit 0""")
         self.assertIn("PASS  relay reachable: the team's relay", self.run_script("check.sh").stdout)
 
     def test_install_probes_the_pinned_default_before_the_engine_exists(self):
-        result = self.run_script("install.sh", "--name", "demo", "--yes")
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "nova", "--yes")
         self.assertIn("ok (default relays of Reason Network 0.12.17 (not installed yet))", result.stdout)
         self.assertIn("curl -sS -o /dev/null -m 10 -w %{http_code} https://relay-sfo1.compute.reasonmachines.com/",
                       self.calls())

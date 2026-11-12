@@ -4,7 +4,7 @@
 
 This is the upgrade part of the [agent-mesh guide](README.md). The labels `[LOCAL]`, `[BOT-CLOUD]` and `[GROK-UI]` are explained under [Execution location labels](README.md#execution-location-labels).
 
-The local repository, the clone on the Bot cloud computer and the saved routine prompt are separate: changing files on the Mac does not update the other two. A reply convention already appended to a project's `AGENTS.md` is not updated either; copy the template again. The [changelog](CHANGELOG.md) says which parts each version changes.
+The local repository, the clone on the Bot cloud computer and the saved routine prompt are separate: changing files on the Mac does not update the other two. A reply convention already appended to a project's `AGENTS.md` is not updated either: copy the filled-in template from `~/.local/lib/agent-mesh/templates/` again, or, for a copy from v0.8.0 or later, run `python3 scripts/reply_convention.py refresh <repository>/AGENTS.md`. `./update.sh` refreshes the copies in `~/.local/lib/agent-mesh/templates/` itself. The [changelog](CHANGELOG.md) says which parts each version changes.
 
 ## Upgrade with update.sh
 
@@ -32,6 +32,7 @@ What the Mac last confirmed is kept in `~/.local/lib/agent-mesh/deployed.json`. 
 - Exit code 3 means answers in a terminal are needed; nothing was changed.
 - If you answer no, press Ctrl-C or a step fails, the relay that was running before is started again, and you are reminded if the routine is still paused. Run `./update.sh` again to continue from that step; finished steps are not repeated unless the version moved on in between.
 - Updating an installation from before Bot address names: it keeps the name `bot`, and the routine prompt stays the same. The cloud setup script changed, so `update.sh` asks once whether the cloud side is set up for this version; no cloud migration is needed, answer yes. An installation with another Bot address name cannot go back to a version without Bot address names.
+- Updating to v0.8.0: the address of an existing installation stays, also `bot`. Record the Bot's name in Grok with `./install.sh --grok-name '<its name in Grok>'`; it changes only the label shown next to the address.
 - First update from v0.3.0 or earlier: run `git pull` yourself once, because older checkouts have no `update.sh`. Without a record, the cloud scripts and the prompt count as unknown, so the guided steps run once.
 - Cloud step: paste Grok Bot's whole reply, then a line with only a dot (`.`). The cloud is recorded as updated only when the reply shows exactly this checkout's commit and every checksum the message lists, and in the cloud engine step also the `engine:` line with the pinned version; a plain yes, an empty answer, another commit or a different checksum leaves it unrecorded, the routine stays paused, and the next `./update.sh` asks for the reply again. If the cloud clone is on a detached HEAD, the message asks Grok Bot to check out the branch this checkout tracks before pulling, and to stop rather than reset, clean or stash anything.
 - The script cannot see the routine or the cloud computer: it relies on your answers and on the commit and checksums Grok Bot reports.

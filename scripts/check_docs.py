@@ -87,6 +87,15 @@ def check_docs():
                 errors.append(f"cloud-uninstall ({lang}): the cloud script is not embedded once as a heredoc")
     except (OSError, ValueError) as error:
         errors.append(str(error))
+    for lang, name in (("en", "AGENTS.reason-network.md"), ("zh-CN", "AGENTS.reason-network.zh-CN.md")):
+        lines = (ROOT / "templates" / name).read_text(encoding="utf-8").splitlines()
+        starts = [i for i, line in enumerate(lines) if line.startswith("<!-- agent-mesh:bot-address")]
+        ends = [i for i, line in enumerate(lines) if line == "<!-- /agent-mesh:bot-address -->"]
+        if (len(starts) != 1 or len(ends) != 1 or ends[0] != starts[0] + 2
+                or lines[starts[0]] != f"<!-- agent-mesh:bot-address lang={lang} -->"
+                or "`<team-name>/<relay-name>`" not in lines[starts[0] + 1]):
+            errors.append(f"templates/{name}: expected one generated Bot address block (lang={lang}) with one "
+                          "line holding `<team-name>/<relay-name>`")
     en = (ROOT / "PROTOCOL.md").read_text(encoding="utf-8")
     zh = (ROOT / "PROTOCOL.zh-CN.md").read_text(encoding="utf-8")
     vectors = lambda text: set(re.findall(r"\b[0-9a-f]{64}\b", text))
@@ -100,5 +109,6 @@ if __name__ == "__main__":
     for error in errors:
         print(f"FAIL {error}")
     if not errors:
-        print("PASS release version, bilingual pairs, local links and anchors, prompt placeholders, protocol vectors")
+        print("PASS release version, bilingual pairs, local links and anchors, prompt placeholders, template blocks, "
+              "protocol vectors")
     raise SystemExit(bool(errors))

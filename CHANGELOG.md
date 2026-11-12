@@ -4,6 +4,31 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.0 — 2026-11-12
+
+The Bot address is the Bot's own name: a new installation asks for it instead of using `bot`, and the Bot's name in Grok is shown next to the address. Existing installations keep their address (#31).
+
+### Added
+
+- `install.sh --grok-name <name>`: the Bot's name as Grok shows it, in any language (up to 64 characters, no spaces at the start or end, no line breaks or other control characters). It is stored as given in `~/.local/lib/agent-mesh/deployed.json`, not in the relay env, and is not used for routing. Given alone, it records or changes the name of an existing installation without touching the address, the relay or the service (#31).
+- The installer's `Bot address:` line and `./check.sh` show `<team-name>/<address> → Grok: <name>` (#31).
+- The reply convention templates have a generated block between `<!-- agent-mesh:bot-address lang=… -->` and `<!-- /agent-mesh:bot-address -->`. The installer and `./update.sh` write filled-in copies with this team's Bot address and Grok name to `~/.local/lib/agent-mesh/templates/`; `python3 scripts/reply_convention.py refresh <repository>/AGENTS.md` updates a copy in a repository and replaces only the lines between the markers (#31).
+
+### Changed
+
+- A new installation (no relay env, no recorded address, no team on this Mac) needs `--relay-name`. Without it, `install.sh` stops before changing anything, asks what the Grok Bot is called and suggests an address derived from `--grok-name` (lowercase, accents removed, other characters turned into single hyphens). A name without Latin letters or digits, such as a Chinese one, gets no suggestion: the installing agent proposes one, for example in pinyin, and the user confirms it. Existing installations, including those named `bot`, keep their address without `--relay-name` (#31).
+- AGENT-INSTALL step 0 asks for the Bot's name in Grok and derives the address from it, instead of offering the default `bot` (#31).
+- `./check.sh` no longer assumes `bot` when the relay env is missing: it reads the address recorded in `deployed.json`, and skips the registration check when no address is known.
+- `install.sh` also takes the address from `deployed.json` when the relay env is missing, instead of assuming `bot` and then refusing the apparent rename (#31).
+
+### Fixed
+
+- `./update.sh --help` printed only part of its description.
+
+### Upgrade notes
+
+Run `./update.sh`. The relay, the cloud scripts, the cloud engine and the routine prompt are unchanged, so it only writes the filled-in reply convention copies. To show the Bot's name in Grok next to the address, run `./install.sh --grok-name '<its name in Grok>'` once. Copies of the reply convention you appended to repositories before v0.8.0 have no generated block: replace that section with a filled-in copy from `~/.local/lib/agent-mesh/templates/`. The address itself cannot change; a different name still means an uninstall at level `identity` and a new install.
+
 ## v0.7.0 — 2026-11-12
 
 Pins Reason Network 0.12.17 and upgrades installed engines on the Mac and on the cloud, with a backup and a rollback on failure. Version 0.10.7 is affected by the upstream security advisory GHSA-84r9-56w3-xqp9 (fixed in 0.12.12).

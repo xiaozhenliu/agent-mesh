@@ -4,6 +4,31 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.8.0 — 2026-11-12
+
+Bot 地址就是 Bot 自己的名字：全新安装会问这个名字，不再默认 `bot`；地址旁显示 Bot 在 Grok 里的名字。已有安装保留原来的地址（#31）。
+
+### 新增
+
+- `install.sh --grok-name <名字>`：Bot 在 Grok 里显示的名字，任何语言都可以（最多 64 个字符，首尾不能有空格，不能有换行或其他控制字符）。它原样保存在 `~/.local/lib/agent-mesh/deployed.json`，不写入 relay 的 env，也不参与路由。单独使用时，只记录或修改已有安装的 Grok 名字，不动地址、relay 和服务（#31）。
+- 安装器的 `Bot address:` 行和 `./check.sh` 显示 `<team-name>/<地址> → Grok: <名字>`（#31）。
+- 回复约定模板新增一个生成块，位于 `<!-- agent-mesh:bot-address lang=… -->` 和 `<!-- /agent-mesh:bot-address -->` 之间。安装器和 `./update.sh` 把填好本团队 Bot 地址和 Grok 名字的副本写到 `~/.local/lib/agent-mesh/templates/`；`python3 scripts/reply_convention.py refresh <仓库>/AGENTS.md` 更新仓库里的副本，只替换标记之间的行（#31）。
+
+### 变更
+
+- 全新安装（没有 relay env、没有记录的地址、本机没有团队）必须给 `--relay-name`。不给时，`install.sh` 在改动任何东西之前停下，询问 Grok Bot 叫什么，并根据 `--grok-name` 给出建议地址（转小写、去掉重音，其他字符换成单个 `-`）。没有拉丁字母和数字的名字（例如中文名）不给建议，由安装 agent 提出，例如用拼音，再请用户确认。已有安装（包括叫 `bot` 的）不带 `--relay-name` 时保留原地址（#31）。
+- AGENT-INSTALL 第 0 阶段改为询问 Bot 在 Grok 里的名字，并由它推导地址，不再提供默认的 `bot`（#31）。
+- relay env 缺失时，`./check.sh` 不再假定地址是 `bot`：它读取 `deployed.json` 记录的地址；不知道地址时跳过注册检查。
+- relay env 缺失时，`install.sh` 也从 `deployed.json` 读取地址，不再先假定 `bot`、再以“改名”为由拒绝（#31）。
+
+### 修复
+
+- `./update.sh --help` 只打印了部分说明。
+
+### 升级说明
+
+运行 `./update.sh`。relay、云端脚本、云端引擎和 routine 提示词都没有改动，所以它只写入填好的回复约定副本。想在地址旁显示 Bot 在 Grok 里的名字，运行一次 `./install.sh --grok-name '<它在 Grok 里的名字>'`。v0.8.0 以前追加到各仓库的回复约定没有生成块：用 `~/.local/lib/agent-mesh/templates/` 里填好的副本替换那一节。地址本身仍然不能改；换名字仍然要按 `identity` 级别卸载后重新安装。
+
 ## v0.7.0 — 2026-11-12
 
 固定 Reason Network 0.12.17，并升级 Mac 和云端上已安装的引擎：先备份，失败时回滚。0.10.7 在上游安全公告 GHSA-84r9-56w3-xqp9 的影响范围内（0.12.12 修复）。

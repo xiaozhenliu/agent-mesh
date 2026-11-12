@@ -22,12 +22,12 @@
 1. 先按指南「准备」检查 `[LOCAL]` 和 `[BOT-CLOUD]` 的依赖。`[LOCAL]` 的 `uname -s` 应输出 `Darwin`，CPU 为 arm64 或 x86_64；当前用户应已登录桌面，不用 sudo。运行 `git --version` 和 `python3 -c 'import sys, ssl, sqlite3; print(sys.version)'`，要求 Git 可用、Python 3.9+。缺少 Git/Python 时可先运行 `xcode-select --install`，等用户完成安装后重新检查，不把“已发起安装”当作已就绪。已有 agent 也须先安装、登录并能独立工作。
 2. 运行 `curl -sS -o /dev/null -m 10 -w '%{http_code}\n' https://aps1-1.relay.n0.iroh.link/`，应输出 `200`。失败时先让用户关掉 VPN/代理重试；若恢复，给 `iroh.link` 及所有子域添加直连规则（TUN、虚拟网卡、增强或全局模式也需要），并排除 HTTPS 解密/MITM。用 `curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer` 查看，应是公共 CA（目前是 Let's Encrypt）而非代理自己的 CA。引擎可能使用多台中继，规则应覆盖整个域名；`reasonmachines.com` 及其子域也按同样方式放行，因为 Reason Network 0.12 默认使用那里的 Reason 中继。关闭代理后仍失败则排查 DNS、防火墙和网络。返回 200 后再继续。
 3. 如果 `$HOME/.local/bin` 不在 PATH，后续 Bash/zsh 命令加上 `export PATH="$HOME/.local/bin:$PATH";` 前缀。持久配置前确认用户实际使用的 shell：zsh 用 `~/.zshrc`，Bash 用实际读取的启动文件，fish 用 `fish_add_path "$HOME/.local/bin"`，不要统一修改 zsh 配置。检查现有 Reason Network 的路径、版本和默认状态目录；不兼容时先报告，不覆盖另一套安装，也不直接卸载。仓库目录已存在时先核对 origin 和本地改动；本地目录可以自选。
-4. 一次向用户确认：使用 Claude Code、Codex、pi、DeepSeek Harness 中的哪些（其他工具不在本手册支持范围）；团队名（同时是 person 名，1–40 个 ASCII 小写字母、数字或 `-`，首尾不能是 `-`、不能连用，不用真名，建好不能直接改）；Bot 地址名（默认 bot；小写字母、数字，用单个 `-` 分隔，最多 34 个字符，不能是 terminal；以后不能修改）；Grok Bot 能否创建 webhook routine 并使用 CopyToBox（都必须支持）；Mac 是否会保持唤醒（接电防睡眠，合盖会让整套停止）。
+4. 一次向用户确认：使用 Claude Code、Codex、pi、DeepSeek Harness 中的哪些（其他工具不在本手册支持范围）；团队名（同时是 person 名，1–40 个 ASCII 小写字母、数字或 `-`，首尾不能是 `-`、不能连用，不用真名，建好不能直接改）；Grok Bot 在 Grok 里叫什么（任何语言都可以，原样保存；最多 64 个字符，首尾不能有空格，不能有换行或其他控制字符），再由它推导 Bot 地址名（小写字母、数字，用单个 `-` 分隔，最多 34 个字符，不能是 terminal；以后不能修改）：英文名转小写（`Nova` → `nova`），中文或其他非拉丁字母的名字给出拼音或英文建议（「小助手」→ `xiaozhushou`），把地址给用户看，用户确认或修改后再用；没有默认名，全新安装不带 `--relay-name` 时会停下并给出建议；Grok Bot 能否创建 webhook routine 并使用 CopyToBox（都必须支持）；Mac 是否会保持唤醒（接电防睡眠，合盖会让整套停止）。
 
 ## 第 1 阶段：本地安装（[LOCAL] 安装 agent）
 
-1. 进入公开发行目录，运行 `./install.sh --name <team-name> --relay-name <relay-name> --lang zh-CN`。它安装引擎、建团队、打印 `reason-network setup --dry-run` 计划；非交互终端不能确认，所以以退出码 3 停下。
-2. 展示计划并请求用户确认。确认后运行 `./install.sh --name <team-name> --relay-name <relay-name> --yes --lang zh-CN`。它应用接入配置、生成签名密钥、打印 routine 提示词，并在 webhook 步骤以退出码 0 停下。
+1. 进入公开发行目录，运行 `./install.sh --name <team-name> --relay-name <relay-name> --grok-name '<grok-name>' --lang zh-CN`（Grok 名字要加 shell 引号）。它安装引擎、建团队、打印 `reason-network setup --dry-run` 计划；非交互终端不能确认，所以以退出码 3 停下。
+2. 展示计划并请求用户确认。确认后运行 `./install.sh --name <team-name> --relay-name <relay-name> --grok-name '<grok-name>' --yes --lang zh-CN`。它应用接入配置、生成签名密钥、打印 routine 提示词，并在 webhook 步骤以退出码 0 停下。
 3. 把分隔线之间的提示词原样交给用户，说明：「在 `[GROK-UI]` 创建由 webhook 触发的 routine，把提示词贴进去。面板会显示 Webhook URL 和 key。请在 `[LOCAL]` 用户本地电脑的终端进入这个仓库目录，运行 `./install.sh --webhook --lang zh-CN`，把两项粘贴进去；出现 `relay up` 后告诉我。」这份 routine 提示词将由 Bot 在 `[BOT-CLOUD]` 执行，不要让本地安装 agent 执行其中的命令。
 4. 等用户完成，再运行 `./check.sh`：relay 项应全部 PASS，cloud machine 可以暂时 SKIP。
 
@@ -40,7 +40,7 @@
 ## 第 3 阶段：会话与连通验证
 
 1. **`[LOCAL]` 用户：**关闭并重新打开第 1 阶段之前启动的 Claude Code、Codex 会话。Codex 会询问一次，选 Trust all and continue。
-2. **`[LOCAL]` 安装 agent：**运行 `reason-network send <team-name>/<relay-name> "test 1"`。这里的 `<relay-name>` 是 Mac 上的 relay 地址（默认 `bot`，安装器以 `Bot address:` 打印）。预期 30 秒内本地 `~/Library/Logs/agent-relay.log` 新增 `forwarded` 和 `POST … code=200`。Grok Bot 醒来，在 `[BOT-CLOUD]` 取正文并回复；回复可以进入用户本地会话，也可由 `[LOCAL]` 的 `reason-network listen --as terminal --wait 120` 收取。
+2. **`[LOCAL]` 安装 agent：**运行 `reason-network send <team-name>/<relay-name> "test 1"`。这里的 `<relay-name>` 是 Mac 上的 relay 地址（安装器以 `Bot address:` 打印；v0.8.0 以前的安装通常是 `bot`）。预期 30 秒内本地 `~/Library/Logs/agent-relay.log` 新增 `forwarded` 和 `POST … code=200`。Grok Bot 醒来，在 `[BOT-CLOUD]` 取正文并回复；回复可以进入用户本地会话，也可由 `[LOCAL]` 的 `reason-network listen --as terminal --wait 120` 收取。
 3. **`[GROK-UI]` 用户 → `[BOT-CLOUD]` Grok Bot：**请 Bot 在它的云电脑运行 `/workspace/agent-mesh/box/rn-cloud.sh who` 并给具体的 `[LOCAL]` 会话（如 `<team-name>/<folder>-claude`）发一句话。预期本地空闲会话也收到；本地会话回复后 Grok Bot 再次被唤醒。
 4. 按实际观察汇报两项结果，未观察到的测试不宣称成功。
 
@@ -49,7 +49,8 @@
 以下操作都在 `[LOCAL]` 用户本地电脑执行，修改的也是本地 App 或仓库文件。
 
 - dsh 自动唤醒：`dsh/mac-install.sh <team-name>`，然后用户完全退出并重开 App。见[插件指南](dsh/README.zh-CN.md)。
-- 回复约定：把[中文模板](templates/AGENTS.reason-network.zh-CN.md)或[英文模板](templates/AGENTS.reason-network.md)追加到用户常用仓库的 `AGENTS.md`；Claude Code 还需在该仓库 `CLAUDE.md` 加上 `@AGENTS.md`。
+- 回复约定：把填好的副本 `~/.local/lib/agent-mesh/templates/AGENTS.reason-network.zh-CN.md`（或 `AGENTS.reason-network.md`）追加到用户常用仓库的 `AGENTS.md`，副本里写明本团队的 Bot 地址和 Bot 在 Grok 里的名字；Claude Code 还需在该仓库 `CLAUDE.md` 加上 `@AGENTS.md`。没有安装时用[中文模板](templates/AGENTS.reason-network.zh-CN.md)或[英文模板](templates/AGENTS.reason-network.md)，自己填地址。
+- Grok 名字：已有安装用 `./install.sh --grok-name '<grok-name>'` 记录或修改，地址不变。之后对每个放了回复约定副本的仓库运行 `python3 scripts/reply_convention.py refresh <仓库>/AGENTS.md`，它只替换 `agent-mesh:bot-address` 标记之间的行。
 
 ## 出错时
 

@@ -85,13 +85,26 @@ fi
 
 # relay
 env="$HOME/.config/agent-relay/env"; key="$HOME/.config/agent-relay/outbound.key"
-names="$(dirname "$0")/scripts/relay_names.py"
-NAME=bot
+names="$HERE/scripts/relay_names.py"; state="$HERE/scripts/deploy_state.py"
+NAME=""
 if [ -f "$env" ] && ! name="$(python3 "$names" env "$env" 2>&1)"; then
   bad "relay names in env are not derived from one name" "$name; make LISTEN_NAME/CLOUD_NAME/INBOX_NAME <name>, <name>-cloud, <name>-inbox (README: Install)"
 else
-  [ ! -f "$env" ] || NAME="${name:-bot}"
-  if [ "$NAME" = bot ]; then ok "relay name: bot (default)"; else ok "relay name: $NAME"; fi
+  rc=0
+  if [ -f "$env" ]; then NAME="$name"; else NAME="$(python3 "$state" recorded-name 2>&1)" || rc=$?; fi
+  if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
+    bad "Bot address" "$NAME"; NAME=""
+  elif [ -z "$NAME" ] || [ "$rc" = 3 ]; then
+    NAME=""
+    skip "Bot address" "no address name chosen yet: run ./install.sh (AGENT-INSTALL.md)"
+  elif label="$(python3 "$state" label --person "$PERSON" --relay-name "$NAME" 2>&1)"; then
+    case "$label" in
+      *" → Grok: "*) ok "Bot address: $label" ;;
+      *) ok "Bot address: $label (no Grok name recorded; ./install.sh --grok-name '<its name in Grok>' adds it)" ;;
+    esac
+  else
+    ok "Bot address: $PERSON/$NAME (could not read the Grok name: $label)"
+  fi
 fi
 if [ -f "$env" ]; then
   [ "$(stat -f %Lp "$env" 2>/dev/null)" = "600" ] && ok "env file mode 600" || bad "env file not mode 600" "chmod 600 $env"
@@ -134,7 +147,9 @@ if [ -f "$log" ]; then
 fi
 
 # sessions
-if [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then
+if [ -z "$NAME" ]; then
+  skip "relay registration" "the Bot address name is not known"
+elif [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then
   registered="$(python3 "$names" registered "$NAME" 2>&1)"; rc=$?
   relay_pid="$(launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1)"
   if [ -z "$relay_pid" ]; then

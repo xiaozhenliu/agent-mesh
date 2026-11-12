@@ -4,7 +4,7 @@
 
 本文是 [agent-mesh 使用指南](README.zh-CN.md)的升级部分。`[LOCAL]`、`[BOT-CLOUD]`、`[GROK-UI]` 的含义见[执行位置标识](README.zh-CN.md#执行位置标识)。
 
-本机仓库、Bot 云电脑上的仓库和保存的 routine 提示词各自独立，修改 Mac 文件不会自动更新另外两处；已追加到项目 `AGENTS.md` 的回复约定也要重新复制模板。每个版本需要更新哪些组件，见[更新日志](CHANGELOG.zh-CN.md)。
+本机仓库、Bot 云电脑上的仓库和保存的 routine 提示词各自独立，修改 Mac 文件不会自动更新另外两处；已追加到项目 `AGENTS.md` 的回复约定也不会更新：从 `~/.local/lib/agent-mesh/templates/` 重新复制填好的模板；v0.8.0 及以后的副本也可以运行 `python3 scripts/reply_convention.py refresh <仓库>/AGENTS.md`。`./update.sh` 会自己刷新 `~/.local/lib/agent-mesh/templates/` 里的副本。每个版本需要更新哪些组件，见[更新日志](CHANGELOG.zh-CN.md)。
 
 ## 用 update.sh 升级
 
@@ -32,6 +32,7 @@
 - 退出码 3 表示需要在终端作答，部署未改动。
 - 回答"否"、按 Ctrl-C 或某一步失败时，原先运行的 relay 会被重新启动；routine 仍处于暂停状态时会提醒你恢复。再次运行 `./update.sh` 从停下的步骤继续；已完成的步骤不会重做，除非期间版本又有变化。
 - 更新还没有 Bot 地址名的旧安装：名字保持 `bot`，routine 提示词不变。云端设置脚本有改动，`update.sh` 会问一次云端是否已按这个版本设置；不需要迁移云端，直接回答"是"。用了其他 Bot 地址名的安装不能回退到没有 Bot 地址名的版本。
+- 更新到 v0.8.0：已有安装的地址不变，叫 `bot` 的也一样。用 `./install.sh --grok-name '<它在 Grok 里的名字>'` 记录 Bot 在 Grok 里的名字；它只改变地址旁显示的标签。
 - 从 v0.3.0 或更早版本第一次更新：先自己运行一次 `git pull`，因为旧仓库里还没有 `update.sh`。没有部署记录时，云端脚本和提示词按"未知"处理，引导步骤会走一遍。
 - 云端步骤：把 Grok Bot 的回复整段粘贴进来，再输入只有一个点（`.`）的一行。回复中的提交号和这段话列出的每个校验值都与当前仓库完全一致（云端引擎这一步还要有固定版本的 `engine:` 行），才记录云端已更新；只回答"是"、什么都不贴、提交号不同或校验值不同，都不会记录，routine 保持暂停，下次运行 `./update.sh` 会再次请你粘贴回复。云端仓库处于分离 HEAD 时，这段话会让 Grok Bot 先切换到当前仓库跟踪的分支再拉取，遇到问题就停下，不做 reset、clean 或 stash。
 - 脚本看不到 routine 和云电脑，只能依据你的回答，以及 Grok Bot 报告的提交号和校验值。

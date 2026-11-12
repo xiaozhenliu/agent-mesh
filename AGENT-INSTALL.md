@@ -25,15 +25,15 @@ Speak to the user in their language. Keep status updates short. Run commands fro
 4. Ask the user, in one message:
    - Which of Claude Code, Codex, pi, DeepSeek Harness they use. Anything else is out of scope; say so.
    - A **team name**, which is also their name inside the team: 1-40 ASCII lowercase letters, digits, or `-`, with no leading/trailing or repeated hyphen; not their real name; cannot be changed later.
-   - A **Bot address name**, default `bot`: lowercase letters and digits joined by single `-`, at most 34 characters, not `terminal`; cannot be changed later.
+   - What their **Grok Bot is called in Grok** (any language, stored as given; up to 64 characters, no spaces at the start or end, no line breaks or other control characters). Derive the **Bot address name** from it: lowercase letters and digits joined by single `-`, at most 34 characters, not `terminal`; cannot be changed later. An English name becomes lowercase (`Nova` → `nova`); for a Chinese or other non-Latin name propose pinyin or an English word (「小助手」 → `xiaozhushou`). Show the address to the user and use it once they confirm or correct it. There is no default: without `--relay-name`, a new installation stops and prints a suggestion.
    - Whether their Grok Bot can create a webhook-triggered routine and use CopyToBox (both required).
    - That the Mac will stay awake (System Settings: prevent sleep on power; a closed lid stops everything).
 
 ## Stage 1: local installation ([LOCAL] installing agent)
 
-1. `cd` into the public distribution and run `./install.sh --name <team-name> --relay-name <relay-name> --lang en`.
+1. `cd` into the public distribution and run `./install.sh --name <team-name> --relay-name <relay-name> --grok-name '<grok-name>' --lang en`. Quote the Grok name for the shell.
    It installs Reason Network, creates the team, prints the `reason-network setup --dry-run` plan and exits with code 3 because nothing can be confirmed without a terminal.
-2. Show the plan to the user and ask "OK to apply?". On yes, run `./install.sh --name <team-name> --relay-name <relay-name> --yes --lang en`.
+2. Show the plan to the user and ask "OK to apply?". On yes, run `./install.sh --name <team-name> --relay-name <relay-name> --grok-name '<grok-name>' --yes --lang en`.
    It applies setup, generates the signing key, prints the routine prompt and exits 0 at the webhook step.
 3. Give the user, verbatim, the text the script printed between the dashed lines, with this instruction: "In `[GROK-UI]`, create a routine triggered by a webhook and paste this as its prompt. The panel then shows a Webhook URL and a key. Open a terminal on `[LOCAL]`, your local computer, run `./install.sh --webhook --lang en` in this repository folder and paste both there. Tell me when it says `relay up`." Use the selected language in that command too. The Bot will execute the routine prompt on `[BOT-CLOUD]`; the local installing agent must not run its commands.
 4. Wait for the user. Then run `./check.sh`: everything under relay must be PASS. `cloud machine` may still be SKIP.
@@ -47,7 +47,7 @@ Speak to the user in their language. Keep status updates short. Run commands fro
 ## Stage 3: sessions and smoke test
 
 1. **`[LOCAL]` User:** close and reopen any Claude Code or Codex session that was open before stage 1; Codex asks once, choose "Trust all and continue".
-2. **`[LOCAL]` Installing agent:** run `reason-network send <team-name>/<relay-name> "test 1"`. Here `<relay-name>` is the relay address on the Mac (`bot` by default; the installer prints it as `Bot address:`). Expected within 30 seconds: the local `~/Library/Logs/agent-relay.log` gains a `forwarded` line and a `POST … code=200` line. Grok Bot wakes, retrieves the body and replies on `[BOT-CLOUD]`; the reply may reach the user's local session or be collected with `reason-network listen --as terminal --wait 120` on `[LOCAL]`.
+2. **`[LOCAL]` Installing agent:** run `reason-network send <team-name>/<relay-name> "test 1"`. Here `<relay-name>` is the relay address on the Mac (the installer prints it as `Bot address:`; installations from before v0.8.0 usually use `bot`). Expected within 30 seconds: the local `~/Library/Logs/agent-relay.log` gains a `forwarded` line and a `POST … code=200` line. Grok Bot wakes, retrieves the body and replies on `[BOT-CLOUD]`; the reply may reach the user's local session or be collected with `reason-network listen --as terminal --wait 120` on `[LOCAL]`.
 3. **`[GROK-UI]` User → `[BOT-CLOUD]` Grok Bot:** ask the Bot to run `/workspace/agent-mesh/box/rn-cloud.sh who` on its cloud computer and send one sentence to a specific `[LOCAL]` session, for example `<team-name>/<folder>-claude`. Expected: the sentence appears inside the local session even if it was idle; when the local session replies, Grok Bot is woken again.
 4. Report both results as they happened. Do not claim success for a test you did not observe.
 
@@ -56,7 +56,8 @@ Speak to the user in their language. Keep status updates short. Run commands fro
 All operations below run on `[LOCAL]` and modify local app or repository files.
 
 - DeepSeek Harness auto-wake: `dsh/mac-install.sh <team-name>`, then the user quits and reopens the app. See the [bridge guide](dsh/README.md).
-- Reply convention: append the [English template](templates/AGENTS.reason-network.md) or [Chinese template](templates/AGENTS.reason-network.zh-CN.md) to the `AGENTS.md` of repositories the user works in; for Claude Code also add `@AGENTS.md` to that repository's `CLAUDE.md`.
+- Reply convention: append the filled-in copy `~/.local/lib/agent-mesh/templates/AGENTS.reason-network.md` (or `AGENTS.reason-network.zh-CN.md`) to the `AGENTS.md` of repositories the user works in; it names this team's Bot address and the Bot's name in Grok. For Claude Code also add `@AGENTS.md` to that repository's `CLAUDE.md`. Without an installation, use the [English template](templates/AGENTS.reason-network.md) or [Chinese template](templates/AGENTS.reason-network.zh-CN.md) and fill in the address yourself.
+- Grok name: `./install.sh --grok-name '<grok-name>'` records or changes it for an existing installation; the address stays. Then run `python3 scripts/reply_convention.py refresh <repository>/AGENTS.md` for each repository that holds a copy of the reply convention; it replaces only the lines between the `agent-mesh:bot-address` markers.
 
 ## If something fails
 

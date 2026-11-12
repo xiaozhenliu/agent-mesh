@@ -6,7 +6,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 
 | | |
 |---|---|
-| **Version** | agent-mesh **v0.7.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Version** | agent-mesh **v0.8.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
 | **Platform** | Local: macOS (Apple Silicon or Intel) with a one-click installer · relay messaging verified on Debian Linux, but local installation on Linux is not supported yet (see [Prerequisites](#prerequisites)) · Bot cloud: Linux x86_64 or ARM64 · Python 3.9+ on both sides |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
@@ -68,7 +68,7 @@ There are three roles:
 
 | Role | Availability | What it does |
 |---|---|---|
-| `[LOCAL]` User's local computer | Kept awake | Runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the local computer, not to the Bot's cloud computer. `bot` is the default [Bot address name](#grok-bot-and-team-name). |
+| `[LOCAL]` User's local computer | Kept awake | Runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the local computer, not to the Bot's cloud computer. Here `bot` stands for your [Bot address name](#grok-bot-and-team-name), normally the Bot's own name (`bot` was the default before v0.8.0). |
 | `[BOT-CLOUD]` Bot's cloud computer | May sleep | Starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox` (with another Bot address name `<name>`: `<name>-cloud` and `<name>-inbox`), and uses the machine name `cloud`. No always-on service is installed there. |
 | `[GROK-UI]` Routine | Woken by webhook | A webhook task created in the Grok Bot interface; when woken, the Bot executes its prompt on `[BOT-CLOUD]`. A POST from the `[LOCAL]` relay wakes it. |
 
@@ -128,7 +128,8 @@ Five design choices make this work:
 - Grok Bot must support webhook-triggered routines and CopyToBox from your Mac.
 - Choose a team name, also used as your person name: 1–40 lowercase ASCII letters, digits, or hyphens; no leading or trailing hyphen. Use a pseudonym. Renaming requires recreating the team.
 - Team and machine names use single hyphens only: the engine merges repeated hyphens, so `a--b` would become `a-b`, and the installer refuses such names.
-- Optionally choose the Bot address name. The relay listens as `<team-name>/<name>`, and the cloud uses `<name>-cloud` and `<name>-inbox`. The default is `bot`. Rules: 1–34 lowercase ASCII letters and digits, in groups joined by a single hyphen (no leading, trailing or repeated hyphen), not `terminal` or `terminal-<n>`. Do not use your real name. The name cannot be changed later, not even for an unfinished installation: queued mail, the routine prompt and the cloud setup all use it. A different name needs an uninstall at level `identity` or `all` and a new install.
+- Choose the Bot address name: use the Bot's own name, so your agents can tell your Grok Bots apart. The relay listens as `<team-name>/<name>`, and the cloud uses `<name>-cloud` and `<name>-inbox`. A new installation has no default (before v0.8.0 it was `bot`; existing installations keep their name). Rules: 1–34 lowercase ASCII letters and digits, in groups joined by a single hyphen (no leading, trailing or repeated hyphen), not `terminal` or `terminal-<n>`. Do not use your real name. The name cannot be changed later, not even for an unfinished installation: queued mail, the routine prompt and the cloud setup all use it. A different name needs an uninstall at level `identity` or `all` and a new install.
+- Give the Bot's name as Grok shows it, in any language, with `--grok-name` (up to 64 characters, no spaces at the start or end, no line breaks or other control characters). It is stored as given, not used for routing, and shown next to the address as `<team-name>/<name> → Grok: <its name>` by the installer, `./check.sh` and the filled-in reply convention. For a name without Latin letters, pick an address yourself, for example in pinyin (「小助手」 → `xiaozhushou`).
 
 ### Network
 
@@ -150,10 +151,10 @@ Five design choices make this work:
 ```bash
 git clone https://github.com/xiaozhenliu/agent-mesh.git ~/agent-mesh
 cd ~/agent-mesh
-./install.sh --name <team-name> --lang en
+./install.sh --name <team-name> --relay-name <name> --grok-name '<its name in Grok>' --lang en
 ```
 
-To use a Bot address name other than `bot`, add `--relay-name <name>` to this first `install.sh` run. Later runs (`--webhook`, `--cloud-prompt`, `update.sh`) take the name from the installation; a different `--relay-name` is refused. The installer stops before wiring anything if the name is already used in the team, and checks after starting the relay that the engine registered exactly `<team-name>/<name>`.
+`--relay-name` is the Bot address name and `--grok-name` the Bot's name in Grok ([Grok Bot and team name](#grok-bot-and-team-name)). A new installation without `--relay-name` stops before changing anything and suggests an address derived from `--grok-name`. Later runs (`--webhook`, `--cloud-prompt`, `update.sh`) take the name from the installation; a different `--relay-name` is refused. The installer stops before wiring anything if the name is already used in the team, and checks after starting the relay that the engine registered exactly `<team-name>/<name>`. `./install.sh --grok-name '<its name in Grok>'` records or changes the Grok name of an existing installation; the address stays.
 
 If the destination already exists, check that it is the same repository and review uncommitted changes before proceeding; do not overwrite it or blindly pull. The cloud defaults to the same public distribution repository, whose root must contain `box/rn-cloud-setup.sh`; the installer does not infer its URL from the local origin.
 
@@ -173,7 +174,7 @@ Use `--lang en` or `--lang zh-CN` on each installer invocation to select generat
 ### Optional
 
 - **dsh automatic wake-ups:** run `dsh/mac-install.sh <team-name>`; see the [bridge guide](dsh/README.md).
-- **Reply convention:** append the [English template](templates/AGENTS.reason-network.md) or [Chinese template](templates/AGENTS.reason-network.zh-CN.md) to your working repository's `AGENTS.md`. For Claude Code, also add `@AGENTS.md` to `CLAUDE.md`. The template asks for a conclusion followed by four concise status fields.
+- **Reply convention:** append the filled-in copy in `~/.local/lib/agent-mesh/templates/` (English `AGENTS.reason-network.md` or Chinese `AGENTS.reason-network.zh-CN.md`; the installer writes them with your Bot address and Grok name) to your working repository's `AGENTS.md`. The [English template](templates/AGENTS.reason-network.md) and [Chinese template](templates/AGENTS.reason-network.zh-CN.md) here have placeholders instead. After changing the Grok name, `python3 scripts/reply_convention.py refresh <repository>/AGENTS.md` updates a copy; it replaces only the lines between the `agent-mesh:bot-address` markers. For Claude Code, also add `@AGENTS.md` to `CLAUDE.md`. The template asks for a conclusion followed by four concise status fields.
 
 ## Verify
 
@@ -185,7 +186,7 @@ Locations: self-checks, test sends, and relay log inspection run on `[LOCAL]`; G
    ./check.sh
    ```
 
-2. **Test message.** Send a message to the Bot address (`bot` below; use your name if you passed `--relay-name`), then wait for the reply in another terminal:
+2. **Test message.** Send a message to the Bot address (`bot` below; use your Bot address name, which `./check.sh` prints as `Bot address:`), then wait for the reply in another terminal:
 
    ```bash
    reason-network send <team-name>/bot "test 1"

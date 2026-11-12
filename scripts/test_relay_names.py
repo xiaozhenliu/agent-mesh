@@ -71,6 +71,21 @@ class Rules(unittest.TestCase):
         self.assertEqual(slug("terminal--3"), "terminal-3")
         self.assertEqual(slug("x" * 35 + "-inbox"), "x" * 35 + "-inbo")
 
+    def test_suggested_addresses_come_from_the_grok_name_or_not_at_all(self):
+        cases = {"Nova": "nova", "Zoë Bot": "zoe-bot", "Grok 2": "grok-2", "My  -- Bot!": "my-bot",
+                 "Ｎｏｖａ": "nova", "小助手 Nova": "nova", "R" * 40: "r" * 34, "a" * 33 + " b": "a" * 33}
+        for grok, want in cases.items():
+            self.assertEqual(relay_names.suggest(grok), want, grok)
+            self.assertIsNone(problem(want), grok)
+        for grok in ("小助手", "Terminal", "terminal 3", "---", "🤖"):
+            self.assertIsNone(relay_names.suggest(grok), grok)
+
+    def test_grok_names_are_kept_as_given_within_limits(self):
+        for grok in ("Nova", "小助手", 'say "hi"', "it's a bot", "a  b", "👨‍💻 Coder", "x" * 64):
+            self.assertIsNone(relay_names.grok_problem(grok), grok)
+        for grok in ("", "   ", " Nova", "Nova ", "a\nb", "a\tb", "a\x00b", "a\u2028b", "x" * 65, None):
+            self.assertIsNotNone(relay_names.grok_problem(grok), repr(grok))
+
     def test_derived(self):
         self.assertEqual(relay_names.derived("alice"), ("alice", "alice-cloud", "alice-inbox"))
 
@@ -190,6 +205,16 @@ class Cli(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("repeated", result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_grok_check_and_suggest(self):
+        self.assertEqual(self.run_cli("grok-check", "小助手").returncode, 0)
+        result = self.run_cli("grok-check", "a\nb")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("line break", result.stderr)
+        result = self.run_cli("suggest", "Zoë Bot")
+        self.assertEqual((result.returncode, result.stdout), (0, "zoe-bot\n"))
+        result = self.run_cli("suggest", "小助手")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
 
     def test_env_prints_only_the_name(self):
         result = self.run_cli("env", str(self.base / "missing"))

@@ -30,7 +30,7 @@ Known limitations:
 
 ## Message formats
 
-The examples use the default Bot address name. With another name, replace `bot`, `bot-cloud` and `bot-inbox` by `<name>`, `<name>-cloud` and `<name>-inbox`.
+The examples use the Bot address name `bot` (the default before v0.8.0). With another name, replace `bot`, `bot-cloud` and `bot-inbox` by `<name>`, `<name>-cloud` and `<name>-inbox`.
 
 ### Signing rules
 
