@@ -1,4 +1,5 @@
 """Engine upgrade checks with a fake Reason Network that runs a real daemon process; never contact real services."""
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -128,6 +129,19 @@ elif cmd == "send":
     con.commit()
 sys.exit(0)
 '''
+
+
+UNTRUSTED = '#!/bin/sh\necho "$0 $*" >> "$FAKE_RN_CTL/untrusted-ran"\nexit 1\n'
+
+CLOUD_ENV_ENGINE = """#!/bin/sh
+[ "$1" != --version ] || { echo "reason-network 0.12.17"; exit 0; }
+echo "$1 NO_UPDATE=${REASON_NETWORK_NO_UPDATE:-} MACHINE=${REASON_NETWORK_MACHINE:-}" >> "@LOG@"
+case "$1" in
+  join) echo "joined team demo as demo/cloud" ;;
+  doctor) echo "peers: 1 connected" ;;
+esac
+exit 0
+"""
 
 
 def fake_engine(version):
@@ -482,6 +496,309 @@ EOF
         self.assertIn("registered as demo/bot-2", eng.registration(self.home, marker, name, None, 660)[1])
 
 
+class CloudEngineCommands(FakeEngineMixin, unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.env = dict(os.environ)
+        self.env.pop("REASON_NETWORK_HOME", None)
+        self.env.pop("TINCAN_HOME", None)
+        self.setup_ctl(self.base, self.env)
+        self.box = self.base / "box"
+        self.home = self.box / "state"
+        self.home.mkdir(parents=True)
+        self.rn = self.box / "bin/engine/reason-network"
+        self.launcher = self.box / "bin/reason-network"
+        self.new = self.base / "new/reason-network"
+        self.put_engine(self.new, NEW)
+        self.txn = self.base / "engine-upgrade.json"
+        self.builds = self.base / "builds.json"
+        target = rn_engine().linux_target()
+        self.builds.write_text(json.dumps({v: {target: hashlib.sha256(fake_engine(v).encode()).hexdigest()}
+                                           for v in (OLD, NEW)}))
+        self.env["RN_PINNED_BUILDS_FILE"] = str(self.builds)
+
+    def engine(self, *args, timeout=60):
+        return subprocess.run([sys.executable, "-I", str(ROOT / "box/rn-engine.py"), *args], env=self.env,
+                              capture_output=True, text=True, timeout=timeout)
+
+    def untrusted(self, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(UNTRUSTED)
+        path.chmod(0o755)
+
+    def untrusted_ran(self):
+        return (self.ctl / "untrusted-ran").exists()
+
+    def switch(self, *extra):
+        return self.engine("switch", "--home", str(self.home), "--bin", str(self.rn), "--new", str(self.new),
+                           "--pinned", NEW, "--backup", str(self.base / "backup"), "--txn", str(self.txn), *extra)
+
+    def test_build_reports_only_pinned_regular_files(self):
+        self.put_engine(self.rn, NEW)
+        digest = hashlib.sha256(fake_engine(NEW).encode()).hexdigest()
+        result = self.engine("build", "--bin", str(self.rn))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, f"{NEW} {digest}"))
+        link = self.base / "link"
+        link.symlink_to(self.rn)
+        self.untrusted(self.base / "other")
+        for path in (link, self.base / "other", self.base / "missing", self.box):
+            with self.subTest(path=path.name):
+                result = self.engine("build", "--bin", str(path))
+                self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertFalse(self.untrusted_ran())
+        self.env.pop("RN_PINNED_BUILDS_FILE")
+        self.assertEqual(self.engine("build", "--bin", str(self.rn)).returncode, 1)
+
+    def test_the_real_table_pins_the_setup_version_for_both_linux_targets(self):
+        version = re.search(r'^VERSION="v([0-9.]+)"$', (ROOT / "box/rn-cloud-setup.sh").read_text(), re.M).group(1)
+        table = rn_engine().PINNED_BUILDS
+        self.assertEqual(sorted(table[version]), ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"])
+        for digest in table[version].values():
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_launcher_runs_only_allowed_commands_with_the_engine_env(self):
+        self.rn.parent.mkdir(parents=True)
+        self.rn.write_text('#!/bin/sh\necho "args=$* NO_UPDATE=$REASON_NETWORK_NO_UPDATE '
+                           'NO_PROMPT=$REASON_NETWORK_NO_PROMPT MACHINE=$REASON_NETWORK_MACHINE"\n')
+        self.rn.chmod(0o755)
+        result = self.engine("launcher", "--path", str(self.launcher))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("launcher ok", result.stdout)
+        self.assertEqual(oct(self.launcher.stat().st_mode & 0o777), "0o755")
+
+        def run(*args, **env):
+            e = dict(self.env, REASON_NETWORK_NO_UPDATE="0", **env)
+            return subprocess.run([str(self.launcher), *args], env=e, capture_output=True, text=True, timeout=30)
+
+        result = run("who")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no state directory is set", result.stderr)
+        for args in (("upgrade",), ("setup",), ("join", "x"), ("init",), ("",), ("mcp",), ("folder", "x"),
+                     ("bridge",)):
+            with self.subTest(args=args):
+                result = run(*args, REASON_NETWORK_HOME=str(self.home))
+                self.assertEqual((result.returncode, result.stdout), (2, ""), result.stderr)
+        result = run("who", REASON_NETWORK_HOME=str(self.home))
+        self.assertEqual(result.stdout.strip(), "args=who NO_UPDATE=1 NO_PROMPT=1 MACHINE=cloud")
+        result = run("relay", "default", REASON_NETWORK_HOME=str(self.home))
+        self.assertEqual(result.stdout.strip(), "args=relay default NO_UPDATE=1 NO_PROMPT=1 MACHINE=cloud")
+        result = run("join", "link", "--as", "demo", "--no-setup", TINCAN_HOME=str(self.home),
+                     REASON_NETWORK_MACHINE="other")
+        self.assertEqual(result.stdout.strip(), "args=join link --as demo --no-setup NO_UPDATE=1 NO_PROMPT=1 MACHINE=other")
+        before = self.launcher.stat().st_ino
+        result = self.engine("launcher", "--path", str(self.launcher))
+        self.assertNotIn("wrote the launcher", result.stdout)
+        self.assertEqual(self.launcher.stat().st_ino, before)
+
+    def test_cloud_bin_checks_the_payload_and_puts_the_launcher_back(self):
+        self.put_engine(self.launcher, OLD)
+        result = self.engine("cloud-bin", "--base", str(self.box))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, str(self.launcher)), result.stderr)
+        self.assertIn("has not been moved to box/bin/engine yet", result.stderr)
+        self.put_engine(self.rn, NEW)
+        result = self.engine("cloud-bin", "--base", str(self.box))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, str(self.rn)), result.stderr)
+        self.assertIn("the launcher is back", result.stderr)
+        self.assertEqual(self.launcher.read_text(), rn_engine().LAUNCHER)
+        result = self.engine("cloud-bin", "--base", str(self.box))
+        self.assertEqual((result.returncode, result.stdout.strip(), result.stderr), (0, str(self.rn), ""))
+        self.launcher.unlink()
+        self.launcher.symlink_to(self.rn)
+        result = self.engine("cloud-bin", "--base", str(self.box))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.launcher.is_symlink())
+        self.untrusted(self.rn)
+        result = self.engine("cloud-bin", "--base", str(self.box))
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("is not a Reason Network build pinned by agent-mesh", result.stderr)
+        self.rn.unlink()
+        self.rn.symlink_to(self.new)
+        self.assertEqual(self.engine("cloud-bin", "--base", str(self.box)).returncode, 1)
+        self.assertFalse(self.untrusted_ran())
+
+    def test_config_off_sets_top_level_keys_and_keeps_the_rest(self):
+        path = self.home / "config.toml"
+        result = self.engine("config-off", "--path", str(path), "auto_update", "lan", "tray")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(path.read_text(), "auto_update = false\nlan = false\ntray = false\n")
+        self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+        path.write_text("# kept\nauto_update = true\nlan=true # old\nauto_update = 1\nname = \"x\"\n"
+                        "[tray]\ntray = true\nlan = true\n")
+        path.chmod(0o640)
+        result = self.engine("config-off", "--path", str(path), "auto_update", "lan", "tray")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(path.read_text(), "tray = false\n# kept\nauto_update = false\nlan = false\nname = \"x\"\n"
+                                           "[tray]\ntray = true\nlan = true\n")
+        self.assertEqual(oct(path.stat().st_mode & 0o777), "0o640")
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), ["config.toml"])
+        self.assertNotEqual(self.engine("config-off", "--path", str(path), "relay").returncode, 0)
+
+    def test_strays_lists_other_daemons_under_the_bin_directory(self):
+        proc = self.base / "proc"
+        bindir = Path(os.path.realpath(self.box)) / "bin"
+        bindir.mkdir(parents=True)
+
+        def fake(pid, exe, args, env=b""):
+            d = proc / str(pid)
+            d.mkdir(parents=True)
+            (d / "cmdline").write_bytes(b"\0".join(args) + b"\0")
+            (d / "exe").symlink_to(exe)
+            (d / "environ").write_bytes(env)
+
+        fake(10, f"{bindir}/reason-network (deleted)", [b"x", b"daemon", b"--service"],
+             b"HOME=/root\0REASON_NETWORK_HOME=/workspace/other\0")
+        fake(11, f"{bindir}/engine/reason-network", [b"x", b"daemon"], b"HOME=/root\0")
+        fake(12, "/usr/bin/reason-network", [b"x", b"daemon"])
+        fake(13, f"{bindir}/reason-network", [b"x", b"who"])
+        fake(14, f"{self.base}/binx/reason-network", [b"x", b"daemon"])
+        (proc / "self").mkdir()
+        result = self.engine("strays", "--bin-dir", str(bindir), "--home", str(self.home), "--proc", str(proc))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(),
+                         [f"pid 10 {bindir}/reason-network state /workspace/other",
+                          f"pid 11 {bindir}/engine/reason-network state /root/.reason/network"])
+        with open(self.home / "daemon.lock", "w") as lock:
+            lock.write("11\n")
+            lock.flush()
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = self.engine("strays", "--bin-dir", str(bindir), "--home", str(self.home), "--proc", str(proc))
+        self.assertEqual(result.stdout.splitlines(), [f"pid 10 {bindir}/reason-network state /workspace/other"])
+        result = self.engine("strays", "--bin-dir", str(bindir), "--home", str(self.home),
+                             "--proc", str(self.base / "none"))
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+
+    def test_cloud_bin_returns_the_checked_payload_when_the_launcher_cannot_be_written(self):
+        self.put_engine(self.rn, NEW)
+        self.launcher.write_text("#!/bin/sh\necho stray\n")
+        self.launcher.parent.chmod(0o555)
+        try:
+            result = self.engine("cloud-bin", "--base", str(self.box))
+        finally:
+            self.launcher.parent.chmod(0o755)
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, str(self.rn)), result.stderr)
+        self.assertIn("could not put the launcher back", result.stderr)
+        self.assertEqual(self.launcher.read_text(), "#!/bin/sh\necho stray\n")
+
+    def test_switch_with_old_bin_moves_the_engine_and_writes_the_launcher(self):
+        self.put_engine(self.launcher, OLD)
+        self.start(self.launcher, self.home)
+        self.send(self.launcher, self.home, "m1", "kept")
+        result = self.switch("--old-bin", str(self.launcher))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.version(self.rn), NEW)
+        self.assertEqual(self.launcher.read_text(), rn_engine().LAUNCHER)
+        self.assertEqual(self.daemon_version(self.home), NEW)
+        self.assertEqual(self.version(self.base / "backup/reason-network"), OLD)
+        self.assertEqual(self.messages(self.home), {"m1": "kept"})
+        self.assertEqual(self.engine("rollback", "--txn", str(self.txn)).returncode, 0)
+        self.assertEqual(self.version(self.launcher), OLD)
+        self.assertFalse(os.path.lexists(self.rn))
+        self.assertEqual(self.daemon_version(self.home), OLD)
+
+    def test_switch_with_old_bin_rolls_back_to_the_old_path(self):
+        self.put_engine(self.launcher, OLD)
+        self.start(self.launcher, self.home)
+        self.flag("nostart", NEW)
+        result = self.switch("--old-bin", str(self.launcher))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.version(self.launcher), OLD)
+        self.assertFalse(os.path.lexists(self.rn))
+        self.assertEqual(self.daemon_version(self.home), OLD)
+        self.assertEqual(json.loads(self.txn.read_text())["stage"], "rolled_back")
+
+    def test_switch_with_an_untrusted_old_binary_never_runs_it(self):
+        self.put_engine(self.rn, "9.9.9")
+        old_pid = self.start(self.rn, self.home)
+        self.untrusted(self.rn)
+        result = self.switch("--untrusted-old")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(self.daemon(self.home), old_pid)
+        self.assertEqual(self.daemon_version(self.home), NEW)
+        self.assertEqual(json.loads(self.txn.read_text())["old_version"], "")
+        self.assertEqual(self.engine("rollback", "--txn", str(self.txn)).returncode, 0)
+        self.assertEqual(self.version(self.rn), NEW)
+        self.assertFalse(self.untrusted_ran())
+
+    def test_an_untrusted_daemon_that_ignores_stop_is_killed_without_running_its_binary(self):
+        self.flag("noexit", "9.9.9")
+        self.put_engine(self.rn, "9.9.9")
+        old_pid = self.start(self.rn, self.home)
+        self.untrusted(self.rn)
+        result = self.switch("--untrusted-old")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("sending SIGKILL", result.stdout)
+        self.assertNotEqual(self.daemon(self.home), old_pid)
+        self.assertEqual(self.daemon_version(self.home), NEW)
+        self.assertFalse(self.untrusted_ran())
+
+    def test_engine_commands_run_with_no_update(self):
+        probe = self.base / "probe"
+        probe.write_text('#!/bin/sh\necho "$REASON_NETWORK_HOME $REASON_NETWORK_NO_UPDATE"\n')
+        probe.chmod(0o755)
+        done = rn_engine().run(probe, self.home, "who")
+        self.assertEqual(done.stdout.strip(), f"{self.home} 1")
+
+    def test_a_failed_untrusted_switch_keeps_the_new_binary_and_prints_steps(self):
+        self.untrusted(self.launcher)
+        self.flag("nostart", NEW)
+        result = self.switch("--untrusted-old", "--old-bin", str(self.launcher))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("so it is not put back", result.stdout)
+        self.assertIn("REASON_NETWORK_NO_UPDATE=1", result.stdout)
+        self.assertEqual(self.version(self.rn), NEW)
+        self.assertEqual(self.launcher.read_text(), rn_engine().LAUNCHER)
+        self.assertEqual((self.base / "backup/reason-network").read_text(), UNTRUSTED)
+        self.assertEqual(json.loads(self.txn.read_text())["stage"], "failed_untrusted")
+        self.assertEqual(self.engine("rollback", "--txn", str(self.txn)).returncode, 0)
+        data = json.loads(self.txn.read_text())
+        data["stage"] = "replaced"
+        self.txn.write_text(json.dumps(data))
+        result = self.engine("rollback", "--txn", str(self.txn))
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("so it is not put back", result.stdout)
+        self.assertEqual(self.version(self.rn), NEW)
+        self.assertFalse(self.untrusted_ran())
+
+    def test_an_untrusted_switch_that_cannot_install_the_payload_keeps_the_old_entry_point(self):
+        self.untrusted(self.launcher)
+        self.rn.parent.mkdir(parents=True)
+        self.rn.parent.chmod(0o555)
+        try:
+            result = self.switch("--untrusted-old", "--old-bin", str(self.launcher))
+        finally:
+            self.rn.parent.chmod(0o755)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("the pinned build could not be installed", result.stdout)
+        self.assertNotIn("is now the checked pinned build", result.stdout)
+        self.assertNotIn(f"{self.rn} team", result.stdout)
+        self.assertEqual(self.launcher.read_text(), UNTRUSTED)
+        self.assertFalse(os.path.lexists(self.rn))
+        self.assertEqual(list(self.rn.parent.iterdir()), [])
+        self.assertEqual(json.loads(self.txn.read_text())["stage"], "failed_untrusted")
+        data = json.loads(self.txn.read_text())
+        data["stage"] = "replacing"
+        self.txn.write_text(json.dumps(data))
+        result = self.engine("rollback", "--txn", str(self.txn))
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("the pinned build could not be installed", result.stdout)
+        self.assertEqual(self.launcher.read_text(), UNTRUSTED)
+        self.untrusted(self.rn)
+        data["stage"] = "replacing"
+        self.txn.write_text(json.dumps(data))
+        result = self.engine("rollback", "--txn", str(self.txn))
+        self.assertIn("the pinned build could not be installed", result.stdout)
+        self.assertEqual(self.launcher.read_text(), UNTRUSTED)
+        self.put_engine(self.rn, NEW)
+        self.txn.write_text(json.dumps(data))
+        result = self.engine("rollback", "--txn", str(self.txn))
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("is now the checked pinned build", result.stdout)
+        self.assertEqual(self.launcher.read_text(), rn_engine().LAUNCHER)
+        self.assertFalse(self.untrusted_ran())
+
+
 class PinnedChecksums(unittest.TestCase):
     TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl")
 
@@ -599,6 +916,31 @@ class MacUpgrade(FakeEngineMixin, tip.Installation):
         again = self.run_script("update.sh", "--no-pull", root=repo)
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn("already up to date", again.stdout)
+
+    def test_a_failed_release_check_stops_before_the_engine_step(self):
+        repo = self.upgradable()
+        old_pid = self.daemon(self.rn_home)
+        with open(repo / "box/rn-cloud.sh", "a") as stream:
+            stream.write("\n")
+        (self.git / "release-fail").write_text("")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not be fetched", result.stderr)
+        self.assertEqual((self.version(self.rn), self.daemon(self.rn_home)), (OLD, old_pid))
+        self.assertEqual((self.backups(), self.service_changes()), ([], []))
+        self.assertFalse(self.txn().exists())
+        data = self.record()
+        data["txn"] = {"stage": "relay_stopped", "relay_was_loaded": True, "need": ["cloud"], "lang": "en",
+                       "commit": "a" * 40, "target": {}}
+        self.write_record(data)
+        self.txn().write_text(json.dumps({"stage": "replaced", "bin": str(self.rn), "home": str(self.rn_home),
+                                          "backup": str(self.base / "nobackup")}))
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not be fetched", result.stderr)
+        self.assertNotIn("rolling it back", result.stdout)
+        self.assertTrue(self.txn().exists())
+        self.assertEqual(self.version(self.rn), OLD)
 
     def test_relay_failure_before_the_switch_leaves_the_engine_alone(self):
         repo = self.upgradable()
@@ -814,14 +1156,22 @@ class MacUpgrade(FakeEngineMixin, tip.Installation):
 
 
 class CloudUpgrade(FakeEngineMixin, tip.Installation):
-    def cloud(self, version=OLD, joined=True):
+    def cloud(self, version=OLD, joined=True, layout="new"):
         self.cloud_box()
         self.setup_ctl(self.base, self.env)
         if joined:
             self.joined_before()
             (self.box / "person").write_text("demo\n")
-        self.rn = self.box / "bin/reason-network"
-        self.put_engine(self.rn, version)
+        self.rn = self.box / "bin/engine/reason-network"
+        self.launcher = self.box / "bin/reason-network"
+        self.pin_builds({v: fake_engine(v).encode() for v in (OLD, NEW, "0.13.0")})
+        if layout == "new":
+            self.put_engine(self.rn, version)
+            rn_engine().put_launcher(self.launcher)
+            self.cur = self.rn
+        else:
+            self.put_engine(self.launcher, version)
+            self.cur = self.launcher
         data = tarball(NEW)
         (self.mock / "e.tgz").write_bytes(data)
         pin(self.box / "rn-cloud-setup.sh", "x86_64-unknown-linux-musl", hashlib.sha256(data).hexdigest())
@@ -834,6 +1184,20 @@ class CloudUpgrade(FakeEngineMixin, tip.Installation):
     def engine_line(self, out):
         lines = re.findall(r"^engine: reason-network (\S+) running \(daemon pid \d+, started .*$", out, re.M)
         return lines[-1] if lines else None
+
+    def assert_reported(self, out):
+        digest = hashlib.sha256(fake_engine(NEW).encode()).hexdigest()
+        self.assertIn(f"engine: pinned build {digest} at box/bin/engine/reason-network", out)
+        self.assertIn("engine: launcher ok", out)
+        self.assertEqual(self.launcher.read_text(), rn_engine().LAUNCHER)
+        self.assertTrue(os.access(self.launcher, os.X_OK))
+
+    def untrusted(self):
+        self.cur.write_text(UNTRUSTED)
+        self.cur.chmod(0o755)
+
+    def untrusted_ran(self):
+        return (self.ctl / "untrusted-ran").exists()
 
     def test_cloud_upgrade_refuses_before_the_cloud_joined(self):
         self.cloud(joined=False)
@@ -850,6 +1214,7 @@ class CloudUpgrade(FakeEngineMixin, tip.Installation):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"upgrading Reason Network {OLD} to {NEW}", result.stdout)
         self.assertEqual(self.engine_line(result.stdout), NEW)
+        self.assert_reported(result.stdout)
         self.assertEqual(self.version(self.rn), NEW)
         self.assertEqual(self.daemon_version(self.rn_home), NEW)
         self.assertEqual(self.messages(self.rn_home), {"m1": "kept"})
@@ -859,6 +1224,25 @@ class CloudUpgrade(FakeEngineMixin, tip.Installation):
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn("engine: nothing to upgrade", again.stdout)
         self.assertEqual(self.engine_line(again.stdout), NEW)
+        self.assert_reported(again.stdout)
+
+    def test_cloud_upgrade_moves_an_old_layout_engine_and_leaves_a_launcher(self):
+        for version in (OLD, NEW):
+            with self.subTest(version):
+                self.setUp()
+                self.cloud(version, layout="old")
+                self.start(self.launcher, self.rn_home)
+                self.send(self.launcher, self.rn_home, "m1", "kept")
+                result = self.upgrade()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                if version == NEW:
+                    self.assertIn("moving Reason Network 0.12.17 to box/bin/engine", result.stdout)
+                self.assert_reported(result.stdout)
+                self.assertEqual(self.version(self.rn), NEW)
+                self.assertEqual(self.daemon_version(self.rn_home), NEW)
+                self.assertEqual(self.messages(self.rn_home), {"m1": "kept"})
+                [backup] = sorted(self.box.glob("engine-backup-*"))
+                self.assertEqual(self.version(backup / "reason-network"), version)
 
     def test_cloud_upgrade_with_the_pinned_version_starts_or_restarts_the_daemon(self):
         self.cloud(NEW)
@@ -869,52 +1253,138 @@ class CloudUpgrade(FakeEngineMixin, tip.Installation):
         old_pid = self.daemon(self.rn_home)
         time.sleep(1.1)
         self.put_engine(self.rn, NEW)
+        self.launcher.write_text("#!/bin/sh\necho replaced\n")
         result = self.upgrade()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("started before the binary was replaced; restarting it", result.stdout)
         self.assertNotEqual(self.daemon(self.rn_home), old_pid)
         self.assertEqual(self.engine_line(result.stdout), NEW)
+        self.assert_reported(result.stdout)
+        self.assertIn("wrote the launcher", result.stdout)
 
     def test_cloud_upgrade_rolls_back_when_the_new_daemon_fails(self):
-        self.cloud()
-        real = shutil.which("date")
-        self.tool("date", f'if [ "$2" = "+%Y%m%dT%H%M%SZ" ]; then echo 20261111T000000Z; else exec "{real}" "$@"; fi')
+        for layout in ("new", "old"):
+            with self.subTest(layout):
+                self.setUp()
+                self.cloud(layout=layout)
+                real = shutil.which("date")
+                self.tool("date", f'if [ "$2" = "+%Y%m%dT%H%M%SZ" ]; then echo 20261111T000000Z; '
+                                  f'else exec "{real}" "$@"; fi')
+                self.start(self.cur, self.rn_home)
+                self.flag("nostart", NEW)
+                result = self.upgrade()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("the previous engine is back", result.stderr)
+                self.assertEqual(self.version(self.cur), OLD)
+                self.assertEqual(self.daemon_version(self.rn_home), OLD)
+                self.assertEqual(self.engine_line(result.stdout), OLD)
+                if layout == "old":
+                    self.assertFalse(os.path.lexists(self.rn))
+                self.unflag("nostart", NEW)
+                result = self.upgrade()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.version(self.rn), NEW)
+                self.assert_reported(result.stdout)
+                self.assertEqual([b.name for b in sorted(self.box.glob("engine-backup-*"))],
+                                 ["engine-backup-20261111T000000Z", "engine-backup-20261111T000000Z-2"])
+
+    def test_cloud_upgrade_never_downgrades_a_pinned_newer_build(self):
+        self.cloud("0.13.0")
+        result = self.upgrade()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("never downgrades or replaces it", result.stderr)
+        self.assertEqual(self.version(self.rn), "0.13.0")
+
+    def test_cloud_upgrade_replaces_an_unpinned_engine_without_running_it(self):
+        for layout in ("new", "old"):
+            with self.subTest(layout):
+                self.setUp()
+                self.cloud(layout=layout)
+                self.untrusted()
+                result = self.upgrade()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("is not a Reason Network build pinned by agent-mesh; replacing it", result.stdout)
+                self.assertFalse(self.untrusted_ran())
+                self.assertEqual(self.version(self.rn), NEW)
+                self.assertEqual(self.daemon_version(self.rn_home), NEW)
+                self.assert_reported(result.stdout)
+                [backup] = sorted(self.box.glob("engine-backup-*"))
+                self.assertEqual((backup / "reason-network").read_text(), UNTRUSTED)
+
+    def test_cloud_upgrade_stops_a_daemon_of_an_unpinned_engine_with_the_new_binary(self):
+        self.cloud("9.9.9")
         self.start(self.rn, self.rn_home)
+        old_pid = self.daemon(self.rn_home)
+        self.untrusted()
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.untrusted_ran())
+        self.assertNotEqual(self.daemon(self.rn_home), old_pid)
+        self.assertEqual(self.daemon_version(self.rn_home), NEW)
+
+    def test_cloud_upgrade_of_an_unpinned_engine_never_puts_it_back(self):
+        self.cloud()
+        self.untrusted()
         self.flag("nostart", NEW)
         result = self.upgrade()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("the previous engine is back", result.stderr)
-        self.assertEqual(self.version(self.rn), OLD)
-        self.assertEqual(self.daemon_version(self.rn_home), OLD)
-        self.assertEqual(self.engine_line(result.stdout), OLD)
+        self.assertIn("the upgrade did not finish; follow the steps above", result.stderr)
+        self.assertIn("so it is not put back", result.stdout)
+        self.assertFalse(self.untrusted_ran())
+        self.assertEqual(self.version(self.rn), NEW)
         self.unflag("nostart", NEW)
         result = self.upgrade()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.version(self.rn), NEW)
-        self.assertEqual([b.name for b in sorted(self.box.glob("engine-backup-*"))],
-                         ["engine-backup-20261111T000000Z", "engine-backup-20261111T000000Z-2"])
-
-    def test_cloud_upgrade_never_downgrades(self):
-        for version in ("0.13.0", "garbage"):
-            with self.subTest(version):
-                self.setUp()
-                self.cloud(version)
-                result = self.upgrade()
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("never downgrades or replaces it", result.stderr)
-                self.assertEqual(self.version(self.rn), version)
+        self.assertIn("nothing to upgrade", result.stdout)
+        self.assertFalse(self.untrusted_ran())
 
     def test_cloud_setup_with_an_older_engine_points_to_the_upgrade(self):
-        self.cloud()
+        for layout in ("new", "old"):
+            with self.subTest(layout):
+                self.setUp()
+                self.cloud(layout=layout)
+                result = self.setup(tip.invite(), "demo")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--upgrade-engine", result.stderr)
+                self.assertEqual(self.version(self.cur), OLD)
+
+    def test_cloud_setup_with_an_unpinned_engine_stops_without_running_it(self):
+        self.cloud(joined=False)
+        self.untrusted()
         result = self.setup(tip.invite(), "demo")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("--upgrade-engine", result.stderr)
-        self.assertEqual(self.version(self.rn), OLD)
+        self.assertIn("is not a Reason Network build pinned by agent-mesh; repair it with", result.stderr)
+        self.assertFalse(self.untrusted_ran())
+
+    def test_cloud_setup_exports_no_update_to_every_engine_command(self):
+        self.cloud_box()
+        engine = CLOUD_ENV_ENGINE.replace("@LOG@", str(self.base / "env.log"))
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+            item = tarfile.TarInfo("reason-network")
+            item.mode, item.size = 0o755, len(engine)
+            tar.addfile(item, io.BytesIO(engine.encode()))
+        (self.mock / "e.tgz").write_bytes(archive.getvalue())
+        pin(self.box / "rn-cloud-setup.sh", "x86_64-unknown-linux-musl", hashlib.sha256(archive.getvalue()).hexdigest())
+        self.pin_builds({NEW: engine.encode()})
+        self.env["REASON_NETWORK_NO_UPDATE"] = "0"
+        result = self.setup(tip.invite(), "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        lines = (self.base / "env.log").read_text().splitlines()
+        self.assertTrue(any(l.startswith("join ") for l in lines), lines)
+        self.assertEqual([l for l in lines if not l.endswith(" NO_UPDATE=1 MACHINE=cloud")], [])
+        config = (self.box / "state/config.toml").read_text()
+        for key in ("auto_update", "lan", "tray"):
+            self.assertIn(f"{key} = false", config)
+        self.assertEqual(self.launcher_text(), rn_engine().LAUNCHER)
+
+    def launcher_text(self):
+        return (self.box / "bin/reason-network").read_text()
 
 
 def load_tests(loader, standard_tests, pattern):
     suite = unittest.TestSuite()
-    for cls in (EngineCommands, PinnedChecksums, MacUpgrade, CloudUpgrade):
+    for cls in (EngineCommands, CloudEngineCommands, PinnedChecksums, MacUpgrade, CloudUpgrade):
         for name in sorted(n for n in vars(cls) if n.startswith("test")):
             suite.addTest(cls(name))
     return suite

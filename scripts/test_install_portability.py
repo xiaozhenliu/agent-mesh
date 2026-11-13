@@ -1,6 +1,7 @@
 """Installation checks with fake tools and a disposable home; never contact real services."""
 import base64
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -21,6 +22,13 @@ from pathlib import Path
 from render_prompt import ROOT, render_prompt
 from test_render_prompt import ROUTINE_V041
 from write_launch_agent import write_launch_agent
+
+
+def rn_engine():
+    spec = importlib.util.spec_from_file_location("rn_engine", ROOT / "box/rn-engine.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class Installation(unittest.TestCase):
@@ -47,7 +55,12 @@ class Installation(unittest.TestCase):
         self.tool("launchctl", 'echo "launchctl $*" >> "$CALL_LOG"; exit 0')
         self.tool("plutil", "exit 0")
         self.tool("curl", 'echo "curl $*" >> "$CALL_LOG"; case "$*" in *https://aps1-1*|*.compute.reasonmachines.com/*) printf 200 ;; *) exit 73 ;; esac')
-        self.tool("git", 'echo "unexpected git call" >> "$CALL_LOG"; exit 99')
+        self.git = self.base / "git"
+        self.git.mkdir()
+        (self.git / "release-commit").write_text("a" * 40 + "\n")
+        self.env.update(GIT_STATE=str(self.git), RELEASE_ROOT=str(ROOT))
+        self.env["RELEASE_GIT_STUB"] = str(self.tool("release-git", RELEASE_GIT))
+        self.tool("git", RELEASE_GIT)
 
     def tool(self, name, body, path=None):
         path = path or self.bin / name
@@ -90,12 +103,39 @@ class Installation(unittest.TestCase):
         for lang in ("en", "zh-CN"):
             result = self.run_script("install.sh", "--cloud-prompt", "--lang", lang)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("git clone https://github.com/xiaozhenliu/agent-mesh.git", result.stdout)
+            self.assertIn("URL=https://github.com/xiaozhenliu/agent-mesh.git\n", result.stdout)
             self.assertIn(str(self.home / ".config/agent-relay/outbound.key"), result.stdout)
             self.assertNotIn("<mac-home>", result.stdout)
         self.assertNotIn("unexpected git", self.calls())
         self.assertNotIn("curl", self.calls())
         self.assertNotIn("bootstrap", self.calls())
+
+    def test_cloud_prompt_is_pinned_to_the_published_release(self):
+        self.engine()
+        tag = "v" + (ROOT / "VERSION").read_text().strip()
+        cases = (("release-fail", "could not be fetched"),
+                 ("release/box/rn-fetch.py", "box/rn-fetch.py in this checkout differs from the release"))
+        for path, why in cases:
+            with self.subTest(why):
+                (self.git / path).parent.mkdir(parents=True, exist_ok=True)
+                (self.git / path).write_text("other\n")
+                result = self.run_script("install.sh", "--cloud-prompt")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(why, result.stderr)
+                self.assertIn("./install.sh --cloud-prompt", result.stderr)
+                self.assertEqual(result.stdout.count("AGENT_MESH_SETUP"), 0)
+                self.assertIsNone(self.record())
+                (self.git / path).unlink()
+        result = self.run_script("install.sh", "--cloud-prompt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"git fetch https://github.com/xiaozhenliu/agent-mesh.git refs/tags/{tag}:refs/tags/{tag}",
+                      self.calls())
+        self.assertIn(f"TAG='{tag}'; COMMIT='{'a' * 40}'", result.stdout)
+        for name in ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py"):
+            digest = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+            self.assertIn(f"{digest}  {name}", result.stdout)
+        for placeholder in ("<release-tag>", "<release-commit>", "<cloud-checksums>", "<repo-url>"):
+            self.assertNotIn(placeholder, result.stdout)
 
     def configured(self, relay=None):
         """An installed engine plus a configured relay: env with a webhook, and the current key."""
@@ -218,7 +258,7 @@ exit 0""")
         self.engine()
         result = self.run_script("install.sh", "--cloud-prompt", "--repo-url", "https://example.invalid/fork.git")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("git clone https://example.invalid/fork.git", result.stdout)
+        self.assertIn("URL=https://example.invalid/fork.git\n", result.stdout)
 
     def test_ssh_repository_override_is_rejected(self):
         result = self.run_script("install.sh", "--cloud-prompt", "--repo-url", "git@example.invalid:repo.git")
@@ -345,7 +385,14 @@ exit 0""")
         self.tool("mv", f'eval "last=\\${{$#}}"\n'
                         f'if [ -f "$MOCK_BOX/fail-mv" ] && [ "$last" = "$RN_CLOUD_BASE/person" ]; then exit 1; fi\n'
                         f'exec "{real_mv}" "$@"')
-        self.env.update(MOCK_OS="Linux", MOCK_ARCH="x86_64", RN_CLOUD_BASE=str(self.box), MOCK_BOX=str(self.mock))
+        self.builds = self.mock / "builds.json"
+        self.pin_builds({"0.12.17": CLOUD_ENGINE.encode()})
+        self.env.update(MOCK_OS="Linux", MOCK_ARCH="x86_64", RN_CLOUD_BASE=str(self.box), MOCK_BOX=str(self.mock),
+                        RN_PINNED_BUILDS_FILE=str(self.builds))
+
+    def pin_builds(self, builds):
+        target = rn_engine().linux_target()
+        self.builds.write_text(json.dumps({v: {target: hashlib.sha256(data).hexdigest()} for v, data in builds.items()}))
 
     def cloud_state(self, team=None, rows=()):
         (self.box / "state").mkdir(exist_ok=True)
@@ -570,6 +617,7 @@ exit 0""")
         (box / "person").write_text("demo\n")
         (box / "outbound.key").write_text("k" * 64)
         (box / "rn-fetch.py").symlink_to(ROOT / "box/rn-fetch.py")
+        (box / "rn-engine.py").symlink_to(ROOT / "box/rn-engine.py")
         self.tool("reason-network", 'echo "rn $*" >> "$CALL_LOG"', box / "bin/reason-network")
         db = sqlite3.connect(box / "state/network.db")
         db.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, body TEXT, sent_at INTEGER)")
@@ -721,11 +769,9 @@ exit 0""")
         repo = self.base / "repo"
         shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns("__pycache__", ".git"))
         (repo / "check.sh").write_text("#!/bin/bash\necho 'RESULT ok'\n")
-        self.git = self.base / "git"
-        self.git.mkdir()
         (self.git / "head").write_text("a" * 40 + "\n")
         (self.git / "upstream").write_text("a" * 40 + "\n")
-        self.env.update(GIT_STATE=str(self.git), PYTHONDONTWRITEBYTECODE="1")
+        self.env.update(GIT_STATE=str(self.git), RELEASE_ROOT=str(repo), PYTHONDONTWRITEBYTECODE="1")
         self.tool("git", GIT_STUB)
         return repo
 
@@ -782,22 +828,29 @@ exit 0""")
     def sha(self, path):
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
-    def cloud_reply(self, repo, commit="a" * 40, fetch_sum=None, engine=True):
-        lines = ["Done. Output:", "```", commit, "",
-                 f"{self.sha(repo / 'box/rn-cloud.sh')}  box/rn-cloud.sh",
-                 f"{fetch_sum or self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py"]
+    def release_tag(self, repo):
+        return "v" + (repo / "VERSION").read_text().strip()
+
+    def cloud_reply(self, repo, commit="a" * 40, fetch_sum=None, engine=True, tag=None):
+        lines = ["Done. Output:", "```", "origin: https://github.com/example/agent-mesh.git"]
         if engine:
-            lines += [f"{self.sha(repo / 'box/rn-cloud-setup.sh')}  box/rn-cloud-setup.sh",
-                      f"{self.sha(repo / 'box/rn-engine.py')}  box/rn-engine.py", "```",
-                      "engine: reason-network 0.12.17 running (daemon pid 4321, started 2026-11-12T08:00:00Z, "
-                      "binary replaced 2026-11-12T07:59:58Z)"]
-        else:
-            lines.append("```")
+            build = next(iter(rn_engine().PINNED_BUILDS["0.12.17"].values()))
+            lines += ["engine: reason-network 0.12.17 running (daemon pid 4321, started 2026-11-12T08:00:00Z, "
+                      "binary replaced 2026-11-12T07:59:58Z)",
+                      f"engine: pinned build {build} at box/bin/engine/reason-network", "engine: launcher ok"]
+        r = "agent-mesh-result"
+        lines += [f"{r} commit {commit}",
+                  f"{r} sum {self.sha(repo / 'box/rn-cloud.sh')}  box/rn-cloud.sh",
+                  f"{r} sum {fetch_sum or self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py",
+                  f"{r} sum {self.sha(repo / 'box/rn-cloud-setup.sh')}  box/rn-cloud-setup.sh",
+                  f"{r} sum {self.sha(repo / 'box/rn-engine.py')}  box/rn-engine.py",
+                  f"{r} DONE {tag or self.release_tag(repo)}", "```"]
         return lines + ["."]
 
-    def cloud_reply_check(self, repo, text):
+    def cloud_reply_check(self, repo, text, *extra):
         return subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "cloud-reply",
-                               "--commit", "a" * 40], input=text, env=self.env, capture_output=True, text=True)
+                               "--commit", "a" * 40, "--tag", self.release_tag(repo), *extra], input=text,
+                              env=self.env, capture_output=True, text=True)
 
     def test_restart_relay_needs_the_relay_pid_from_launchd(self):
         repo = self.installed()
@@ -1071,7 +1124,10 @@ exit 0""")
         result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("match: commit, checksums and engine", result.stdout)
-        self.assertIn("checkout main first", result.stdout)
+        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", result.stdout)
+        self.assertNotIn("pull --ff-only", result.stdout)
+        self.assertIn(f"TAG={self.release_tag(repo)}; COMMIT={'a' * 40}", result.stdout)
+        self.assertRegex(result.stdout, r"cloud release\s+ok")
         self.assertIn("rn-cloud-setup.sh --upgrade-engine", result.stdout)
         data = self.record()
         self.assertEqual(data["cloud_engine"]["version"], "0.12.17")
@@ -1103,7 +1159,7 @@ exit 0""")
         repo = self.installed(record=False)
         result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *self.cloud_reply(repo), "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("The routine is still paused", result.stdout)
+        self.assertIn("The routine is still paused: resume it in Grok Bot", result.stdout)
         self.assertTrue(self.loaded())
         data = self.record()
         self.assertEqual((data["txn"]["stage"], data["cloud"]["state"]), ("cloud_done", "confirmed"))
@@ -1131,6 +1187,21 @@ exit 0""")
                          subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "digest", "cloud"],
                                         env=self.env, capture_output=True, text=True).stdout.strip())
 
+    def test_update_rerun_with_a_rejected_cloud_reply_keeps_the_routine_paused(self):
+        repo = self.paused_after_cloud()
+        with open(repo / "box/rn-cloud.sh", "a") as stream:
+            stream.write("\n")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "."])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("mismatch:", result.stdout)
+        self.assertIn("Keep it paused until ./update.sh records the cloud step", result.stdout)
+        self.assertNotIn("resume it in Grok Bot", result.stdout)
+        data = self.record()
+        self.assertEqual(data["txn"]["stage"], "routine_paused")
+        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo, engine=False), "y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("txn", self.record())
+
     def test_update_cloud_step_needs_the_pasted_reply_to_match(self):
         cases = {
             "bare yes": ["y", "."],
@@ -1149,7 +1220,9 @@ exit 0""")
                 result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *answer, "y", "y"])
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("mismatch:", result.stdout)
-                self.assertIn("The routine is still paused", result.stdout)
+                self.assertIn("The routine is still paused. Keep it paused until ./update.sh records the cloud step",
+                              result.stdout)
+                self.assertNotIn("resume it in Grok Bot", result.stdout)
                 self.assertTrue(self.loaded())
                 data = self.record()
                 self.assertNotEqual(data.get("cloud", {}).get("state"), "confirmed")
@@ -1158,6 +1231,55 @@ exit 0""")
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("Send this to Grok Bot", result.stdout)
                 self.assertEqual(self.record()["cloud"]["state"], "confirmed")
+
+    def test_update_checks_the_release_before_changing_anything(self):
+        cases = {
+            "not published": ("release-fail", "could not be fetched"),
+            "differs": ("release/box/rn-cloud.sh", "box/rn-cloud.sh in this checkout differs from the release"),
+        }
+        for label, (path, why) in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                repo = self.installed(record=False)
+                (self.git / path).parent.mkdir(parents=True, exist_ok=True)
+                (self.git / path).write_text("other\n")
+                path_ = self.home / ".local/lib/agent-mesh/deployed.json"
+                before = path_.read_bytes() if path_.exists() else None
+                plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+                self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+                self.assertRegex(plan.stdout, r"cloud release\s+failed")
+                self.assertIn(why, plan.stdout)
+                result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y"])
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(why, result.stderr)
+                self.assertNotIn("Send this to Grok Bot", result.stdout)
+                self.assertEqual(self.service_changes(), [])
+                self.assertEqual(path_.read_bytes() if path_.exists() else None, before)
+                self.assertTrue(self.loaded())
+
+    def test_update_without_cloud_changes_does_not_check_the_release(self):
+        repo = self.installed()
+        (self.git / "release-fail").write_text("")
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertNotIn("cloud release", plan.stdout)
+        result = self.run_tty(repo, "--no-pull", answers=["y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("git init", self.calls())
+        self.assertNotIn("Send this to Grok Bot", result.stdout)
+
+    def test_update_release_points_elsewhere_and_the_reply_must_show_it(self):
+        repo = self.installed(record=False)
+        (self.git / "release-commit").write_text("b" * 40 + "\n")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *self.cloud_reply(repo), "y", "y"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"TAG={self.release_tag(repo)}; COMMIT={'b' * 40}", result.stdout)
+        self.assertIn("mismatch: the reply shows commit aaaaaaaaaaaa, not bbbbbbbbbbbb", result.stdout)
+        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo, commit="b" * 40), "y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.record()["cloud"]["state"], "confirmed")
 
     def test_update_interrupted_while_pasting_keeps_the_cloud_unconfirmed(self):
         for sig, code in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
@@ -1178,22 +1300,37 @@ exit 0""")
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(self.record()["cloud"]["state"], "confirmed")
 
-    def test_cloud_reply_matching_tolerates_formatting_but_not_extra_commits(self):
+    def test_cloud_reply_reads_only_the_result_lines(self):
         repo = self.installed()
+        r = "agent-mesh-result"
         cloud, fetch = self.sha(repo / "box/rn-cloud.sh"), self.sha(repo / "box/rn-fetch.py")
+        tag = self.release_tag(repo)
+        c, a = f"{r} sum {cloud}  box/rn-cloud.sh\n", f"{r} commit {'a' * 40}\n"
+        f = f"{r} sum {fetch}  box/rn-fetch.py\n"
+        rest = (f"{r} sum {self.sha(repo / 'box/rn-cloud-setup.sh')}  box/rn-cloud-setup.sh\n"
+                f"{r} sum {self.sha(repo / 'box/rn-engine.py')}  box/rn-engine.py\n{r} DONE {tag}\n")
         good = [
-            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py\n",
-            f"HEAD is {'A' * 40}.\n\n{cloud.upper()} *box/rn-cloud.sh\n{fetch}  ./box/rn-fetch.py\n",
-            f"`{'a' * 40}`\n`{cloud}  box/rn-cloud.sh`\n{fetch}  box/rn-fetch.py",
+            a + c + f + rest,
+            f"Previously HEAD was {'b' * 40}.\n{r} commit {'A' * 40}\n{r} sum {cloud.upper()} *box/rn-cloud.sh\n"
+            f"{r} sum {fetch}  ./box/rn-fetch.py\n{rest}",
+            f"`{a.strip()}`\n> {c}- {f}**{r} DONE {tag}**\n{rest}",
+            a + c + f + rest + "I would have printed STOP: here, but it is not at the start of a line\n",
+            a + c + f + rest + f"commit {'c' * 40}\n{'d' * 64}  box/rn-fetch.py\nDONE v0.0.1\n",
         ]
         bad = [
-            f"{'a' * 40}\n{'b' * 40}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py\n",
-            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh\n",
-            f"{'a' * 39}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py\n",
-            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py\n{'d' * 64}  box/rn-fetch.py\n",
-            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh.bak\n{fetch}  box/rn-fetch.py\n",
-            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh\n{fetch}  box/rn-fetch.py~\n",
-            f"{'a' * 40}\n{cloud}  box/rn-cloud.sh~\n{fetch}  box/rn-fetch.py\n",
+            a + f"{r} commit {'b' * 40}\n" + c + f + rest,
+            a + c + rest,
+            f"{r} commit {'a' * 39}\n" + c + f + rest,
+            a + c + f + f"{r} sum {'d' * 64}  box/rn-fetch.py\n" + rest,
+            a + c.replace("rn-cloud.sh", "rn-cloud.sh.bak") + f + rest,
+            a + c + f.replace("rn-fetch.py", "rn-fetch.py~") + rest,
+            a + c + f + rest.replace(tag, "v0.0.1"),
+            a + c + f + rest.replace(tag, tag + ".1"),
+            a + c + f + rest + "STOP: the engine step failed\n",
+            a + c + f + rest + "> **STOP: no clone**\n",
+            a + c + f + rest.replace(f"{r} DONE {tag}", f"The block failed before {r} DONE {tag}"),
+            a + c + f + rest.replace(f"{r} DONE {tag}", f"DONE {tag}"),
+            (a + c + f + rest).replace(f"{r} ", ""),
         ]
         for text in good:
             with self.subTest(text=text):
@@ -1204,6 +1341,28 @@ exit 0""")
                 result = self.cloud_reply_check(repo, text)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("mismatch:", result.stdout)
+
+    def test_cloud_reply_with_the_engine_needs_a_pinned_build_and_the_launcher(self):
+        repo = self.installed()
+        good = "\n".join(self.cloud_reply(repo)[:-1])
+        build = next(iter(rn_engine().PINNED_BUILDS["0.12.17"].values()))
+        result = self.cloud_reply_check(repo, good, "--engine")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        cases = {
+            "no build line": (good.replace(f"engine: pinned build {build} at box/bin/engine/reason-network\n", ""),
+                              "no line 'engine: pinned build"),
+            "unpinned build": (good.replace(build, "e" * 64), "not a pinned Reason Network 0.12.17 build"),
+            "two builds": (good + f"\nengine: pinned build {'e' * 64} at box/bin/engine/reason-network",
+                           "not a pinned Reason Network 0.12.17 build"),
+            "old path": (good.replace("box/bin/engine/reason-network", "box/bin/reason-network"),
+                         "no line 'engine: pinned build"),
+            "no launcher": (good.replace("engine: launcher ok\n", ""), "no line 'engine: launcher ok'"),
+        }
+        for label, (text, why) in cases.items():
+            with self.subTest(label):
+                result = self.cloud_reply_check(repo, text, "--engine")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(why, result.stdout)
 
     def test_update_terminated_while_waiting_restores_the_relay(self):
         repo = self.installed(record=False)
@@ -1244,23 +1403,19 @@ exit 0""")
             holder.kill()
             holder.wait()
 
-    def test_update_refuses_cloud_changes_the_cloud_cannot_pull(self):
+    def test_update_refuses_cloud_files_that_differ_from_the_release(self):
         repo = self.installed()
         before = self.record()
+        (self.git / "release/box").mkdir(parents=True)
+        shutil.copy(repo / "box/rn-cloud.sh", self.git / "release/box/rn-cloud.sh")
         with open(repo / "box/rn-cloud.sh", "a") as stream:
             stream.write("\n")
-        (self.git / "boxdirty").write_text(" M box/rn-cloud.sh\n")
         result = self.run_tty(repo, "--no-pull")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("box/ has uncommitted changes", result.stderr)
-        (self.git / "boxdirty").unlink()
-        (self.git / "upstream").write_text("b" * 40 + "\n")
-        result = self.run_tty(repo, "--no-pull")
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("not at its upstream commit", result.stderr)
+        self.assertIn("box/rn-cloud.sh in this checkout differs from the release", result.stderr)
         self.assertEqual(self.service_changes(), [])
         self.assertEqual(self.record(), before)
-        (self.git / "upstream").write_text("a" * 40 + "\n")
+        (self.git / "release/box/rn-cloud.sh").unlink()
         result = self.run_tty(repo, "--no-pull", answers=["y", "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(self.record()["cloud"], before["cloud"])
@@ -2160,6 +2315,17 @@ pid = int((Path(os.environ["MOCK_LAUNCHD"]) / "pid").read_text())
 marker.write_text(json.dumps({{"name": f"{{person}}/{{name or listen}}", "pid": pid, "at": int(time.time())}}))
 '''
 
+RELEASE_GIT = r'''[ "$1" = -C ] && shift 2
+S="$GIT_STATE"
+case "$*" in
+  "init -q --bare "*) [ $# = 4 ] ;;
+  "fetch -q --depth 1 --no-tags "*) echo "git fetch $6 $7" >> "$CALL_LOG"
+    [ ! -f "$S/release-fail" ] || { echo "fatal: couldn't find remote ref $7" >&2; exit 128; } ;;
+  "rev-parse --verify -q refs/tags/"*) cat "$S/release-commit" ;;
+  "cat-file blob "*) f="${3#*:}"; if [ -f "$S/release/$f" ]; then cat "$S/release/$f"; else cat "$RELEASE_ROOT/$f"; fi ;;
+  *) echo "unexpected git call $*" >> "$CALL_LOG"; exit 99 ;;
+esac'''
+
 GIT_STUB = r'''[ "$1" = -C ] && shift 2
 echo "git $*" >> "$CALL_LOG"
 S="$GIT_STATE"
@@ -2172,6 +2338,8 @@ case "$*" in
   "status --porcelain --untracked-files=no") [ ! -f "$S/dirty" ] || cat "$S/dirty" ;;
   "status --porcelain -- box") [ ! -f "$S/boxdirty" ] || cat "$S/boxdirty" ;;
   "pull --ff-only") [ ! -f "$S/pull-fail" ] || exit 1; [ ! -f "$S/pull.sh" ] || /bin/sh "$S/pull.sh"; cp "$S/upstream" "$S/head" ;;
+  "init -q --bare "*|"fetch -q --depth 1 --no-tags "*|"rev-parse --verify -q refs/tags/"*|"cat-file blob "*)
+    exec /bin/sh "$RELEASE_GIT_STUB" "$@" ;;
   *) echo "unexpected git $*" >> "$CALL_LOG"; exit 99 ;;
 esac'''
 

@@ -109,6 +109,7 @@ class FourCopies(unittest.TestCase):
         self.box = base / "box"
         self.box.mkdir()
         (self.box / "person").write_text("demo\n")
+        (self.box / "rn-engine.py").symlink_to(BOX / "rn-engine.py")
         self.env = dict(os.environ, PATH=f"{self.tools}{os.pathsep}{os.environ['PATH']}", RN_CLOUD_BASE=str(self.box))
         for key in ("AGENT_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME", "MACHINE_NAME"):
             self.env.pop(key, None)

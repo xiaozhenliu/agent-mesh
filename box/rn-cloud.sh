@@ -43,15 +43,20 @@
 # each registration the engine's session table must show exactly that name, else the command stops.
 # State lives under /workspace/agent-mesh/box (survives box restarts). Nothing here runs in the background
 # on purpose: the engine daemon is started on demand and dies with the box.
+# The engine is box/bin/engine/reason-network; every command first checks its bytes against the builds pinned in
+# rn-engine.py and stops if they differ. box/bin/reason-network is only a launcher for commands run by hand.
 set -euo pipefail
 die() { echo "rn-cloud: $*" >&2; exit 1; }
 [ "$(uname -s)" = Linux ] || die "[BOT-CLOUD] run this on the Bot's Linux cloud computer, not the user's Mac"
 command -v python3 >/dev/null || die "Python 3.9+ is required on [BOT-CLOUD]; see README prerequisites"
 BASE="${RN_CLOUD_BASE:-/workspace/agent-mesh/box}"   # override only for tests
 export REASON_NETWORK_HOME="$BASE/state"
+export REASON_NETWORK_NO_UPDATE=1
 export REASON_NETWORK_NO_PROMPT=1
 export REASON_NETWORK_MACHINE="${MACHINE_NAME:-cloud}"   # same machine name as rn-cloud-setup.sh used to join
-RN="$BASE/bin/reason-network"
+case "${1:-}" in who|init-inbox|fetch|send|working|done|purge) ;; *) sed -n '2,/^# Names:/p' "$0" | sed '$d'; exit 2 ;; esac
+RN="$(python3 -I "$BASE/rn-engine.py" cloud-bin --base "$BASE")" \
+  || die "the engine was not checked, so nothing was run (see the line above)"
 [ -s "$BASE/person" ] || die "cloud setup is incomplete; run rn-cloud-setup.sh with the Mac invite and team name first"
 PERSON="$(cat "$BASE/person")"            # written by rn-cloud-setup.sh; the same name as the Mac
 BASE_NAME=bot
@@ -89,7 +94,7 @@ wait_connected() { is_connected || die "the Mac is not connected (is it awake an
 
 check_registered() {
   local actual
-  actual="$(python3 - "$REASON_NETWORK_HOME/network.db" "$1" <<'PY'
+  actual="$(python3 -I - "$REASON_NETWORK_HOME/network.db" "$1" <<'PY'
 import sqlite3, sys
 from pathlib import Path
 db, name = Path(sys.argv[1]), sys.argv[2]
@@ -125,7 +130,7 @@ register_inbox() {   # bodies stay in network.db for rn-fetch
 }
 
 outbox_count() {
-  python3 - "$REASON_NETWORK_HOME/network.db" <<'PY'
+  python3 -I - "$REASON_NETWORK_HOME/network.db" <<'PY'
 import sqlite3, sys
 print(sqlite3.connect(sys.argv[1]).execute("select count(*) from outbox").fetchone()[0])
 PY
@@ -146,10 +151,10 @@ case "${1:-}" in
     rc=0
     if [ "$#" -gt 0 ] && [ "$connected" = 1 ] && [ "${REFWD:-1}" != 0 ]; then
       register            # <name>-cloud must be a live sender here before an RN-REFWD request can go out
-      python3 "$BASE/rn-fetch.py" fetch --timeout "$t" \
+      python3 -I "$BASE/rn-fetch.py" fetch --timeout "$t" \
         --refwd-timeout "${REFWD_TIMEOUT:-90}" ${got:+--got} "$@" || rc=$?
     else
-      python3 "$BASE/rn-fetch.py" wait --timeout "$t" ${got:+--got} "$@" || rc=$?
+      python3 -I "$BASE/rn-fetch.py" wait --timeout "$t" ${got:+--got} "$@" || rc=$?
     fi
     register_inbox      # marks them read in the engine (the rows stay in network.db)
     [ "$connected" = 1 ] || echo "rn-cloud: the Mac was not connected; anything missing is still in its outbox" >&2
@@ -159,10 +164,10 @@ case "${1:-}" in
     body="$(cat)"; [ -n "$body" ] || die "empty body"
     wait_connected; register; register_inbox
     # Mark the reply as started BEFORE the engine sees it, so a crash after this point is never redone silently.
-    if [ -n "$reply_to" ] && ! python3 "$BASE/rn-fetch.py" replying "$reply_to" >/dev/null; then
+    if [ -n "$reply_to" ] && ! python3 -I "$BASE/rn-fetch.py" replying "$reply_to" >/dev/null; then
       die "could not record $reply_to as replying; nothing was sent, so it is safe to try again"
     fi
-    envelope="$(python3 - "$KEY_FILE" "$to" "$reply_to" "$body" <<'PY'
+    envelope="$(python3 -I - "$KEY_FILE" "$to" "$reply_to" "$body" <<'PY'
 import hmac, hashlib, os, sys, time
 key = open(sys.argv[1]).read().strip()
 to, reply_to = sys.argv[2], sys.argv[3]
@@ -178,13 +183,13 @@ PY
 )"
     out="$(printf '%s' "$envelope" | "$RN" send "$PERSON/$RELAY" --from "$PERSON/$CLOUD" -)" || die "send failed: $out"
     echo "$out"
-    status="$(python3 "$BASE/rn-fetch.py" send-status <<<"$out")" || die "could not classify the engine output: $out"
+    status="$(python3 -I "$BASE/rn-fetch.py" send-status <<<"$out")" || die "could not classify the engine output: $out"
     case "$status" in *refused*|*held*) die "the engine did not accept the message: $out" ;; esac
     # Don't end the turn while the message still sits in the box's outbox (the box may sleep right after).
     for _ in $(seq 1 30); do
       if [ "$(outbox_count)" = "0" ]; then
         echo "rn-cloud: handed to the Mac"
-        if [ -n "$reply_to" ] && ! err="$(python3 "$BASE/rn-fetch.py" "done" "$reply_to" --via send 2>&1 >/dev/null)"; then
+        if [ -n "$reply_to" ] && ! err="$(python3 -I "$BASE/rn-fetch.py" "done" "$reply_to" --via send 2>&1 >/dev/null)"; then
           # Already sent: exit 0 so nobody retries; the id stays "replying" and later shows as uncertain.
           echo "rn-cloud: sent, but could not record $reply_to as handled: ${err:-unknown error}" >&2
         fi
@@ -196,12 +201,12 @@ PY
     die "message still queued on the box; it will go out the next time the box connects. Do not resend." ;;
   working)
     [ "$#" = 2 ] && [ -n "$2" ] || die "usage: rn-cloud.sh working <id>"
-    python3 "$BASE/rn-fetch.py" working "$2" >/dev/null || die "could not record $2 as working; do not process it now"
+    python3 -I "$BASE/rn-fetch.py" working "$2" >/dev/null || die "could not record $2 as working; do not process it now"
     echo "rn-cloud: $2 marked working" ;;
   done)
     shift
     [ "$#" -gt 0 ] || die "usage: rn-cloud.sh done <id>..."
-    python3 "$BASE/rn-fetch.py" "done" "$@" >/dev/null || die "could not record $* as done"
+    python3 -I "$BASE/rn-fetch.py" "done" "$@" >/dev/null || die "could not record $* as done"
     echo "rn-cloud: recorded as done: $*" ;;
   purge)
     days="${2:-}"
@@ -210,6 +215,6 @@ PY
     # the daemon restarts on demand with the next who/fetch/send.
     RN_BIN="$RN" RN_INBOX_DIR="${RN_INBOX_DIR:-/workspace/agent-mesh/inbox}" \
       RN_THREADS_DIR="${RN_THREADS_DIR:-/workspace/agent-mesh/threads}" \
-      python3 "$BASE/rn-fetch.py" purge "$days" ;;
+      python3 -I "$BASE/rn-fetch.py" purge "$days" ;;
   *) sed -n '2,/^# Names:/p' "$0" | sed '$d'; exit 2 ;;
 esac

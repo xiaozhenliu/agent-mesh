@@ -61,7 +61,7 @@ RN_BIN, RN_CLOUD_NAME (<name>-cloud), RN_RELAY_NAME (<name>), RN_REFWD (1; 0 = o
 is read only if one of those three is unset; an empty or damaged file stops scan/wait/fetch and done.
 Standard library only.
 """
-import hashlib, hmac, json, os, re, shutil, sqlite3, subprocess, sys, time
+import hashlib, hmac, importlib.util, json, os, re, shutil, sqlite3, subprocess, sys, time
 from pathlib import Path
 
 BASE = Path(os.environ.get("RN_INBOX_DIR", "/workspace/agent-mesh/inbox"))
@@ -349,7 +349,21 @@ def names():
 
 
 def rn_bin():
-    return os.environ.get("RN_BIN") or str(Path(os.environ.get("RN_BOX", "/workspace/agent-mesh/box")) / "bin/reason-network")
+    if os.environ.get("RN_BIN"):
+        return os.environ["RN_BIN"]
+    spec = importlib.util.spec_from_file_location("rn_engine", Path(__file__).resolve().with_name("rn-engine.py"))
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    try:
+        return engine.cloud_bin(Path(os.environ.get("RN_BOX", "/workspace/agent-mesh/box")))
+    except engine.Failed as e:
+        raise SystemExit(f"rn-fetch: {e}")
+
+
+def engine_env(base=None):
+    env = dict(os.environ if base is None else base)
+    env.update(REASON_NETWORK_HOME=str(HOME), REASON_NETWORK_NO_UPDATE="1")
+    return env
 
 
 def send_got(stored, done, key, person):
@@ -360,7 +374,7 @@ def send_got(stored, done, key, person):
     items = [("stored", i) for i in stored] + [("done", i) for i in done]
     to = f"{person}/{names()[0]}"
     args = [rn_bin(), "send", to] + (["--from", f"{person}/{GOT_FROM}"] if GOT_FROM else []) + ["-"]
-    env = {k: v for k, v in os.environ.items() if k not in AGENT_ENV}
+    env = engine_env({k: v for k, v in os.environ.items() if k not in AGENT_ENV})
     sent, errors = 0, []
     for k in range(0, len(items), GOT_MAX_IDS):
         part = items[k:k + GOT_MAX_IDS]
@@ -419,7 +433,8 @@ def request_refwd(mid, key, person):
     write(cf, json.dumps(done))            # count before sending: a crash never allows extra requests
     try:
         r = subprocess.run([rn, "send", f"{person}/{relay}", "--from", f"{person}/{cloud}", "-"],
-                           input=refwd_body(key, mid), capture_output=True, text=True, timeout=60)
+                           input=refwd_body(key, mid), capture_output=True, text=True, timeout=60,
+                           env=engine_env())
     except Exception as e:
         return None, f"send failed: {type(e).__name__}"
     res = (r.stdout + r.stderr).strip()
@@ -760,7 +775,8 @@ def purge(days, threads, rn_bin=None):
     lock = inbox_lock(int(os.environ.get("RN_PURGE_LOCK_WAIT", "30")))
     try:
         if rn_bin:
-            subprocess.run([rn_bin, "stop"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+            subprocess.run([rn_bin, "stop"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+                           env=engine_env())
         running = engine_pids(rn_bin)
         if running:
             raise SystemExit(f"rn-fetch: the engine is still running (pid {', '.join(running)}); stop it, then purge")

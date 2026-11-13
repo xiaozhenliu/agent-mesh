@@ -39,11 +39,43 @@ class Prompts(unittest.TestCase):
         for lang in ("en", "zh-CN"):
             text = render_prompt("cloud-setup", lang, team_name="demo", mac_user="用户",
                                  repo_url=repo)
-            self.assertIn(f"git clone {shlex.quote(repo)} /workspace/agent-mesh", text)
+            self.assertIn(f"URL={shlex.quote(repo)}\n", text)
             self.assertIn("/Users/用户/.config/agent-relay/outbound.key", text)
             self.assertIn("rn-cloud-setup.sh '<invite-link>' demo", text)
             self.assertNotIn("<mac-user>", text)
             self.assertNotIn("<repo-url>", text)
+
+    def test_release_values_fill_the_setup_block_and_bad_ones_are_refused(self):
+        sums = "".join(f"{c * 64}  box/{n}\n" for c, n in zip("abcd", ("rn-cloud.sh", "rn-fetch.py",
+                                                                     "rn-cloud-setup.sh", "rn-engine.py")))
+        blocks = set()
+        for lang in ("en", "zh-CN"):
+            text = render_prompt("cloud-setup", lang, team_name="demo", mac_home="/Users/demo",
+                                 repo_url="https://example.invalid/repo.git", release_tag="v1.2.3",
+                                 release_commit="f" * 40, cloud_checksums=sums)
+            self.assertIn(f"TAG='v1.2.3'; COMMIT='{'f' * 40}'", text)
+            self.assertEqual(text.count(sums), 2)
+            for placeholder in ("<release-tag>", "<release-commit>", "<cloud-checksums>"):
+                self.assertNotIn(placeholder, text)
+            start = text.index("bash -s <<'AGENT_MESH_SETUP'")
+            blocks.add(text[start:text.index("\nAGENT_MESH_SETUP\n", start)])
+        self.assertEqual(len(blocks), 1)
+        unfilled = render_prompt("cloud-setup", team_name="demo")
+        self.assertIn("TAG='<release-tag>'; COMMIT='<release-commit>'", unfilled)
+        bad = ({"release_tag": "v1.2"}, {"release_tag": "1.2.3"}, {"release_tag": "v1.2.3'; x"},
+               {"release_commit": "F" * 40}, {"release_commit": "f" * 39},
+               {"cloud_checksums": sums.rsplit("\n", 2)[0]}, {"cloud_checksums": sums + sums},
+               {"cloud_checksums": sums.replace("box/rn-engine.py", "box/x y")},
+               {"cloud_checksums": sums.replace("box/", "/tmp/", 1)})
+        for kwargs in bad:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    render_prompt("cloud-setup", team_name="demo", **kwargs)
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/render_prompt.py"), "cloud-setup",
+                                 "--release-tag", "v1.2.3", "--release-commit", "f" * 40, "--cloud-checksums", sums],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"TAG='v1.2.3'; COMMIT='{'f' * 40}'", result.stdout)
 
     def test_default_relay_name_renders_the_routine_users_already_saved(self):
         for lang, digest in ROUTINE_V041.items():

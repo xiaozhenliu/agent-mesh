@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # agent-mesh: update an installed Mac to the version in this checkout.
-#   ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan]
+#   ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--repo-url URL]
 #   --plan     show what differs and what would run, then exit; the deployment is not changed
 #   --no-pull  use this checkout as is; otherwise git pull --ff-only runs first
 #   --yes      skip the confirmation when only the relay or the dsh plugin changes (never the engine upgrade)
 #   --lang     routine prompt language; default: the recorded one, then AGENT_MESH_LANG, then en
+#   --repo-url the repository the cloud installs from (default: the public agent-mesh repository); the cloud scripts
+#              in this checkout must match its release tag v<VERSION>, which is checked online before anything changes
 # Relay and dsh plugin updates run unattended. A Reason Network upgrade on this Mac asks first (terminal), switches
 # the relay before the engine, keeps a backup and rolls back on failure. When the cloud scripts, the cloud engine or
 # the routine prompt changed, it walks you through the [GROK-UI] steps in order (terminal required) and starts the
@@ -29,7 +31,8 @@ parse_args() {
       --yes|-y) YES=1; shift ;;
       --no-pull) PULL=0; shift ;;
       --plan) PLAN=1; shift ;;
-      -h|--help) sed -n '2,13p' "$HERE/update.sh" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      --repo-url) [ $# -ge 2 ] && [ -n "$2" ] || { echo "update: --repo-url needs a URL" >&2; exit 2; }; REPO_URL="$2"; shift 2 ;;
+      -h|--help) sed -n '2,15p' "$HERE/update.sh" | sed 's/^# \{0,1\}//'; exit 0 ;;
       *) echo "update: unknown option: $1 (see ./update.sh --help)" >&2; exit 2 ;;
     esac
   done
@@ -94,7 +97,14 @@ on_exit() {
     stage="$(state txn-get stage 2>/dev/null || true)"
     was="$(state txn-get relay_was_loaded 2>/dev/null || true)"
     case "$stage" in
-      routine_paused|cloud_done|prompt_done) echo "!! [GROK-UI] The routine is still paused: resume it in Grok Bot." ;;
+      routine_paused)
+        if need_has cloud || need_has cloud_engine; then
+          echo "!! [GROK-UI] The routine is still paused. Keep it paused until ./update.sh records the cloud step;"
+          echo "   if Grok Bot's output says 'could not restore', have the clone looked at before anything runs there."
+        else
+          echo "!! [GROK-UI] The routine is still paused: resume it in Grok Bot."
+        fi ;;
+      cloud_done|prompt_done) echo "!! [GROK-UI] The routine is still paused: resume it in Grok Bot." ;;
     esac
     if [ "$was" = 1 ] && ! relay_loaded; then
       if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
@@ -127,16 +137,26 @@ pull_checkout() {
 
 checkout_label() { git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo "not a git checkout"; }
 
-snapshot_ok() {
-  git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || { echo "update: the cloud scripts changed, but this directory is not a git clone the cloud can pull from" >&2; return 1; }
-  [ -z "$(git -C "$HERE" status --porcelain -- box)" ] \
-    || { echo "update: box/ has uncommitted changes the cloud cannot pull; commit or revert them first" >&2; return 1; }
-  local up
-  up="$(git -C "$HERE" rev-parse '@{u}' 2>/dev/null)" \
-    || { echo "update: this branch has no upstream, so the cloud cannot pull the same commit" >&2; return 1; }
-  [ "$up" = "$(git -C "$HERE" rev-parse HEAD)" ] \
-    || { echo "update: this checkout is not at its upstream commit; the cloud would get a different version" >&2; return 1; }
+release_needed() {
+  [ "$S_CLOUD" = unchanged ] && [ "$S_CENGINE" = unchanged ] || return 0
+  [ "$S_TXN" != - ] || return 1
+  case ",$(state txn-get need)," in *,cloud,*|*,cloud_engine,*) return 0 ;; esac
+  return 1
+}
+
+release_check() {
+  local out k a b
+  if ! out="$(state release --repo-url "$REPO_URL" 2>&1)"; then
+    REL_STATE="failed"; REL_NOTE="${out#update: }"
+    return 1
+  fi
+  REL_SUMS=""
+  while read -r k a b; do
+    case "$k" in
+      tag) REL_TAG="$a" ;; commit) REL_COMMIT="$a" ;; sum) REL_SUMS="$REL_SUMS$a  $b"$'\n' ;;
+    esac
+  done <<< "$out"
+  REL_STATE="ok"; REL_NOTE="$REL_TAG at ${REL_COMMIT:0:12}; the cloud files in this checkout match it"
 }
 
 read_status() {
@@ -172,6 +192,10 @@ print_plan() {
   read -r name_state name_value <<< "$S_NAME"
   if [ "$name_state" = ok ]; then plan_line "address name" ok "$name_value"
   else plan_line "address name" unknown "$name_value (recorded with the next step this script records)"; fi
+  case "$REL_STATE" in
+    ok) plan_line "cloud release" ok "$REL_NOTE" ;;
+    failed) plan_line "cloud release" failed "$REL_NOTE (the update stops here before changing anything)" ;;
+  esac
   plan_line "relay" "$S_RELAY" "install this checkout's relay and restart it"
   [ "$S_ETXN" = - ] || echo "  an engine upgrade stopped at '$S_ETXN': it is rolled back first (binary only), then offered again"
   case "$S_ENGINE" in
@@ -183,7 +207,7 @@ print_plan() {
   else plan_line "dsh plugin" "$S_DSH" "replace the plugin file; bridge settings stay"; fi
   case "$S_CLOUD" in
     pending) plan_line "cloud scripts" pending "asks whether Grok Bot finished the setup the installer printed" ;;
-    *) plan_line "cloud scripts" "$S_CLOUD" "Grok Bot pulls this commit on [BOT-CLOUD]; you paste its reply to compare (terminal)" ;;
+    *) plan_line "cloud scripts" "$S_CLOUD" "Grok Bot checks and checks out the release tag on [BOT-CLOUD]; you paste its reply to compare (terminal)" ;;
   esac
   case "$S_SETUP" in
     pending) plan_line "cloud setup" pending "asks whether Grok Bot finished the setup the installer printed" ;;
@@ -192,7 +216,7 @@ print_plan() {
   case "$S_CENGINE" in
     unchanged) plan_line "cloud engine" unchanged "-" ;;
     pending) plan_line "cloud engine" pending "asks whether Grok Bot finished the setup the installer printed" ;;
-    *) plan_line "cloud engine" "$S_CENGINE" "Grok Bot runs box/rn-cloud-setup.sh --upgrade-engine on [BOT-CLOUD]; you paste its reply to compare (terminal)" ;;
+    *) plan_line "cloud engine" "$S_CENGINE" "Grok Bot runs box/rn-cloud-setup.sh --upgrade-engine on [BOT-CLOUD] (checks the engine and keeps it at box/bin/engine); you paste its reply to compare (terminal)" ;;
   esac
   case "$S_PROMPT" in
     pending) plan_line "routine prompt" pending "asks whether the prompt the installer printed is saved" ;;
@@ -219,33 +243,79 @@ cloud_step() {   # $1 = 1 when the cloud engine is checked or upgraded in the sa
   SHOWN="$(state digest cloud)"
   SHOWN_SETUP="$(state digest cloud_setup)"
   SHOWN_ENGINE="$(state digest cloud_engine)"
-  local commit branch files="box/rn-cloud.sh box/rn-fetch.py" n=4 eflag=""
-  commit="$(git -C "$HERE" rev-parse HEAD)"
-  branch="$(git -C "$HERE" rev-parse --abbrev-ref '@{u}')"
-  branch="${branch#*/}"
-  [ "$1" != 1 ] || { files="$files box/rn-cloud-setup.sh box/rn-engine.py"; eflag=--engine; }
+  local eflag=""
+  [ "$1" != 1 ] || eflag=--engine
   echo
   echo "[GROK-UI] Send this to Grok Bot directly in the chat (not through the routine):"
   echo "----------------------------------------------------------------"
-  echo "On [BOT-CLOUD], update the agent-mesh clone at /workspace/agent-mesh:"
-  echo "1. Run git -C /workspace/agent-mesh status --porcelain and git -C /workspace/agent-mesh remote get-url origin. If there are uncommitted changes, or it is not the public agent-mesh repository cloned during setup, stop and tell me; do not overwrite anything."
-  echo "2. If git -C /workspace/agent-mesh symbolic-ref -q HEAD prints nothing (a detached HEAD), run git -C /workspace/agent-mesh checkout $branch first. If that fails, stop and tell me; do not reset, clean or stash."
-  echo "3. Run git -C /workspace/agent-mesh pull --ff-only. If it fails, stop and tell me."
-  if [ "$1" = 1 ]; then
-    echo "4. Run bash /workspace/agent-mesh/box/rn-cloud-setup.sh --upgrade-engine. It checks or upgrades the Reason Network engine (it keeps a backup and rolls back on failure). If it fails, stop and send me its full output; do not retry or repair anything."
-    n=5
+  echo "On [BOT-CLOUD], run this block exactly as written, as one bash command, and reply with its full output. It"
+  echo "updates /workspace/agent-mesh to the release $REL_TAG after checking it. If its last line is not the DONE line,"
+  echo "stop and send me the output; do not retry, reset, clean, stash or repair anything."
+  echo
+  echo "bash -s <<'AGENT_MESH_UPDATE'"
+  echo "set -u"
+  echo 'stop() { echo "STOP: $*"; exit 1; }'
+  echo "export GIT_TERMINAL_PROMPT=0"
+  echo "A=/workspace/agent-mesh; TAG=$REL_TAG; COMMIT=$REL_COMMIT"
+  cat <<'BLOCK'
+cd "$A" || stop "no clone at $A; nothing was changed"
+st="$(git status --porcelain)" || stop "$A is not a git clone; nothing was changed"
+[ -z "$st" ] || stop "$A has local changes; nothing was changed"
+echo "origin: $(git remote get-url origin)"
+git fetch -q --no-tags origin "refs/tags/$TAG:refs/tags/$TAG" </dev/null \
+  || stop "could not fetch $TAG, or a different tag $TAG is already here; nothing was changed"
+got="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}")" || stop "$TAG is not a commit; nothing was changed"
+[ "$got" = "$COMMIT" ] || stop "$TAG points to $got, not $COMMIT; nothing was changed"
+n=0
+while read -r sum file; do
+  [ -n "$file" ] || continue
+  have="$(git cat-file blob "$COMMIT:$file" | sha256sum | cut -d' ' -f1)"
+  [ "$have" = "$sum" ] || stop "$file in $TAG does not match; nothing was changed"
+  n=$((n + 1))
+done <<'AGENT_MESH_SUMS'
+BLOCK
+  printf '%s' "$REL_SUMS"
+  cat <<'BLOCK'
+AGENT_MESH_SUMS
+[ "$n" = 4 ] || stop "the checksum list is incomplete; nothing was changed"
+old="$(git rev-parse HEAD)" || stop "cannot read HEAD; nothing was changed"
+restore() {
+  if git checkout -q -f --detach "$old" && [ "$(git rev-parse HEAD)" = "$old" ] && [ -z "$(git status --porcelain)" ]; then
+    echo "restored the clone to $old"
+  else
+    echo "could not restore the clone to $old; do not run any script in $A"
   fi
-  echo "$n. Reply with the output of: git -C /workspace/agent-mesh rev-parse HEAD; cd /workspace/agent-mesh && sha256sum $files"
-  [ "$1" != 1 ] || echo "   and every line of step 4's output that starts with engine:"
+}
+git checkout -q --detach "$COMMIT" || { restore; stop "checking out $TAG failed"; }
+sha256sum --strict --quiet -c - <<'AGENT_MESH_SUMS' || { restore; stop "the files after checking out $TAG do not match it"; }
+BLOCK
+  printf '%s' "$REL_SUMS"
+  echo "AGENT_MESH_SUMS"
+  if [ "$1" = 1 ]; then
+    echo 'bash "$A/box/rn-cloud-setup.sh" --upgrade-engine </dev/null || stop "the engine step failed (see the lines above)"'
+  fi
+  cat <<'BLOCK'
+head="$(git rev-parse HEAD)" || stop "cannot read HEAD after checking out $TAG"
+sums="$(sha256sum box/rn-cloud.sh box/rn-fetch.py box/rn-cloud-setup.sh box/rn-engine.py)" \
+  || stop "cannot compute the checksums after checking out $TAG"
+r=agent-mesh-result
+echo "$r commit $head"
+printf '%s\n' "$sums" | sed "s/^/$r sum /"
+echo "$r DONE $TAG"
+AGENT_MESH_UPDATE
+BLOCK
   echo "----------------------------------------------------------------"
-  echo "Grok Bot's reply must show exactly:"
-  echo "  $commit"
-  (cd "$HERE" && shasum -a 256 $files) | sed 's/^/  /'
-  [ "$1" != 1 ] || echo "  engine: reason-network $S_EPIN running (daemon pid <n>, started <time>, binary replaced <time>)"
+  echo "Grok Bot's reply must end with lines that start with the word agent-mesh-result and show the commit"
+  echo "$REL_COMMIT, these checksums and DONE $REL_TAG:"
+  printf '%s' "$REL_SUMS" | sed 's/^/    /'
+  if [ "$1" = 1 ]; then
+    echo "Before them it must show the engine lines: reason-network $S_EPIN running (daemon pid ...), the pinned build"
+    echo "at box/bin/engine/reason-network and launcher ok."
+  fi
   echo
   echo "Paste Grok Bot's reply here, then type a line with only a dot (.) and press Enter:" >&2
   read_reply
-  if ! printf '%s' "$REPLY_TEXT" | state cloud-reply --commit "$commit" ${eflag:+"$eflag"}; then
+  if ! printf '%s' "$REPLY_TEXT" | state cloud-reply --commit "$REL_COMMIT" --tag "$REL_TAG" ${eflag:+"$eflag"}; then
     die "the cloud side was not recorded as updated. Sort it out with Grok Bot (the routine stays paused), then run ./update.sh again to paste the new reply"
   fi
 }
@@ -267,7 +337,9 @@ guided() {
   [ "$S_CLOUD" = unchanged ] || NEED="cloud"
   [ "$S_PROMPT" = unchanged ] || NEED="${NEED:+$NEED,}prompt"
   [ "$DO_CENGINE" != 1 ] || NEED="${NEED:+$NEED,}cloud_engine"
-  if need_has cloud || need_has cloud_engine; then snapshot_ok || die "nothing was changed"; fi
+  if { need_has cloud || need_has cloud_engine; } && [ "$REL_STATE" != ok ]; then
+    release_check || die "$REL_NOTE"
+  fi
   if [ "$S_TXN" = - ]; then
     if relay_loaded; then was=1; else was=0; fi
     TXN_ACTIVE=1
@@ -294,6 +366,7 @@ guided() {
       state txn-set stage routine_paused
     fi
     if need_has cloud || need_has cloud_engine; then
+      state txn-set stage routine_paused
       if need_has cloud_engine; then
         echo "== 3. update the cloud scripts and the cloud engine"
         cloud_step 1
@@ -424,7 +497,8 @@ main() {
   LIB_DIR="$HOME/.local/lib/agent-mesh"; LOCK="$LIB_DIR/update.lock"
   LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
   RN="$HOME/.local/bin/reason-network"; RN_HOME="$HOME/.reason/network"; ETXN="$LIB_DIR/engine-upgrade.json"
-  LANG_ARG=""; YES=0; PULL=1; PLAN=0
+  LANG_ARG=""; YES=0; PULL=1; PLAN=0; REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
+  REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""
   FAILED=0; NEED=""; SHOWN=""; SHOWN_SETUP=""; SHOWN_ENGINE=""; S_NAME=""; REPLY_TEXT=""; DO_CENGINE=0
   S_ENGINE=unchanged; S_EVER=""; S_EPIN=""; S_ETXN=-; S_CENGINE=unchanged
   R_RELAY="unchanged"; R_DSH="unchanged"; R_CLOUD="unchanged"; R_SETUP="unchanged"; R_PROMPT="unchanged"
@@ -451,6 +525,9 @@ main() {
   if [ "$S_TXN" != - ] || [ "$S_SETUP" != unchanged ] || [ "$S_CLOUD" != unchanged ] || [ "$S_PROMPT" != unchanged ] \
       || [ "$S_ENGINE" != unchanged ] || [ "$S_ETXN" != - ] || [ "$S_CENGINE" != unchanged ]; then
     interactive=1
+  fi
+  if release_needed; then
+    release_check || [ "$PLAN" = 1 ] || die "$REL_NOTE"
   fi
   print_plan
   [ "$PLAN" = 0 ] || exit 0
@@ -520,7 +597,8 @@ main() {
   if [ "$S_CENGINE" != unchanged ]; then
     echo
     echo "The engine on [BOT-CLOUD] has not been confirmed at Reason Network $S_EPIN (Grok Bot checks or upgrades it with"
-    echo "box/rn-cloud-setup.sh --upgrade-engine while the routine is paused)."
+    echo "box/rn-cloud-setup.sh --upgrade-engine while the routine is paused). The same step keeps the cloud engine at"
+    echo "box/bin/engine, where another engine daemon cannot replace it, and checks its bytes against the pinned build."
     if ask "Do the cloud engine step in this run?"; then
       DO_CENGINE=1
     else

@@ -34,7 +34,7 @@
 ## 第 2 阶段：接入 Bot 云电脑（跨端交接）
 
 1. **`[LOCAL]` 安装 agent：**运行 `./install.sh --cloud-prompt --lang zh-CN`。它打印邀请（Mac 在线时有效 24 小时）及填好团队名、Mac home 目录和仓库地址的云端提示词。核对仓库地址指向公开发行版，其根目录应有 `box/rn-cloud-setup.sh`；若地址缺失，或该仓库根目录没有这个脚本，先替换再交给用户。若地址是 SSH 且 `[BOT-CLOUD]` 没有 GitHub 凭据，改用同一公开仓库的 HTTPS 地址；不要把用户的 SSH 私钥复制到云端。
-2. **`[GROK-UI]` 用户 → `[BOT-CLOUD]` Grok Bot：**把整段输出交给用户，说明：「在 Grok Bot 界面把它作为一条消息发给 Bot。Bot 会在自己的云电脑克隆仓库、加入团队，并请你批准一次 CopyToBox：来源是 `[LOCAL]` 的 `<mac-home>/.config/agent-relay/outbound.key`，目标是 `[BOT-CLOUD]` 的 `/workspace/agent-mesh/box/outbound.key`。它确认 cloud 已接入后告诉我。」
+2. **`[GROK-UI]` 用户 → `[BOT-CLOUD]` Grok Bot：**把整段输出交给用户，说明：「在 Grok Bot 界面把它作为一条消息发给 Bot。Bot 会在自己的云电脑核对并克隆发布版本、安装引擎、加入团队，并请你批准一次 CopyToBox：来源是 `[LOCAL]` 的 `<mac-home>/.config/agent-relay/outbound.key`，目标是 `[BOT-CLOUD]` 的 `/workspace/agent-mesh/box/outbound.key`。它确认 cloud 已接入后告诉我。」
 3. **`[LOCAL]` 安装 agent：**等用户完成，再运行 `./check.sh`：`cloud machine joined` 应为 PASS。这里检查的是 Bot 云电脑已入队，不代表双向消息已经验证成功。
 
 ## 第 3 阶段：会话与连通验证

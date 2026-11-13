@@ -1,6 +1,6 @@
 # agent-mesh
 
-agent-mesh version: 0.8.0 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.12.17; ./update.sh upgrades older engines (UPGRADE.md).
+agent-mesh version: 0.8.1 (VERSION). ./install.sh --version prints it offline. CHANGELOG.md and CHANGELOG.zh-CN.md record releases. Reason Network is a separate dependency pinned to v0.12.17; ./update.sh upgrades older engines (UPGRADE.md).
 
 > Put local coding agents (Claude Code, Codex, pi, DeepSeek Harness) and a cloud Grok Bot in one private Reason Network team, with instant wake-ups in both directions. Mac side: an always-on relay forwards signed messages and rings the Grok Bot routine's webhook. Cloud side: the bot fetches the full text by id. Local: macOS installer (relay messaging verified on Debian Linux; Linux local install not supported yet); cloud: Linux. Reason Network v0.12.17. MIT.
 
@@ -44,6 +44,6 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 ## Code
 
 - agent_relay.py: the Mac relay (standard library only). install.sh, uninstall.sh, check.sh, update.sh (updates an existing installation; scripts/deploy_state.py keeps the record of what is deployed). uninstall.sh (scripts/uninstall.py) lists what is installed and removes it by level: program, identity or all; levels identity and all need the user's own terminal and a step with Grok Bot.
-- box/rn-cloud-setup.sh, box/rn-cloud.sh, box/rn-fetch.py: cloud side. box/rn-cloud-uninstall.sh: the cloud uninstall script, filled in and embedded in the prompt by uninstall.sh; never run it unfilled or edit it.
+- box/rn-cloud-setup.sh, box/rn-cloud.sh, box/rn-fetch.py, box/rn-engine.py: cloud side; the cloud checks out only the release tag v<VERSION> after checking these four files, and keeps the engine at box/bin/engine/reason-network (box/bin/reason-network is a launcher that refuses to run without REASON_NETWORK_HOME). box/rn-cloud-uninstall.sh: the cloud uninstall script, filled in and embedded in the prompt by uninstall.sh; never run it unfilled or edit it.
 - dsh/reason-network-bridge.mjs, dsh/mac-install.sh, dsh/mac-uninstall.sh: optional DeepSeek Harness plugin, its installer and uninstaller.
 - test_relay.py, box/test_rn_fetch.py, dsh/reason-network-bridge.test.mjs: offline tests.

@@ -59,13 +59,18 @@ def check_docs():
         try:
             en = render_prompt(template, "en")
             zh = render_prompt(template, "zh-CN")
-            placeholders = lambda text: set(re.findall(r"<(?:repo-url|team-name|mac-home|invite-link|relay-name)>",
-                                                       text))
+            placeholders = lambda text: set(re.findall(r"<(?:repo-url|team-name|mac-home|invite-link|relay-name|"
+                                                       r"release-tag|release-commit|cloud-checksums)>", text))
             if placeholders(en) != placeholders(zh):
                 errors.append(f"{template}: translated placeholders differ")
-            if template == "cloud-setup" and placeholders(en) != {
-                    "<repo-url>", "<team-name>", "<mac-home>", "<invite-link>", "<relay-name>"}:
-                errors.append("cloud-setup: expected placeholders are missing")
+            if template == "cloud-setup":
+                if placeholders(en) != {"<repo-url>", "<team-name>", "<mac-home>", "<invite-link>", "<relay-name>",
+                                        "<release-tag>", "<release-commit>", "<cloud-checksums>"}:
+                    errors.append("cloud-setup: expected placeholders are missing")
+                block = lambda text: re.findall(r"^bash -s <<'AGENT_MESH_SETUP'\n.*?^AGENT_MESH_SETUP$", text,
+                                                re.M | re.S)
+                if len(block(en)) != 1 or block(en) != block(zh):
+                    errors.append("cloud-setup: the AGENT_MESH_SETUP block must appear once and match in both languages")
             if template == "routine":
                 for lang, text in (("en", en), ("zh-CN", zh)):
                     if placeholders(text) != {"<team-name>", "<relay-name>"}:

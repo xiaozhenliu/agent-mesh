@@ -31,7 +31,7 @@ case "$PHASE" in
   *) usage ;;
 esac
 if [ "$(uname -s)" != Linux ]; then stop "this is not the Linux cloud computer; never run it on the user's Mac"; fi
-for p in "$W" "$A" "$B" "$B/state" "$B/bin" "$B/person" "$B/relay" "$B/outbound.key" "$A/inbox" "$A/threads"; do
+for p in "$W" "$A" "$B" "$B/state" "$B/bin" "$B/bin/engine" "$B/person" "$B/relay" "$B/outbound.key" "$A/inbox" "$A/threads"; do
   if [ -L "$p" ]; then stop "$p is a symlink; not touching it"; fi
 done
 if [ ! -d "$A" ]; then
@@ -43,7 +43,7 @@ if [ ! -f "$B/rn-cloud.sh" ] || [ ! -f "$B/rn-cloud-setup.sh" ]; then stop "$A i
 cd /
 
 helper() {
-  python3 - "$@" <<'PY'
+  python3 -I - "$@" <<'PY'
 import hashlib, hmac, os, re, subprocess, sys
 
 mode = sys.argv[1]
@@ -208,7 +208,16 @@ elif [ "$PRESENT" = yes ] && [ "$MODE" = normal ] && [ "$RELAY_NAME" != bot ]; t
 fi
 HAVEKEY=no
 if [ -s "$B/outbound.key" ]; then HAVEKEY=yes; fi
-export REASON_NETWORK_HOME="$B/state" REASON_NETWORK_NO_PROMPT=1 REASON_NETWORK_MACHINE=cloud
+if [ -e "$B/bin/engine/reason-network" ] || [ -L "$B/bin/engine/reason-network" ]; then
+  if [ ! -f "$B/rn-engine.py" ]; then stop "box/rn-engine.py is missing, so the engine at box/bin/engine cannot be checked; not running it"; fi
+  if ! RN="$(python3 -I "$B/rn-engine.py" cloud-bin --base "$B" 2>&1)"; then
+    stop "the engine was not run: $RN. Repair the engine first (README: Troubleshooting), then uninstall"
+  fi
+  RN="$(printf '%s\n' "$RN" | tail -n 1)"
+elif [ -e "$RN" ]; then
+  echo "NOTE: the engine is still at box/bin/reason-network (from before it moved to box/bin/engine)"
+fi
+export REASON_NETWORK_HOME="$B/state" REASON_NETWORK_NO_UPDATE=1 REASON_NETWORK_NO_PROMPT=1 REASON_NETWORK_MACHINE=cloud
 INTEAM=none
 if [ -f "$B/state/machine.key" ] && [ -x "$RN" ]; then
   if out="$("$RN" team 2>&1)"; then

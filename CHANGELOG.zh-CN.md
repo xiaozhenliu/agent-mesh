@@ -4,6 +4,25 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.8.1 — 2026-11-13
+
+云端安全修复。云端只安装和更新经过核对的已发布版本，云端引擎也不会再被另一个自我更新的引擎守护进程替换。在终端运行 `./update.sh` 更新：云端脚本和云端引擎步骤在同一个引导式云端步骤里完成；routine 提示词不变。
+
+### 安全
+
+- 云端引擎移到 `box/bin/engine/reason-network`。`box/bin/reason-network` 改为手动运行命令用的小启动器：没有 `REASON_NETWORK_HOME`（或 `TINCAN_HOME`）时拒绝运行，拒绝 `upgrade`、`setup` 以及不带 `--no-setup` 的 `join`/`init`，并始终设置 `REASON_NETWORK_NO_UPDATE=1`。此前，在云端手动运行引擎命令，可能导致固定的引擎被换成未经核对的版本。
+- `rn-cloud.sh` 的每条命令、`rn-fetch.py` 和云端卸载脚本在运行引擎前，都先核对引擎字节是否属于 `box/rn-engine.py` 固定的构建，不符就停止。`rn-cloud.sh`、`rn-cloud-setup.sh` 和 `rn-engine.py` 给每条引擎命令设置 `REASON_NETWORK_NO_UPDATE=1`，`config.toml` 损坏时也不会重新打开自动更新。
+- 云端接入提示词和更新消息把云端仓库固定到发布 tag `v<VERSION>`：Grok Bot 运行一个命令块，取回该 tag，核对它指向发布提交、四个云端脚本（`box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`）的校验值符合预期，之后才切换到该 tag 并再次核对文件。任何一项不符都会停止且不改动仓库，或者恢复到原来的提交。此前，云端先克隆或拉取默认分支并运行其中的脚本，Mac 之后才比对校验值。
+- 云端脚本以隔离模式运行 Python（`python3 -I`），放在脚本旁边的文件无法冒充标准库模块被导入。
+
+### 变更
+
+- `install.sh --cloud-prompt` 和 `./update.sh` 先在线核对：云端安装来源仓库里存在该发布 tag，且本地仓库中的四个云端脚本与它一致。核对失败时，它们在给 Grok Bot 打印任何内容、改动部署之前就停止（`./update.sh` 可能已经拉取了本地仓库）。`./update.sh` 不再要求本地仓库已提交或等于上游；新增 `--repo-url` 选项（默认是公开仓库），`--plan` 会显示核对结果。
+- `rn-cloud-setup.sh --upgrade-engine` 把仍在 `box/bin/reason-network` 的引擎移到 `box/bin/engine`；引擎字节不属于固定构建时，不运行它就直接替换（副本留在备份里，永不放回）。它会打印 `engine: pinned build <sha256>` 和 `engine: launcher ok`，并列出从 `box/bin` 运行的其他引擎守护进程，但不停止它们。云端引擎步骤中，Grok Bot 的回复必须包含这些行。
+- `rn-cloud-setup.sh` 和 `install.sh` 把 `auto_update`、`lan`（云端另有 `tray`）写成引擎 `config.toml` 的顶层键：已有的键原地替换，缺失的键加在文件开头。此前缺失的键追加在文件末尾，会落进最后一个表里而不生效。
+- 更新消息的命令块以 `agent-mesh-result` 开头的几行结尾：提交号、四个校验值和 `DONE <tag>`。`./update.sh` 只读这几行，只是复述消息或含 `STOP` 行的回复不会被记录。云端步骤没有记录之前，routine 保持暂停。
+- 不带命令运行 `rn-cloud.sh` 时，先打印用法，再核对引擎。
+
 ## v0.8.0 — 2026-11-12
 
 Bot 地址就是 Bot 自己的名字：全新安装会问这个名字，不再默认 `bot`；地址旁显示 Bot 在 Grok 里的名字。已有安装保留原来的地址（#31）。

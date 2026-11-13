@@ -413,7 +413,12 @@ cloud_prompt() {
   local person repo
   person="$(current_person)"; [ -n "$person" ] || die "not in a team yet; run the full install first"
   repo="$REPO_URL"
-  local invite
+  local invite release tag="" commit="" sums="" k a b
+  release="$("$PYTHON" "$HERE/scripts/deploy_state.py" release --repo-url "$repo" 2>&1)" \
+    || die "$release. The cloud setup prompt was not printed; once this checkout matches the published release, run ./install.sh --cloud-prompt"
+  while read -r k a b; do
+    case "$k" in tag) tag="$a" ;; commit) commit="$a" ;; sum) sums="$sums$a  $b"$'\n' ;; esac
+  done <<< "$release"
   invite="$("$RN" invite --me | sed -n 's/^For a cloud agent of yours.*send it: //p')"
   [ -n "$invite" ] || invite="$("$RN" invite --me)"
   record_pending cloud
@@ -423,7 +428,8 @@ cloud_prompt() {
   echo "----------------------------------------------------------------"
   echo "$invite"
   echo
-  render_prompt cloud-setup --team-name "$person" --mac-home "$HOME" --repo-url "$repo" --relay-name "$RELAY_NAME"
+  render_prompt cloud-setup --team-name "$person" --mac-home "$HOME" --repo-url "$repo" --relay-name "$RELAY_NAME" \
+    --release-tag "$tag" --release-commit "$commit" --cloud-checksums "$sums"
   echo "----------------------------------------------------------------"
   echo "[GROK-UI] User: approve CopyToBox from [LOCAL] $KEY_FILE to [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key. Afterwards the installing agent runs ./check.sh on [LOCAL]."
   echo "Bot address: $(bot_label) (cloud sessions $RELAY_NAME-cloud, $RELAY_NAME-inbox)"
@@ -642,10 +648,7 @@ else
   "$RN" stop >/dev/null 2>&1 || true
   "$RN" init "$NAME" --as "$NAME" --no-setup
 fi
-for kv in "auto_update = false" "lan = false"; do
-  k="${kv%% *}"
-  if grep -q "^$k " "$CFG"; then sed -i '' "s/^$k = .*/$kv/" "$CFG"; else echo "$kv" >> "$CFG"; fi
-done
+rn_engine config-off --path "$CFG" auto_update lan || die "could not write $CFG"
 "$RN" stop >/dev/null 2>&1 || true
 "$RN" team
 if [ ! -f "$ENV_FILE" ]; then

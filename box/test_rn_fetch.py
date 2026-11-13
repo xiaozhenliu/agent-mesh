@@ -987,9 +987,13 @@ class Cloud(unittest.TestCase):
         (self.box / "person").write_text("demo\n")
         (self.box / "outbound.key").write_text(KEY + "\n")
         (self.box / "rn-fetch.py").symlink_to(HERE / "rn-fetch.py")
-        engine = self.box / "bin" / "reason-network"
+        (self.box / "rn-engine.py").symlink_to(HERE / "rn-engine.py")
+        (self.box / "bin" / "engine").mkdir()
+        engine = self.box / "bin" / "engine" / "reason-network"
         engine.write_text(FAKE_ENGINE.replace("#!/usr/bin/env python3", "#!" + sys.executable, 1))
         engine.chmod(0o755)
+        self.builds = self.d / "builds.json"
+        self.pin(engine)
         db = sqlite3.connect(self.box / "state" / "network.db")
         db.executescript(SCHEMA + SESSIONS + "CREATE TABLE outbox (id TEXT);")
         db.close()
@@ -1001,10 +1005,18 @@ class Cloud(unittest.TestCase):
         (tools / "python3").symlink_to(sys.executable)
         self.log = self.d / "rn.log"
         self.env = dict(os.environ, PATH=f"{tools}{os.pathsep}{os.environ['PATH']}", RN_CLOUD_BASE=str(self.box),
-                        RN_INBOX_DIR=str(self.inbox), FAKE_LOG=str(self.log))
+                        RN_INBOX_DIR=str(self.inbox), FAKE_LOG=str(self.log), RN_PINNED_BUILDS_FILE=str(self.builds))
         for k in ("RN_PERSON", "RN_KEY_FILE", "REASON_NETWORK_HOME", "RN_DONE_LOCK_WAIT", "RN_CLAIM_LEASE",
-                  "RN_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME", "AGENT_RELAY_NAME", "RN_BOX"):
+                  "RN_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME", "AGENT_RELAY_NAME", "RN_BOX", "RN_BIN",
+                  "REASON_NETWORK_NO_UPDATE"):
             self.env.pop(k, None)
+
+    def pin(self, *binaries):
+        import hashlib
+        target = {"x86_64": "x86_64-unknown-linux-musl"}.get(os.uname().machine, "aarch64-unknown-linux-musl")
+        builds = {f"0.0.{i}": {target: hashlib.sha256(Path(b).read_bytes()).hexdigest()}
+                  for i, b in enumerate(binaries)}
+        self.builds.write_text(json.dumps(builds))
 
     def cloud(self, *args, body=""):
         return subprocess.run(["bash", str(HERE / "rn-cloud.sh"), *args], env=self.env, input=body,
@@ -1027,6 +1039,71 @@ class Cloud(unittest.TestCase):
                                                                            text).strip(), int(time.time() * 1000)))
         db.commit()
         db.close()
+
+    def test_an_unpinned_engine_is_never_run(self):
+        engine = self.box / "bin" / "engine" / "reason-network"
+        with open(engine, "a") as f:
+            f.write("\n")
+        for args in (("who",), ("fetch",), ("done", "A"), ("init-inbox",)):
+            with self.subTest(args=args):
+                p = self.cloud(*args)
+                self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+                self.assertIn("is not a Reason Network build pinned by agent-mesh", p.stderr)
+        self.assertEqual(self.engine_calls(), [])
+        engine.unlink()
+        engine.symlink_to(self.d / "elsewhere")
+        p = self.cloud("who")
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertEqual(self.engine_calls(), [])
+
+    def test_rn_fetch_run_alone_checks_the_engine_in_rn_box(self):
+        engine = self.box / "bin" / "engine" / "reason-network"
+        keep = {k: v for k, v in self.env.items() if k != "RN_BIN"}
+        rf = load("rn_fetch_alone", HERE / "rn-fetch.py")
+        with mock.patch.dict(os.environ, dict(keep, RN_BOX=str(self.box)), clear=True):
+            self.assertEqual(rf.rn_bin(), str(engine))
+            with open(engine, "a") as f:
+                f.write("\n")
+            with self.assertRaises(SystemExit) as stopped:
+                rf.rn_bin()
+            self.assertIn("is not a Reason Network build pinned by agent-mesh", str(stopped.exception))
+        with mock.patch.dict(os.environ, dict(keep, RN_BOX=str(self.box), RN_BIN="/given"), clear=True):
+            self.assertEqual(rf.rn_bin(), "/given")
+
+    def test_a_replaced_launcher_is_put_back_before_the_engine_runs(self):
+        launcher = self.box / "bin" / "reason-network"
+        launcher.write_text("#!/bin/sh\necho stray\n")
+        p = self.cloud("who")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("the launcher is back", p.stderr)
+        self.assertTrue(launcher.read_text().startswith("#!/bin/sh\nhere=$(dirname \"$0\")"))
+        self.assertTrue(self.engine_calls())
+
+    def test_planted_modules_next_to_the_scripts_or_in_the_cwd_are_not_imported(self):
+        marker = self.d / "planted"
+        for name in ("rn-fetch.py", "rn-engine.py"):
+            (self.box / name).unlink()
+            (self.box / name).write_bytes((HERE / name).read_bytes())
+        for d in (self.box, self.d):
+            for name in ("json.py", "shutil.py", "hashlib.py", "sqlite3.py"):
+                (d / name).write_text(f"open({str(marker)!r}, 'a').write({name!r})\n")
+        p = subprocess.run(["bash", str(HERE / "rn-cloud.sh"), "who"], env=self.env, cwd=self.d,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
+
+    def test_the_engine_gets_no_update_from_every_command(self):
+        self.env["REASON_NETWORK_NO_UPDATE"] = "0"
+        engine = self.box / "bin" / "engine" / "reason-network"
+        text = engine.read_text()
+        engine.write_text(text.replace("import ", "import os as _os\nopen(_os.environ['FAKE_LOG'] + '.env', 'a')"
+                                       ".write(_os.environ.get('REASON_NETWORK_NO_UPDATE', '-') + '\\n')\nimport ", 1))
+        self.pin(engine)
+        p = self.cloud("who")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        seen = Path(str(self.log) + ".env").read_text().split()
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {"1"})
 
     def test_usage_lists_working_done_and_settings(self):
         p = self.cloud()

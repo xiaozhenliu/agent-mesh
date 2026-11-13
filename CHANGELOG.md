@@ -4,6 +4,25 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.1 — 2026-11-13
+
+Security fixes for the cloud side. The cloud installs and updates only a published release after checking it, and the cloud engine can no longer be replaced by another engine daemon updating itself. Update with `./update.sh` in a terminal: the cloud scripts and the cloud engine step run in one guided cloud step; the routine prompt does not change.
+
+### Security
+
+- The cloud engine moves to `box/bin/engine/reason-network`. `box/bin/reason-network` becomes a small launcher for commands run by hand: it refuses to run without `REASON_NETWORK_HOME` (or `TINCAN_HOME`), refuses `upgrade`, `setup` and `join`/`init` without `--no-setup`, and always sets `REASON_NETWORK_NO_UPDATE=1`. Before, an engine command run by hand on the cloud could end up replacing the pinned engine with an unchecked one.
+- Every `rn-cloud.sh` command, `rn-fetch.py` and the cloud uninstall script check the engine's bytes against the builds pinned in `box/rn-engine.py` before running it, and stop if they differ. `rn-cloud.sh`, `rn-cloud-setup.sh` and `rn-engine.py` set `REASON_NETWORK_NO_UPDATE=1` for every engine command, so a damaged `config.toml` no longer turns automatic updates back on.
+- The cloud setup prompt and the update message pin the cloud clone to the release tag `v<VERSION>`: Grok Bot runs a command block that fetches the tag, checks that it points to the release commit and that the four cloud scripts (`box/rn-cloud.sh`, `box/rn-fetch.py`, `box/rn-cloud-setup.sh`, `box/rn-engine.py`) have the expected checksums, and only then checks the tag out and checks the files again. On any mismatch it stops without changing the clone, or puts the previous commit back. Before, the cloud cloned or pulled the default branch and ran its scripts before the Mac compared their checksums.
+- Cloud scripts run Python in isolated mode (`python3 -I`), so a file added next to them cannot be imported in place of a standard module.
+
+### Changed
+
+- `install.sh --cloud-prompt` and `./update.sh` first check online that the release tag exists in the repository the cloud installs from and that the four cloud scripts in this checkout match it. If the check fails, they stop before printing anything for Grok Bot or changing the deployment (`./update.sh` may already have pulled this checkout). `./update.sh` no longer requires the checkout to be committed or at its upstream; it has a new `--repo-url` option (default: the public repository), and `--plan` shows the result of the check.
+- `rn-cloud-setup.sh --upgrade-engine` moves an engine still at `box/bin/reason-network` to `box/bin/engine`, and replaces an engine whose bytes are not a pinned build without running it (the copy stays in the backup and is never put back). It prints `engine: pinned build <sha256>` and `engine: launcher ok`, and notes other engine daemons running from `box/bin` without stopping them. Grok Bot's reply in the cloud engine step must show these lines.
+- `rn-cloud-setup.sh` and `install.sh` write `auto_update`, `lan` (and on the cloud `tray`) as top-level keys of the engine's `config.toml`: an existing key is replaced in place, a missing one is added at the start. Before, a missing key was appended at the end, where it fell into the last table and had no effect.
+- The update message's command block ends with lines that start with `agent-mesh-result`: the commit, the four checksums and `DONE <tag>`. `./update.sh` reads only these lines, so a reply that only repeats the message, or has a `STOP` line, is not recorded. While the cloud step is not recorded, the routine stays paused.
+- `rn-cloud.sh` without a command prints its usage before checking the engine.
+
 ## v0.8.0 — 2026-11-12
 
 The Bot address is the Bot's own name: a new installation asks for it instead of using `bot`, and the Bot's name in Grok is shown next to the address. Existing installations keep their address (#31).

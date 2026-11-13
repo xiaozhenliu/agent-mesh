@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -378,41 +379,106 @@ def cmd_txn_set(args):
     save(data)
 
 
-CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py")
-ENGINE_FILES = ("box/rn-cloud-setup.sh", "box/rn-engine.py")
+CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py")
 ENGINE_LINE = re.compile(r"engine: reason-network (\S+) running \(daemon pid \d+, started ")
+BUILD_LINE = re.compile(r"engine: pinned build ([0-9a-f]{64}) at box/bin/engine/reason-network")
+DEFAULT_REPO_URL = "https://github.com/xiaozhenliu/agent-mesh.git"
 
 
-def reply_problems(text, commit, engine=None):
-    found_engine = set(ENGINE_LINE.findall(text))
-    text = text.lower()
-    commit = commit.lower()
+def release_tag():
+    return "v" + (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+
+
+def git(*args, cwd=None):
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="true", LC_ALL="C")
+    return subprocess.run(("git",) + args, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=180, check=False)
+
+
+def release(url):
+    tag = release_tag()
+    with tempfile.TemporaryDirectory(prefix="agent-mesh-release.") as tmp:
+        try:
+            steps = (("init", "-q", "--bare", tmp),
+                     ("-C", tmp, "fetch", "-q", "--depth", "1", "--no-tags", url, f"refs/tags/{tag}:refs/tags/{tag}"))
+            for step in steps:
+                done = git(*step)
+                if done.returncode != 0:
+                    why = done.stderr.decode("utf-8", "replace").strip().splitlines()
+                    raise ValueError(f"the release {tag} could not be fetched from {url} (not published yet, or a "
+                                     f"network problem): {why[-1] if why else 'git failed'}; nothing was changed")
+            done = git("-C", tmp, "rev-parse", "--verify", "-q", f"refs/tags/{tag}^{{commit}}")
+            commit = done.stdout.decode().strip()
+            if done.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", commit):
+                raise ValueError(f"the release {tag} at {url} does not point to a commit; nothing was changed")
+            sums = []
+            for name in CLOUD_FILES:
+                done = git("-C", tmp, "cat-file", "blob", f"{commit}:{name}")
+                if done.returncode != 0:
+                    raise ValueError(f"the release {tag} has no {name}; nothing was changed")
+                want = sha(done.stdout)
+                if want != sha((ROOT / name).read_bytes()):
+                    raise ValueError(f"{name} in this checkout differs from the release {tag}; the cloud installs only "
+                                     "the release, so update this checkout to it first. Nothing was changed")
+                sums.append((want, name))
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(f"could not check the release {tag} at {url}: {error}; nothing was changed")
+    return tag, commit, sums
+
+
+def cmd_release(args):
+    tag, commit, sums = release(args.repo_url)
+    print(f"tag {tag}")
+    print(f"commit {commit}")
+    for digest_, name in sums:
+        print(f"sum {digest_}  {name}")
+
+
+LEAD = r"^[ \t>`*_-]*"
+TAIL = r"[ \t`*_]*$"
+
+
+def reply_problems(text, commit, tag=None, engine=None):
     problems = []
-    commits = set(re.findall(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", text))
+    if re.search(LEAD + r"STOP:", text, re.M):
+        problems.append("the reply has a STOP line")
+    result = LEAD + r"agent-mesh-result "
+    if tag and not re.search(result + r"DONE " + re.escape(tag) + TAIL, text, re.M):
+        problems.append(f"no line 'agent-mesh-result DONE {tag}' in the reply")
+    commits = {c.lower() for c in re.findall(result + r"commit ([0-9a-fA-F]{40})" + TAIL, text, re.M)}
     if not commits:
-        problems.append("no commit (40 hex characters) in the reply")
-    elif commits != {commit}:
-        others = ", ".join(sorted(other[:12] for other in commits - {commit}))
-        problems.append(f"the reply shows commit {others}, not {commit[:12]}")
-    for name in CLOUD_FILES + (ENGINE_FILES if engine else ()):
+        problems.append("no line 'agent-mesh-result commit <40 hex characters>' in the reply")
+    elif commits != {commit.lower()}:
+        others = ", ".join(sorted(other[:12] for other in commits - {commit.lower()}))
+        problems.append(f"the reply shows commit {others}, not {commit.lower()[:12]}")
+    for name in CLOUD_FILES:
         want = sha((ROOT / name).read_bytes())
-        pattern = r"(?<![0-9a-f])([0-9a-f]{64})[ \t]+\*?(?:\./)?" + re.escape(name) + r"(?=$|[\s`'\"),;])"
-        found = set(re.findall(pattern, text, re.M))
+        pattern = result + r"sum ([0-9a-fA-F]{64})[ \t]+\*?(?:\./)?" + re.escape(name) + TAIL
+        found = {f.lower() for f in re.findall(pattern, text, re.M)}
         if not found:
-            problems.append(f"no checksum for {name} in the reply")
+            problems.append(f"no line 'agent-mesh-result sum <sha256>  {name}' in the reply")
         elif found != {want}:
             problems.append(f"the checksum of {name} differs from this checkout")
     if engine:
+        found_engine = set(re.findall(LEAD + ENGINE_LINE.pattern, text, re.M))
+        found_builds = set(re.findall(LEAD + BUILD_LINE.pattern + TAIL, text, re.M))
         if not found_engine:
             problems.append("no line 'engine: reason-network <version> running (daemon pid ...' in the reply")
         elif found_engine != {engine}:
             problems.append(f"the cloud engine runs {', '.join(sorted(found_engine))}, not {engine}")
+        allowed = set(rn_engine().PINNED_BUILDS.get(engine, {}).values())
+        if not found_builds:
+            problems.append("no line 'engine: pinned build <sha256> at box/bin/engine/reason-network' in the reply")
+        elif not found_builds <= allowed:
+            problems.append(f"the cloud engine is not a pinned Reason Network {engine} build")
+        if not re.search(LEAD + r"engine: launcher ok" + TAIL, text, re.M):
+            problems.append("no line 'engine: launcher ok' in the reply")
     return problems
 
 
 def cmd_cloud_reply(args):
     engine = pinned() if args.engine else None
-    problems = reply_problems(sys.stdin.read(), args.commit, engine)
+    problems = reply_problems(sys.stdin.read(), args.commit, args.tag, engine)
     if problems:
         for problem in problems:
             print(f"  mismatch: {problem}")
@@ -490,8 +556,12 @@ def main(argv=None):
     sub.add_parser("txn-clear").set_defaults(run=cmd_txn_clear)
     p = sub.add_parser("cloud-reply")
     p.add_argument("--commit", required=True)
+    p.add_argument("--tag", required=True)
     p.add_argument("--engine", action="store_true")
     p.set_defaults(run=cmd_cloud_reply)
+    p = sub.add_parser("release")
+    p.add_argument("--repo-url", default=DEFAULT_REPO_URL)
+    p.set_defaults(run=cmd_release)
     args = parser.parse_args(argv)
     try:
         args.run(args)

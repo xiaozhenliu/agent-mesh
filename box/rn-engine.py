@@ -12,13 +12,29 @@
   rn-engine.py others --bin PATH [--skip-parent PID]
                                                    other processes running PATH (not the daemon or its tray)
   rn-engine.py switch --home DIR --bin PATH --new NEWBIN --pinned V --backup DEST [--txn FILE] [--keep K=V]...
+                     [--old-bin OLD] [--untrusted-old]
                                                    back up PATH and DIR, replace PATH atomically, restart the daemon
-                                                   and verify it; on failure put the old binary back
+                                                   and verify it; on failure put the old binary back. --old-bin: the
+                                                   binary being replaced lives at OLD (cloud layout migration): it is
+                                                   backed up and restored there, and the launcher is written there on
+                                                   success. --untrusted-old: the old binary is not a pinned build; it
+                                                   is backed up but never run, and never put back
   rn-engine.py restart --home DIR --bin PATH       restart the daemon on PATH and verify it started after PATH was
                                                    last replaced
-  rn-engine.py rollback --txn FILE                 undo an unfinished switch recorded in FILE (binary only)
+  rn-engine.py rollback --txn FILE                 undo an unfinished switch recorded in FILE (binary only; a binary
+                                                   that was not a pinned build is never put back)
   rn-engine.py txn-get --txn FILE KEY              print one value of the switch record (nothing if absent)
   rn-engine.py backup-state --home DIR --to DEST   copy DIR to DEST (mode 700) with a consistent network.db
+  rn-engine.py build --bin PATH                    "<version> <sha256>" if PATH is a pinned Linux build, else exit 1
+  rn-engine.py cloud-bin --base BOX                the cloud engine to run: BOX/bin/engine/reason-network after
+                                                   checking its bytes (exit 1 if it is not a pinned build), and the
+                                                   launcher at BOX/bin/reason-network is put back if it was replaced;
+                                                   BOX/bin/reason-network while the engine has not been moved yet
+  rn-engine.py launcher --path PATH                write the cloud launcher to PATH unless it is already there
+  rn-engine.py config-off --path FILE KEY...       set each KEY (auto_update, lan, tray) to false at the top level
+                                                   of the engine config FILE: replaced in place, or added at the start
+  rn-engine.py strays --bin-dir DIR --home DIR     engine daemons running a binary under DIR other than the daemon
+                                                   of DIR's state (report only)
 
 A daemon holds an exclusive lock on daemon.lock and writes its pid there; the file keeps the last pid after the
 daemon exits, so the lock decides, as in the engine itself. A daemon runs the new binary only if it started after
@@ -30,6 +46,7 @@ database, and mail received after the switch stays. Exit: 0 done, 1 failed and r
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -45,6 +62,34 @@ from pathlib import Path
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 STOP_TIMEOUT = float(os.environ.get("RN_ENGINE_STOP_TIMEOUT", 30))
 START_TIMEOUT = float(os.environ.get("RN_ENGINE_START_TIMEOUT", 15))
+PINNED_BUILDS = {
+    "0.12.17": {
+        "x86_64-unknown-linux-musl": "b17efa53714f9991e77b592cb62bc09fdf7991e1f612a785ea22ed04ab653f0b",
+        "aarch64-unknown-linux-musl": "be0dd5698bf252acc62acb1c1503b9136ef7d6972d0ac603f54772ccd5620e6a",
+    },
+}
+LAUNCHER = """#!/bin/sh
+here=$(dirname "$0")
+refuse() {
+  echo "reason-network: $1. On this cloud computer Reason Network runs through /workspace/agent-mesh/box/rn-cloud.sh; to run a command by hand, set REASON_NETWORK_HOME to the state directory." >&2
+  exit 2
+}
+[ -n "${REASON_NETWORK_HOME:-}${TINCAN_HOME:-}" ] || refuse "no state directory is set"
+case "${1:-}" in
+  who|send|status|team|doctor|stop|listen|leave|relay|invite|link|endpoint|held|approve|reject|remove|proof|daemon|help|--help|-h|--version|-V) ;;
+  join|init)
+    case " $* " in
+      *" --no-setup "*) ;;
+      *) refuse "$1 without --no-setup would wire agents or install a service" ;;
+    esac ;;
+  *) refuse "the command '${1:-}' is not available here" ;;
+esac
+REASON_NETWORK_NO_UPDATE=1
+REASON_NETWORK_NO_PROMPT=1
+REASON_NETWORK_MACHINE="${REASON_NETWORK_MACHINE:-cloud}"
+export REASON_NETWORK_NO_UPDATE REASON_NETWORK_NO_PROMPT REASON_NETWORK_MACHINE
+exec "$here/engine/reason-network" "$@"
+"""
 
 
 class Failed(Exception):
@@ -141,8 +186,154 @@ def default_signals():
         signal.signal(s, signal.SIG_DFL)
 
 
+def pinned_builds():
+    path = os.environ.get("RN_PINNED_BUILDS_FILE")
+    return json.loads(Path(path).read_text()) if path else PINNED_BUILDS
+
+
+def linux_target():
+    machine = os.uname().machine
+    if machine == "x86_64":
+        return "x86_64-unknown-linux-musl"
+    if machine in ("aarch64", "arm64"):
+        return "aarch64-unknown-linux-musl"
+    return None
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def pinned_build(path):
+    if os.path.islink(path) or not os.path.isfile(path):
+        return None, None
+    digest = file_sha256(path)
+    target = linux_target()
+    for version, table in pinned_builds().items():
+        if target and table.get(target) == digest:
+            return version, digest
+    return None, digest
+
+
+def config_off(path, keys):
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        lines, mode = [], 0o600
+    seen, out, top = set(), [], True
+    for line in lines:
+        if line.lstrip().startswith("["):
+            top = False
+        m = re.match(r"\s*([A-Za-z0-9_-]+)\s*=", line) if top else None
+        if m and m.group(1) in keys:
+            if m.group(1) not in seen:
+                seen.add(m.group(1))
+                out.append(f"{m.group(1)} = false")
+            continue
+        out.append(line)
+    out = [f"{k} = false" for k in keys if k not in seen] + out
+    tmp = path.with_name(f".{path.name}.new.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def put_launcher(path):
+    path = Path(path)
+    want = LAUNCHER.encode()
+    try:
+        if not path.is_symlink() and path.read_bytes() == want and os.access(path, os.X_OK):
+            return False
+    except OSError:
+        pass
+    tmp = path.with_name(f".{path.name}.launcher.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(want)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def cloud_bin(base, warn=None):
+    warn = warn or (lambda text: print(f"rn-engine: {text}", file=sys.stderr, flush=True))
+    base = Path(base)
+    payload, launcher = base / "bin/engine/reason-network", base / "bin/reason-network"
+    if not os.path.lexists(payload):
+        warn("the engine has not been moved to box/bin/engine yet; run ./update.sh on the Mac and do the cloud "
+             "engine step")
+        return str(launcher)
+    version, digest = pinned_build(payload)
+    if version is None:
+        raise Failed(f"{payload} is not a Reason Network build pinned by agent-mesh (sha256 {digest or 'unreadable'}); "
+                     "do not run it. Stop and tell the user (README: Troubleshooting)")
+    try:
+        if put_launcher(launcher):
+            warn(f"{launcher} had been replaced (most likely by another engine daemon updating itself); "
+                 "the launcher is back (README: Troubleshooting)")
+    except OSError as error:
+        warn(f"could not put the launcher back at {launcher}: {error}")
+    return str(payload)
+
+
+def strays(bin_dir, home, proc="/proc"):
+    root = os.path.realpath(bin_dir).rstrip("/") + "/"
+    own = daemon_pid(home)
+    found = []
+    try:
+        entries = sorted((p for p in Path(proc).iterdir() if p.name.isdigit()), key=lambda p: int(p.name))
+    except OSError:
+        return found
+    for p in entries:
+        try:
+            args = (p / "cmdline").read_bytes().split(b"\0")
+            exe = os.readlink(p / "exe")
+        except OSError:
+            continue
+        if exe.endswith(" (deleted)"):
+            exe = exe[:-len(" (deleted)")]
+        if len(args) < 2 or args[1] != b"daemon" or not exe.startswith(root) or int(p.name) == own:
+            continue
+        state = "unknown"
+        try:
+            env = dict(item.split(b"=", 1) for item in (p / "environ").read_bytes().split(b"\0") if b"=" in item)
+            if env.get(b"REASON_NETWORK_HOME"):
+                state = env[b"REASON_NETWORK_HOME"].decode(errors="replace")
+            elif env.get(b"HOME"):
+                state = env[b"HOME"].decode(errors="replace") + "/.reason/network"
+        except OSError:
+            pass
+        found.append((int(p.name), exe, state))
+    return found
+
+
 def run(binary, home, *args, timeout=60):
-    env = dict(os.environ, REASON_NETWORK_HOME=str(home))
+    env = dict(os.environ, REASON_NETWORK_HOME=str(home), REASON_NETWORK_NO_UPDATE="1")
     try:
         return subprocess.run([str(binary), *args], capture_output=True, text=True, env=env, timeout=timeout,
                               stdin=subprocess.DEVNULL, preexec_fn=default_signals)
@@ -218,12 +409,18 @@ def verify(home, since, old_pid, timeout):
         time.sleep(0.2)
 
 
-def restart_daemon(binary, home, since):
+def restart_daemon(binary, home, since, lenient_stop=False):
     """Stops the running daemon, starts it again with `team` and checks it started after `since`."""
     old = daemon_pid(home)
-    r = run(binary, home, "stop", timeout=STOP_TIMEOUT + 30)
-    if r.returncode != 0:
-        raise Failed(f"reason-network stop failed: {(r.stderr or r.stdout).strip()[:300]}")
+    try:
+        r = run(binary, home, "stop", timeout=STOP_TIMEOUT + 30)
+        problem = None if r.returncode == 0 else (r.stderr or r.stdout).strip()[:300]
+    except Failed as error:
+        problem = str(error)
+    if problem is not None:
+        if not lenient_stop:
+            raise Failed(f"reason-network stop failed: {problem}")
+        say(f"reason-network stop did not work ({problem}); ending the daemon by signal")
     if old and not wait_exit(home, old, STOP_TIMEOUT) and not end_daemon(home, old):
         raise Failed(f"the daemon (pid {old}) did not exit within {STOP_TIMEOUT:.0f} s of reason-network stop, "
                      "nor after SIGTERM and SIGKILL")
@@ -241,10 +438,18 @@ def report(binary, pid, start, since):
 
 def put_binary(source, binary):
     binary = Path(binary)
+    binary.parent.mkdir(parents=True, exist_ok=True)
     tmp = binary.with_name(f".{binary.name}.new.{os.getpid()}")
-    shutil.copyfile(source, tmp)
-    os.chmod(tmp, 0o755)
-    os.replace(tmp, binary)
+    try:
+        shutil.copyfile(source, tmp)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, binary)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return replaced(binary)
 
 
@@ -276,14 +481,18 @@ def load_txn(path):
 
 def manual_steps(data):
     q = shlex.quote
-    b, h, backup = data["bin"], data["home"], data["backup"]
+    h, backup = data["home"], data["backup"]
+    b = data.get("old_bin") or data["bin"]
     pid = daemon_pid(h)
     holder = f"pid {pid}" if pid else f"the pid written in {q(h + '/daemon.lock')}"
+    first = f"cp {q(backup + '/reason-network')} {q(b + '.restore')} && mv -f {q(b + '.restore')} {q(b)}"
+    if b != data["bin"]:
+        first += f" && rm -f {q(data['bin'])}"
     print(f"""engine: the previous engine could not be confirmed running. Restore it by hand:
-  1. cp {q(backup + '/reason-network')} {q(b + '.restore')} && mv -f {q(b + '.restore')} {q(b)}
-  2. REASON_NETWORK_HOME={q(h)} {q(b)} stop
+  1. {first}
+  2. REASON_NETWORK_HOME={q(h)} REASON_NETWORK_NO_UPDATE=1 {q(b)} stop
      if a daemon still runs ({holder}): kill it, and kill -9 it if it does not exit
-  3. REASON_NETWORK_HOME={q(h)} {q(b)} team
+  3. REASON_NETWORK_HOME={q(h)} REASON_NETWORK_NO_UPDATE=1 {q(b)} team
   4. only if it still does not start: end the daemon as in step 2, move {q(h)} aside and copy
      {q(backup + '/state')} to {q(h)} (mode 700). That loses mail received after the switch.
   The backup stays in {q(backup)}.""", flush=True)
@@ -305,13 +514,44 @@ def quiet():
         signal.signal(s, lambda *_: None)
 
 
+def untrusted_failed(data, txn):
+    quiet()
+    q = shlex.quote
+    b, h = data["bin"], data["home"]
+    try:
+        installed = pinned_build(b)[0] == data.get("pinned")
+    except OSError:
+        installed = False
+    data["stage"] = "failed_untrusted"
+    if not installed:
+        save_txn(txn, data)
+        print(f"""engine: the pinned build could not be installed at {b}; nothing that starts the engine was changed.
+  The current engine is not a pinned build, so do not run it. Fix the problem shown above, then run this upgrade
+  again (a copy of the replaced binary is in {q(data['backup'])}).""", flush=True)
+        return
+    if data.get("old_bin") and data["old_bin"] != b:
+        try:
+            put_launcher(data["old_bin"])
+        except OSError as error:
+            print(f"engine: could not write the launcher to {data['old_bin']}: {error}", flush=True)
+    save_txn(txn, data)
+    print(f"""engine: the engine is now the checked pinned build at {b}, but its daemon was not confirmed running.
+  The replaced binary was not a pinned build, so it is not put back (a copy is in {q(data['backup'])}).
+  1. REASON_NETWORK_HOME={q(h)} REASON_NETWORK_NO_UPDATE=1 {q(b)} stop
+     if a daemon still runs: kill it, and kill -9 it if it does not exit
+  2. REASON_NETWORK_HOME={q(h)} REASON_NETWORK_NO_UPDATE=1 {q(b)} team
+  3. then run this upgrade again; if the daemon still does not start, tell the user""", flush=True)
+
+
 def undo(data, txn):
     """Puts the backed-up binary back and checks the daemon runs it. Returns True when confirmed."""
     quiet()
-    b, h = data["bin"], data["home"]
+    b, h = data.get("old_bin") or data["bin"], data["home"]
     say(f"putting Reason Network {data.get('old_version') or 'from the backup'} back")
     try:
         since = put_binary(Path(data["backup"]) / "reason-network", b)
+        if b != data["bin"] and os.path.lexists(data["bin"]):
+            os.unlink(data["bin"])
         pid, start, _ = restart_daemon(b, h, since)
     except (Failed, OSError) as error:
         print(f"engine: rollback failed: {error}", flush=True)
@@ -326,10 +566,15 @@ def undo(data, txn):
 
 def cmd_switch(a):
     binary, home = Path(a.bin), Path(a.home)
+    old = Path(a.old_bin) if a.old_bin else binary
     backup = Path(a.backup)
     data = {"stage": "backup", "bin": str(binary), "home": str(home), "backup": str(backup),
-            "old_version": version_of(binary), "pinned": a.pinned, "old_pid": daemon_pid(home),
-            "machines": [], "extra": dict(kv.split("=", 1) for kv in a.keep)}
+            "old_version": "" if a.untrusted_old else version_of(old), "pinned": a.pinned,
+            "old_pid": daemon_pid(home), "machines": [], "extra": dict(kv.split("=", 1) for kv in a.keep)}
+    if a.old_bin:
+        data["old_bin"] = str(old)
+    if a.untrusted_old:
+        data["untrusted_old"] = True
 
     def prepare():
         if version_of(a.new) != a.pinned:
@@ -337,11 +582,14 @@ def cmd_switch(a):
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.mkdir(mode=0o700)
         os.chmod(backup, 0o700)
-        shutil.copy2(binary, backup / "reason-network")
+        shutil.copy2(old, backup / "reason-network")
         backup_state(home, backup / "state")
         if data["old_pid"]:
-            team = run(binary, home, "team")
-            if team.returncode == 0:
+            try:
+                team = run(a.new if a.untrusted_old else old, home, "team")
+            except Failed:
+                team = None
+            if team is not None and team.returncode == 0:
                 data["machines"] = sorted(machines(team.stdout))
         save_txn(a.txn, data)
         say(f"backed up the binary and {home} to {backup}")
@@ -362,7 +610,7 @@ def cmd_switch(a):
         data["stage"] = "replaced"
         save_txn(a.txn, data)
         say(f"replaced {binary}; restarting the daemon")
-        pid, start, team = restart_daemon(binary, home, data["since"])
+        pid, start, team = restart_daemon(binary, home, data["since"], lenient_stop=a.untrusted_old)
         have = version_of(binary)
         if have != a.pinned:
             raise Failed(f"{binary} reports {have or 'no version'}, not {a.pinned}")
@@ -372,6 +620,9 @@ def cmd_switch(a):
         who = run(binary, home, "who")
         if who.returncode != 0:
             raise Failed(f"reason-network who failed: {(who.stderr or who.stdout).strip()[:300]}")
+        if a.old_bin and old != binary:
+            put_launcher(old)
+            say(f"{old} is now the launcher")
         data["stage"] = "verified"
         save_txn(a.txn, data)
         report(binary, pid, start, data["since"])
@@ -384,6 +635,9 @@ def cmd_switch(a):
     except Interrupted:
         print("engine: interrupted", flush=True)
     if data["stage"] == "backup":
+        return 1
+    if a.untrusted_old:
+        untrusted_failed(data, a.txn)
         return 1
     return 1 if undo(data, a.txn) else 3
 
@@ -455,8 +709,14 @@ def cmd_rollback(a):
     data = load_txn(a.txn)
     if data is None:
         return 0
-    if data["stage"] in ("backup", "rolled_back"):
+    if data["stage"] in ("backup", "rolled_back", "failed_untrusted"):
         return 0
+    if data.get("untrusted_old"):
+        if data["stage"] == "verified":
+            say("the replaced binary was not a pinned build, so it is not put back")
+            return 0
+        untrusted_failed(data, a.txn)
+        return 3
     return 0 if undo(data, a.txn) else 3
 
 
@@ -487,6 +747,36 @@ def cmd_others(a):
         if a.skip_parent and ppid == str(a.skip_parent):
             continue
         print(f"{pid} {cmd}")
+    return 0
+
+
+def cmd_build(a):
+    version, digest = pinned_build(a.bin)
+    if version is None:
+        return 1
+    print(f"{version} {digest}")
+    return 0
+
+
+def cmd_cloud_bin(a):
+    try:
+        print(cloud_bin(a.base))
+    except Failed as error:
+        print(f"rn-engine: {error}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
+def cmd_launcher(a):
+    if put_launcher(a.path):
+        say(f"wrote the launcher to {a.path}")
+    say("launcher ok")
+    return 0
+
+
+def cmd_strays(a):
+    for pid, exe, state in strays(a.bin_dir, a.home, a.proc):
+        print(f"pid {pid} {exe} state {state}")
     return 0
 
 
@@ -544,6 +834,8 @@ def main(argv=None):
         s.add_argument(flag, required=True)
     s.add_argument("--txn")
     s.add_argument("--keep", action="append", default=[])
+    s.add_argument("--old-bin")
+    s.add_argument("--untrusted-old", action="store_true")
     s.set_defaults(run=cmd_switch)
     s = sub.add_parser("restart")
     s.add_argument("--home", required=True)
@@ -556,6 +848,24 @@ def main(argv=None):
     s.add_argument("--txn", required=True)
     s.add_argument("key")
     s.set_defaults(run=cmd_txn_get)
+    s = sub.add_parser("build")
+    s.add_argument("--bin", required=True)
+    s.set_defaults(run=cmd_build)
+    s = sub.add_parser("cloud-bin")
+    s.add_argument("--base", required=True)
+    s.set_defaults(run=cmd_cloud_bin)
+    s = sub.add_parser("launcher")
+    s.add_argument("--path", required=True)
+    s.set_defaults(run=cmd_launcher)
+    s = sub.add_parser("config-off")
+    s.add_argument("--path", required=True)
+    s.add_argument("keys", nargs="+", choices=("auto_update", "lan", "tray"))
+    s.set_defaults(run=lambda a: config_off(a.path, a.keys) or 0)
+    s = sub.add_parser("strays")
+    s.add_argument("--bin-dir", required=True)
+    s.add_argument("--home", required=True)
+    s.add_argument("--proc", default="/proc")
+    s.set_defaults(run=cmd_strays)
     s = sub.add_parser("backup-state")
     s.add_argument("--home", required=True)
     s.add_argument("--to", required=True)

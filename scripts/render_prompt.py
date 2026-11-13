@@ -46,8 +46,22 @@ def cloud_uninstall_script(team_name=None, mac_machine=None, relay_name=None, le
     return text, hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def release_values(release_tag, release_commit, cloud_checksums):
+    if release_tag is not None and not re.fullmatch(r"v\d+\.\d+\.\d+", release_tag):
+        raise ValueError(f"invalid release tag: {release_tag[:60]!r}")
+    if release_commit is not None and not re.fullmatch(r"[0-9a-f]{40}", release_commit):
+        raise ValueError("the release commit must be 40 lowercase hex digits")
+    if cloud_checksums is not None:
+        lines = cloud_checksums.strip("\n").split("\n")
+        if len(lines) != 4 or not all(re.fullmatch(r"[0-9a-f]{64}  box/[A-Za-z0-9._-]+", line) for line in lines):
+            raise ValueError("the cloud checksums must be four lines of '<sha256>  box/<file>'")
+        cloud_checksums = "\n".join(lines)
+    return {"<release-tag>": release_tag, "<release-commit>": release_commit, "<cloud-checksums>": cloud_checksums}
+
+
 def render_prompt(template, language="en", *, team_name=None, mac_user=None, mac_home=None, repo_url=None,
-                  relay_name=None, mac_machine=None, level=None, mode=None, challenge=None):
+                  relay_name=None, mac_machine=None, level=None, mode=None, challenge=None, release_tag=None,
+                  release_commit=None, cloud_checksums=None):
     if language not in LANGUAGES:
         raise ValueError(f"unsupported language: {language}; choose en or zh-CN")
     if template not in TEMPLATES:
@@ -69,9 +83,9 @@ def render_prompt(template, language="en", *, team_name=None, mac_user=None, mac
         mac_home = f"/Users/{mac_user}"
     values = {"<team-name>": team_name, "<mac-user>": mac_user, "<mac-home>": mac_home,
               "<repo-url>": shlex.quote(repo_url) if repo_url is not None else None, "<relay-name>": relay_name}
+    values.update(release_values(release_tag, release_commit, cloud_checksums))
     # One pass: replacement values remain literal, including &, backslashes, and placeholder-like text.
-    return re.sub(r"<team-name>|<mac-user>|<mac-home>|<repo-url>|<relay-name>",
-                  lambda match: values[match[0]] if values[match[0]] is not None else match[0], blocks[0])
+    return substitute(blocks[0], values)
 
 
 def main():
@@ -87,12 +101,16 @@ def main():
     parser.add_argument("--level", choices=("identity", "all"), help="cloud-uninstall: uninstall level")
     parser.add_argument("--mode", choices=("normal", "residual"), help="cloud-uninstall: normal or residual")
     parser.add_argument("--challenge", help="cloud-uninstall: 16 hex digits, new for each uninstall run")
+    parser.add_argument("--release-tag", help="cloud-setup: the release tag the cloud checks out")
+    parser.add_argument("--release-commit", help="cloud-setup: the commit of that tag")
+    parser.add_argument("--cloud-checksums", help="cloud-setup: four lines of '<sha256>  box/<file>'")
     args = parser.parse_args()
     try:
         print(render_prompt(args.template, args.lang, team_name=args.team_name,
                             mac_user=args.mac_user, mac_home=args.mac_home, repo_url=args.repo_url,
                             relay_name=args.relay_name, mac_machine=args.mac_machine, level=args.level,
-                            mode=args.mode, challenge=args.challenge), end="")
+                            mode=args.mode, challenge=args.challenge, release_tag=args.release_tag,
+                            release_commit=args.release_commit, cloud_checksums=args.cloud_checksums), end="")
     except (OSError, ValueError) as error:
         parser.exit(1, f"prompt: {error}\n")
 

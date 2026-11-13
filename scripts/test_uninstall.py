@@ -945,6 +945,44 @@ class CloudScript(Base):
         for name in ("state", "bin", "person", "relay", "outbound.key", "relay.damaged-20261101T000000Z"):
             self.assertFalse((self.b / name).exists(), name)
 
+    def payload(self, body):
+        old = self.b / "bin/reason-network"
+        old.unlink()
+        engine = self.b / "bin/engine/reason-network"
+        engine.parent.mkdir(parents=True)
+        engine.write_text(body)
+        engine.chmod(0o755)
+        return engine
+
+    def pin_payload(self, engine):
+        target = {"x86_64": "x86_64-unknown-linux-musl"}.get(os.uname().machine, "aarch64-unknown-linux-musl")
+        builds = self.base / "builds.json"
+        builds.write_text(json.dumps({"0.12.17": {target: hashlib.sha256(engine.read_bytes()).hexdigest()}}))
+        self.env["RN_PINNED_BUILDS_FILE"] = str(builds)
+
+    def test_check_runs_a_pinned_engine_from_box_bin_engine(self):
+        shutil.copy(ROOT / "box/rn-engine.py", self.b / "rn-engine.py")
+        engine = self.payload("#!/usr/bin/env python3\n" + FAKE_RN.split("\n", 1)[1])
+        self.pin_payload(engine)
+        r = self.run_cloud("check")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn("NOTE: the engine is still at box/bin/reason-network", r.stdout)
+        self.assertEqual([c for c in self.calls().splitlines() if c.startswith("rn ")], ["rn team"])
+
+    def test_check_stops_without_running_an_unpinned_or_unchecked_engine(self):
+        engine = self.payload('#!/bin/sh\necho "rn $*" >> "$CALL_LOG"\n')
+        r = self.run_cloud("check")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("STOP: box/rn-engine.py is missing", r.stdout)
+        shutil.copy(ROOT / "box/rn-engine.py", self.b / "rn-engine.py")
+        r = self.run_cloud("check")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("STOP: the engine was not run: ", r.stdout)
+        self.assertIn("is not a Reason Network build pinned by agent-mesh", r.stdout)
+        self.assertNotIn("PROOF:", r.stdout)
+        self.assertEqual([c for c in self.calls().splitlines() if c.startswith("rn ")], [])
+        self.assertTrue(engine.exists())
+
     def test_check_changes_nothing_and_prints_the_proof(self):
         r = self.run_cloud("check")
         self.assertEqual(r.returncode, 0, r.stdout)
