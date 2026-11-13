@@ -1,0 +1,140 @@
+update.help	agent-mesh: update an installed Mac to the version in this checkout.\n  ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--manual] [--repo-url URL]\n  --plan     show what differs and what would run, then exit; the deployment is not changed\n  --no-pull  use this checkout as is; otherwise git pull --ff-only runs first\n  --yes      skip the one confirmation at the start\n  --manual   update the cloud side by hand: pause the routine, send Grok Bot a command block and paste its reply\n  --lang     language of the terminal text and the routine prompt; default: the recorded one, then AGENT_MESH_LANG,\n             then en\n  --repo-url the repository the cloud installs from (default: the public agent-mesh repository); the cloud scripts\n             in this checkout must match its release tag v<VERSION>, which is checked online before anything changes\nIt updates this Mac first (relay, dsh plugin, Reason Network). When the routine prompt changed, it shows the new one\nfor you to paste into the routine. When the cloud side changed, it sends Grok Bot an update request from this Mac,\nwaits up to 15 minutes for the reply, checks it and records it. The first time after v0.8.1 or earlier, Grok Bot\nasks you once in Grok before it runs the update.\nIt also refreshes the filled-in reply convention in ~/.local/lib/agent-mesh/templates.\nExit: 0 done or already up to date, 1 not fully done (see the summary), 2 usage, 3 needs a terminal (nothing changed).
+update.lang_needs	--lang needs en or zh-CN
+update.url_needs	--repo-url needs a URL
+update.unknown_option	unknown option: %s (see ./update.sh --help)
+update.locked	another ./update.sh is running (pid %s)
+update.stale_lock	note: removing the lock of an earlier ./update.sh that did not finish
+update.no_lock	cannot create %s
+update.summary	== summary
+label.relay	relay
+label.engine	engine
+label.dsh	dsh plugin
+label.cloud	cloud scripts
+label.setup	cloud setup
+label.cengine	cloud engine
+label.prompt	routine prompt
+label.name	address name
+label.release	cloud release
+st.unchanged	unchanged
+st.changed	changed
+st.pending	pending
+st.unknown	unknown
+st.absent	absent
+st.ok	ok
+st.failed	failed
+update.engine_not_undone	!! The engine switch was not undone; follow the steps above, then run ./update.sh again. Record: %s
+update.relay_not_back	!! The relay could not be started again: run ./install.sh --restart-relay
+update.engine_rolling_back	The engine step did not finish; rolling it back.
+update.exit_paused_cloud	!! [GROK-UI] The routine is still paused. Keep it paused until ./update.sh records the cloud step;\n   if Grok Bot's output says 'could not restore', have the clone looked at before anything runs there.
+update.exit_paused	!! [GROK-UI] The routine is still paused: resume it in Grok Bot.
+update.relay_running_again	The installed relay is running again.
+update.stopped_at	The update stopped at '%s'. Run ./update.sh again in a terminal to continue from there.
+update.not_git	this directory is not a git clone; get the new version yourself, then run ./update.sh --no-pull
+update.no_upstream	this branch has no upstream; pull it yourself, then run ./update.sh --no-pull
+update.dirty_checkout	tracked files have uncommitted changes; commit or stash them, or run ./update.sh --no-pull
+update.pull_failed	git pull --ff-only failed; nothing was changed
+update.at_latest	checkout is already at the latest commit
+update.pulled	pulled %s..%s
+update.no_checkout	not a git checkout
+update.release_ok	%s at %s; the cloud files in this checkout match it
+update.no_status	could not read the deployment state
+update.engine_refused	Reason Network %s is not the version this release supports (%s) and is never downgraded or replaced; review that installation first
+update.renamed	the Bot address name in ~/.config/agent-relay/env (%s) is not the one this Mac installed with (%s); renaming is not supported. Put the old name back, or uninstall with identity removal and install again
+update.plan_head	== plan (checkout %s, prompt language %s)
+update.plan_txn	  unfinished update stopped at '%s': it is continued first (terminal)
+update.plan_name_unknown	%s (recorded with the next step this script records)
+update.plan_release_failed	%s (the update stops here before changing anything)
+update.plan_relay	install this checkout's relay and restart it
+update.plan_etxn	  an engine upgrade stopped at '%s': it is rolled back first (binary only), then offered again
+update.plan_engine_older	upgrade Reason Network %s to %s: relay first, backup, switch, verify, rollback on failure
+update.plan_engine_stale	restart the daemon: it still runs the binary from before the last replacement
+update.plan_dsh_absent	- (not installed)
+update.plan_dsh	replace the plugin file; bridge settings stay
+update.plan_cloud_pending	  cloud: asks whether Grok Bot finished the setup the installer printed
+update.plan_cloud_manual	  cloud: you send Grok Bot a command block in the chat and paste its reply here (terminal; the routine is paused meanwhile)
+update.plan_cloud_first	  cloud: first update with this version: this Mac sends Grok Bot the update as a message and Grok Bot asks you once in Grok; it checks out the release and checks Reason Network %s, then this Mac checks its reply
+update.plan_cloud_auto	  cloud: this Mac sends Grok Bot an update request; Grok Bot checks out the release and checks Reason Network %s by itself, then this Mac checks its reply
+update.plan_prompt_pending	asks whether the prompt the installer printed is saved
+update.plan_prompt	you replace the routine's prompt in [GROK-UI] (terminal)
+update.plan_engine_order	  engine order: switch the relay on the current engine, stop it, switch the engine, start the relay
+update.plan_manual_order	  order: stop relay, pause routine, update cloud and/or prompt, resume routine, start relay
+update.manual_send_this	[GROK-UI] Send this to Grok Bot directly in the chat (not through the routine):
+update.manual_reply_lines	Grok Bot's reply must end with lines that start with the word agent-mesh-result and show the commit\n%s, these checksums and DONE %s:
+update.manual_reply_engine	Before them it must show the engine lines: reason-network %s running (daemon pid ...), the pinned build\nat box/bin/engine/reason-network and launcher ok.
+update.paste_reply	Paste Grok Bot's reply here, then type a line with only a dot (.) and press Enter:
+update.manual_reply_rejected	the cloud side was not recorded as updated. Sort it out with Grok Bot (the routine stays paused), then run ./update.sh again to paste the new reply
+update.prompt_replace	[GROK-UI] Replace the prompt saved in the routine with this one (%s):
+update.ask_prompt_saved_now	Is the new prompt saved in the routine?
+update.prompt_not_recorded	the routine prompt was not recorded as updated
+update.continuing	== continuing the update that stopped at '%s'
+update.g_stop_relay	== 1. stop the relay (mail waits in the local engine meanwhile)
+update.relay_no_stop	could not stop the relay service
+update.g_still_paused	== 2. [GROK-UI] Is the routine still paused, with no run in progress?
+update.g_pause	== 2. [GROK-UI] Pause the routine in Grok Bot and wait until no run is in progress. Done?
+update.stopped	stopped
+update.g_cloud	== 3. update the cloud scripts and the cloud engine
+update.g_prompt	== 4. replace the routine prompt
+update.g_resume	== 5. [GROK-UI] Resume the routine in Grok Bot. Done?
+update.g_start_relay	== 6. start the relay
+update.relay_no_start	the relay did not start; fix the problem shown above, then run ./update.sh again
+update.e_switch_relay	== engine 1. switch the relay to this checkout's version on the current engine (%s)
+update.e_relay_no_switch	the relay did not switch, so the engine was not changed; fix the problem above, then run ./update.sh again
+update.e_others	These processes also use Reason Network. They reconnect to the restarted daemon by themselves; restart those agent sessions after the update:
+update.e_restart	== engine 2. restart the daemon: Reason Network %s is installed, but its daemon started before the binary was replaced
+update.e_restart_failed	the daemon did not come back on the new binary; run reason-network stop, then ./check.sh
+update.e_relay_after_restart	the relay did not start on the restarted engine; see the messages above
+update.e_upgrade	== engine 2. upgrade Reason Network %s to %s
+update.e_upgrade_explain	It downloads %s and checks its pinned sha256, stops the relay, backs up the binary and ~/.reason/network,\nreplaces the binary, restarts the daemon and checks the new one runs, then starts the relay. On failure only\nthe old binary is put back; mail received meanwhile stays.
+update.e_no_tmp	cannot create a temporary directory in %s
+update.e_download_failed	the new engine could not be downloaded or verified; the engine was not changed
+update.e_relay_no_stop	could not stop the relay service; the engine was not changed
+update.e_not_undone	the engine upgrade failed and was not fully undone; see the steps above
+update.e_failed_back	the engine upgrade failed; Reason Network %s is back
+update.e_start_relay	== engine 3. start the relay on Reason Network %s
+update.e_relay_not_undone	the relay did not register on the new engine and the engine was not fully rolled back; see the steps above
+update.e_relay_failed_back	the relay did not register on the new engine; Reason Network %s is back
+update.e_not_recorded	note: could not record the engine version in %s
+update.ask_setup_done	Did Grok Bot finish the cloud setup the installer printed (it reported that the cloud joined, with Reason Network %s)?
+update.setup_first	finish the cloud setup first (./install.sh --cloud-prompt), then run ./update.sh again; nothing was changed
+update.ask_prompt_saved	Is the routine prompt the installer printed (%s) saved in the routine?
+update.cloud_heading	== cloud: update Grok Bot's cloud to %s
+update.cloud_stopped	the cloud side was not recorded as updated (see the lines above). Sort out the reason with Grok Bot in Grok, then run ./update.sh again; ./update.sh --manual does the cloud step by hand
+update.cloud_earlier_reply	Grok Bot's reply to the earlier request arrived and matches; recorded.
+update.relay_down	the relay is not running, so Grok Bot cannot get the update request; run ./install.sh --restart-relay, then ./update.sh again
+update.no_address	could not read the Bot address from ~/.config/agent-relay/env (see above)
+update.no_request	could not record the update request (see above); nothing was sent
+update.send_failed	could not send the update request to %s (see above); run ./update.sh again
+update.sent	Sent the update request to Grok Bot (%s).
+update.sent_first	Sent the update to Grok Bot (%s). This first time, Grok Bot asks you in Grok before it runs it: confirm there once; later updates do not ask.
+update.waiting	Waiting for Grok Bot to finish (usually 1 to 3 minutes, at most 15)...
+update.still_waiting	  still waiting (%s min)
+update.timeout	No reply from Grok Bot within 15 minutes. It may still be working; its result also shows in Grok.\nRun ./update.sh again later: it first looks for the reply to this request and records it, and sends a new\nrequest only if there is none. If Grok Bot did not act on it, use ./update.sh --manual.
+update.preflight_failed	fix the problem above, then run ./update.sh again; nothing was changed
+update.needs_terminal	This needs answers in a terminal and this is not one: nothing was changed.\n[LOCAL] User: run   ./update.sh --lang %s   in this repository in Terminal.
+update.convention_failed	note: could not refresh the reply convention with this Bot's address in %s
+update.up_to_date	already up to date
+update.will_paste	You will paste a new routine prompt into Grok during this update.
+update.continue	Continue?
+update.stopped_nothing	stopped; nothing was changed
+update.etxn_first	== an engine upgrade did not finish ('%s'); rolling it back first
+update.etxn_failed	the unfinished engine upgrade could not be rolled back; see the steps above
+update.check	== check
+update.check_failed	check.sh reported FAIL lines; the update steps above are kept
+r.unchanged	unchanged
+r.updated	updated
+r.confirmed	confirmed
+r.failed	failed; see the messages above
+r.restarted	restarted
+r.engine_confirmed	Reason Network %s confirmed
+r.restart_failed	restart failed; see the messages above
+r.daemon_restarted	daemon restarted
+r.daemon_restarted_on	daemon restarted on %s
+r.download_failed	not changed (download failed)
+r.rolled_back	failed and rolled back to %s (backup: %s)
+r.relay_rolled_back	relay failed on %s; rolled back to %s (backup: %s)
+r.upgraded	upgraded %s -> %s (backup: %s; remove it once ./check.sh passes)
+r.dsh_updated	updated (quit DeepSeek Harness with ⌘Q and reopen it)
+r.dsh_failed	failed; the previous plugin is kept
+r.cloud_updated	updated to %s
+r.cloud_stopped	not updated; Grok Bot stopped (see above)
+r.cloud_waiting	waiting for Grok Bot's reply; run ./update.sh again later

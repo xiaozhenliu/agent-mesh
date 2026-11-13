@@ -28,16 +28,20 @@ import time
 from pathlib import Path
 
 import relay_names
+from messages import pad, t
 from render_prompt import ROOT, render_prompt
 
 LABEL = "com.local.agent-relay"
 LEVELS = ("program", "identity", "all")
 DEEP = ("identity", "all")
-KNOWN_RELAYS = {"02b6a5097a93e66e": "3c810b5 to v0.1.1", "1467396a0de8baa4": "v0.2.0 to v0.4.1",
-                "b034a2293d05274b": "an untagged commit"}
+KNOWN_RELAYS = {"02b6a5097a93e66e": "uninstall.known_v011", "1467396a0de8baa4": "uninstall.known_v041",
+                "b034a2293d05274b": "uninstall.known_untagged"}
 TEMP6 = r"[A-Za-z0-9]{6}"
 RC_FILES = (".zshrc", ".zprofile", ".zshenv", ".bash_profile", ".bashrc", ".profile", ".config/fish/config.fish")
 RULE = "-" * 64
+LANGS = ("en", "zh-CN")
+TEAM_SOURCES = {"team list": "uninstall.source_team_list", "this machine's person": "uninstall.source_person",
+                "config.toml": "uninstall.source_config", "relay env": "uninstall.source_env"}
 
 
 class Stop(Exception):
@@ -46,6 +50,18 @@ class Stop(Exception):
 
 def valid_name(name):
     return isinstance(name, str) and bool(relay_names.NAME.fullmatch(name)) and len(name) <= 40
+
+
+def state_text(state):
+    return t("uninstall.state_" + state.replace("-", "_"))
+
+
+def with_note(text, note):
+    return t("uninstall.with_note", text, note) if note else text
+
+
+def source_text(source):
+    return t(TEAM_SOURCES[source])
 
 
 class Paths:
@@ -81,7 +97,7 @@ class Paths:
         try:
             rel = path.relative_to(self.home)
         except ValueError:
-            return f"{path} is outside the home folder"
+            return t("uninstall.outside_home", path)
         cur = self.home
         for part in rel.parts:
             cur = cur / part
@@ -90,15 +106,15 @@ class Paths:
             except FileNotFoundError:
                 return None
             except OSError as error:
-                return f"cannot check {cur}: {error.strerror or error}"
+                return t("uninstall.cannot_check", cur, error.strerror or error)
             if stat.S_ISLNK(st.st_mode):
-                return f"{cur} is a symlink"
+                return t("uninstall.is_symlink", cur)
             if st.st_uid != os.getuid():
-                return f"{cur} belongs to another user"
+                return t("uninstall.other_owner", cur)
         real_home = os.path.realpath(self.home)
         real = os.path.realpath(path)
         if real != real_home and not real.startswith(real_home + os.sep):
-            return f"{path} resolves outside the home folder"
+            return t("uninstall.resolves_outside", path)
         return None
 
     def temp_files(self):
@@ -135,9 +151,9 @@ def run(cmd, env=None, timeout=120):
     try:
         r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
     except FileNotFoundError:
-        return 127, f"{cmd[0]}: not found"
+        return 127, t("uninstall.cmd_not_found", cmd[0])
     except subprocess.TimeoutExpired:
-        return 124, f"{cmd[0]}: no answer within {timeout} s"
+        return 124, t("uninstall.cmd_timeout", cmd[0], timeout)
     except OSError as error:
         return 126, f"{cmd[0]}: {error}"
     return r.returncode, r.stdout.decode("utf-8", errors="replace")
@@ -175,7 +191,7 @@ class Roster:
         lines = out.splitlines()
         head = lines[0].split() if lines else []
         if len(head) < 2 or head[0] != "team":
-            return cls("unknown", message="unexpected output: " + short(out))
+            return cls("unknown", message=t("uninstall.unexpected_output", short(out)))
         me, rows = None, []
         for line in lines[1:]:
             parts = line.split()
@@ -189,7 +205,7 @@ class Roster:
             else:
                 rows.append((person, machine, status))
         if me is None:
-            return cls("unknown", message="the team list has no 'this machine' row")
+            return cls("unknown", message=t("uninstall.no_this_machine"))
         return cls("in", team=head[1], me=me, rows=rows)
 
     @staticmethod
@@ -220,7 +236,7 @@ class Inventory:
 
     def rn(self, *args, timeout=120):
         if not self.critical_ok or "rn-bin" in self.skips:
-            return 1, "not run: the Reason Network folders are unsafe (see the STOP lines)"
+            return 1, t("uninstall.rn_not_run")
         return run([str(self.p.rn_bin), *args], env=self.rn_env(), timeout=timeout)
 
     def collect(self):
@@ -230,7 +246,7 @@ class Inventory:
             why = p.unsafe(path)
             if why:
                 self.critical_ok = False
-                self.stop("deep", why + "; levels identity and all stop, and Reason Network is not queried")
+                self.stop("deep", t("uninstall.rn_unsafe", why))
         for key, path in (("service", p.plist), ("program", p.lib), ("state", p.state), ("rn-bin", p.rn_bin),
                           ("logs", p.logs), ("dsh", p.dsh)):
             why = p.unsafe(path)
@@ -259,23 +275,22 @@ class Inventory:
             with open(p.plist, "rb") as stream:
                 data = plistlib.load(stream)
         except Exception as error:
-            data, problem = None, f"cannot be read ({type(error).__name__})"
+            data, problem = None, t("uninstall.plist_unreadable", type(error).__name__)
         if problem is None:
             args = data.get("ProgramArguments") if isinstance(data, dict) else None
             env = data.get("EnvironmentVariables", {}) if isinstance(data, dict) else None
             if not isinstance(data, dict) or data.get("Label") != LABEL:
-                problem = "has another label"
+                problem = t("uninstall.plist_label")
             elif not isinstance(args, list) or len(args) < 2 or args[-1] != str(p.relay):
-                problem = "does not start the relay installed in ~/.local/lib/agent-mesh"
+                problem = t("uninstall.plist_program")
             elif not isinstance(env, dict):
-                problem = "has unexpected environment settings"
+                problem = t("uninstall.plist_env")
             elif any(str(k).startswith("AGENT_RELAY_") for k in env):
-                problem = "overrides AGENT_RELAY_* settings"
+                problem = t("uninstall.plist_overrides")
             elif env.get("REASON_NETWORK_HOME", str(p.rn_home)) != str(p.rn_home):
-                problem = "uses another REASON_NETWORK_HOME"
+                problem = t("uninstall.plist_rn_home")
         if problem:
-            self.stop("all", f"{p.plist} {problem}: it is not the login service install.sh writes; "
-                             "review it by hand, nothing is removed")
+            self.stop("all", t("uninstall.plist_foreign", p.plist, problem))
 
     def read_launchd(self):
         self.loaded, self.running = False, False
@@ -287,13 +302,12 @@ class Inventory:
             self.running = "state = running" in out
             self.loaded_path = loaded_plist(out)
             if not self.service_owned(out):
-                self.stop("all", f"the loaded {LABEL} service comes from {self.loaded_path or 'an unknown plist'}, "
-                                 f"not from {self.p.plist}; it belongs to another home or was loaded by hand, "
-                                 "so it is not stopped")
+                self.stop("all", t("uninstall.service_foreign", LABEL,
+                                   self.loaded_path or t("uninstall.unknown_plist"), self.p.plist))
         elif code != 113 and "Could not find service" not in out and "could not find service" not in out:
             self.launchd_note = short(out, 120)
             self.loaded = None
-            self.stop("all", f"cannot check whether {LABEL} is loaded: {self.launchd_note}")
+            self.stop("all", t("uninstall.launchd_unknown", LABEL, self.launchd_note))
 
     def service_owned(self, out):
         path = loaded_plist(out)
@@ -310,7 +324,7 @@ class Inventory:
             names = []
         except OSError as error:
             names = []
-            self.stop("deep", f"cannot list {p.agents} to look for other relays: {error.strerror or error}")
+            self.stop("deep", t("uninstall.agents_unlisted", p.agents, error.strerror or error))
         for name in names:
             if not name.endswith(".plist") or name == f"{LABEL}.plist":
                 continue
@@ -331,10 +345,10 @@ class Inventory:
             hit = hit or bool(re.match(r"com\.local\.[A-Za-z0-9._-]*relay", label))
             if hit:
                 scripts.update(w for w in words if w.endswith("_relay.py"))
-                self.foreign.append((label, f"login service {p.agents / name}"))
+                self.foreign.append((label, t("uninstall.foreign_service", p.agents / name)))
         code, out = run(["ps", "-axo", "pid=,command="], timeout=30)
         if code != 0:
-            self.stop("deep", "cannot list processes to look for other relays: " + short(out, 120))
+            self.stop("deep", t("uninstall.ps_failed", short(out, 120)))
             return
         for line in out.splitlines():
             parts = line.strip().split(None, 1)
@@ -347,8 +361,8 @@ class Inventory:
                 continue
             script = re.search(r"([^\s/]*[A-Za-z0-9]_relay\.py)(\s|$)", cmd).group(1)
             program = os.path.basename(cmd.split(None, 1)[0])
-            self.foreign.append((f"pid {parts[0]}", f"process {short(program, 40)} running {short(script, 60)} "
-                                                   "(arguments not shown)"))
+            self.foreign.append((f"pid {parts[0]}", t("uninstall.foreign_process", short(program, 40),
+                                                      short(script, 60))))
 
     def read_env(self):
         p = self.p
@@ -362,17 +376,17 @@ class Inventory:
             try:
                 self.cfg = relay_names.parse_env(p.env.read_text(encoding="utf-8", errors="replace"))
             except OSError as error:
-                self.stop("deep", f"cannot read {p.env}: {error.strerror or error}")
+                self.stop("deep", t("uninstall.cannot_read", p.env, error.strerror or error))
             try:
                 self.relay_name = relay_names.from_env(p.env)
                 self.name_default = not any(k in self.cfg for k in relay_names.KEYS)
             except ValueError as error:
-                self.stop("deep", f"{error}; the Bot address name is unclear, so levels identity and all stop")
+                self.stop("deep", t("uninstall.name_unclear", error))
         self.webhook = (self.cfg.get("WEBHOOK_URL", "").startswith("https://")
                         and len(self.cfg.get("WEBHOOK_KEY", "")) >= 8)
         self.cloud_machine = self.cfg.get("CLOUD_MACHINE") or relay_names.CLOUD_MACHINE
         if not valid_name(self.cloud_machine):
-            self.stop("deep", "CLOUD_MACHINE in the relay env is not a valid machine name")
+            self.stop("deep", t("uninstall.cloud_machine_invalid"))
         if self.cfg.get("OUTBOUND_KEY"):
             self.key_source = "inline"
         else:
@@ -384,7 +398,7 @@ class Inventory:
             self.key_source = path
         rn_bin = self.cfg.get("RN_BIN")
         if rn_bin and os.path.expanduser(rn_bin) != str(p.rn_bin):
-            self.notes.append(f"the relay env names another engine (RN_BIN); only {p.rn_bin} is used here")
+            self.notes.append(t("uninstall.other_rn_bin", p.rn_bin))
 
     def mac_key(self):
         if self.key_source == "inline":
@@ -407,7 +421,7 @@ class Inventory:
         try:
             data = json.loads(p.record.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            self.notes.append(f"{p.record} cannot be read")
+            self.notes.append(t("uninstall.record_unreadable", p.record))
             return
         if not isinstance(data, dict):
             return
@@ -418,8 +432,7 @@ class Inventory:
             if self.relay_name is None and not self.env_present:
                 self.relay_name = recorded
             elif self.relay_name is not None and recorded != self.relay_name:
-                self.stop("deep", f"the relay env gives the Bot address name {self.relay_name}, but this Mac was "
-                                  f"installed with {recorded} (deployed.json); levels identity and all stop")
+                self.stop("deep", t("uninstall.name_mismatch", self.relay_name, recorded))
 
     def read_engine(self):
         p = self.p
@@ -435,10 +448,10 @@ class Inventory:
         except OSError:
             pass
         if not self.identity:
-            self.roster = Roster("none", message="no Reason Network identity on this Mac")
+            self.roster = Roster("none", message=t("uninstall.no_identity"))
             return
         if not (self.critical_ok and self.engine):
-            self.roster = Roster("unknown", message="the engine is missing or its folders are unsafe")
+            self.roster = Roster("unknown", message=t("uninstall.engine_unusable"))
             return
         self.roster = self.query_roster()
 
@@ -459,12 +472,12 @@ class Inventory:
         self.team = None
         self.team_sources = sorted(values)
         if len(set(values.values())) > 1:
-            listed = ", ".join(f"{k} {v}" for k, v in sorted(values.items()))
-            self.stop("deep", f"the team name differs between sources ({listed}); levels identity and all stop")
+            listed = t("uninstall.list_separator").join(f"{source_text(k)} {v}" for k, v in sorted(values.items()))
+            self.stop("deep", t("uninstall.team_differs", listed))
         elif values:
             self.team = next(iter(values.values()))
             if not valid_name(self.team):
-                self.stop("deep", f"the team name {self.team[:60]!r} is not a valid name")
+                self.stop("deep", t("uninstall.team_invalid", repr(self.team[:60])))
         self.mac_machine = r.me[1] if r.status == "in" else None
         self.same_name = self.mac_machine == self.cloud_machine
         self.cloud_rows, self.own_other, self.others = self.classify(r)
@@ -525,10 +538,10 @@ class Inventory:
             code, out = run(["ps", "-p", str(pid), "-o", "command="], timeout=30)
             if code != 0 or "update.sh" in out:
                 self.lock_state = "live"
-                self.stop("all", f"./update.sh is running (pid {pid}, {lock}); let it finish first")
+                self.stop("all", t("uninstall.update_running", pid, lock))
                 return
         self.lock_state = "stale"
-        self.notes.append(f"an earlier ./update.sh left {lock}; levels identity and all remove it")
+        self.notes.append(t("uninstall.stale_lock", lock))
 
     def read_dsh(self):
         p = self.p
@@ -545,31 +558,28 @@ class Inventory:
             for path in (p.patch, p.dsh_tmp, p.plugin):
                 why = p.unsafe(path)
                 if not why and path == p.dsh_tmp and (path.exists() or path.is_symlink()) and not path.is_file():
-                    why = f"{path} is not a regular file"
+                    why = t("uninstall.not_regular", path)
                 if why:
-                    self.stop("deep", f"{why}; dsh/mac-uninstall.sh would write through it, so levels identity "
-                                      "and all stop; remove it by hand")
+                    self.stop("deep", t("uninstall.dsh_unsafe", why))
 
     def read_version(self):
         p = self.p
-        self.version = "no relay program"
+        self.version = t("uninstall.no_relay_program")
         if p.relay.is_file() and "program" not in self.skips:
             data = p.relay.read_bytes()
             digest = hashlib.sha256(data).hexdigest()[:16]
             mine = (self.here / "agent_relay.py")
             if mine.is_file() and mine.read_bytes() == data:
-                known = "same as this checkout"
+                known = t("uninstall.same_as_checkout")
             else:
-                known = KNOWN_RELAYS.get(digest, "unknown version, same layout")
-            self.version = f"relay sha {digest} ({known})"
+                known = t(KNOWN_RELAYS.get(digest, "uninstall.unknown_layout"))
+            self.version = t("uninstall.relay_sha", digest, known)
         if self.record_present:
-            self.version += "; deployed.json present (v0.4.0 or newer)"
+            self.version = t("uninstall.with_record", self.version)
         if (p.lib / "engine-upgrade.json").exists():
-            self.notes.append("an engine upgrade did not finish (engine-upgrade.json); ~/.local/bin/reason-network may "
-                              "be the new version. Run ./update.sh first to roll it back if you keep the engine")
+            self.notes.append(t("uninstall.engine_upgrade_unfinished"))
         if p.rollback.exists() or p.rollback_tmp.exists():
-            self.notes.append("an earlier relay switch did not finish (rollback/ exists); it is removed, "
-                              "not restored")
+            self.notes.append(t("uninstall.rollback_left"))
 
     def read_rc_lines(self):
         found = []
@@ -586,50 +596,56 @@ class Inventory:
 
     def names_line(self):
         name = self.relay_name or relay_names.DEFAULT
-        tail = " (default)" if (self.relay_name is None or self.name_default) else ""
+        default = self.relay_name is None or self.name_default
         cloud, inbox = relay_names.derived(name)[1:]
-        return f"{name}, {cloud}, {inbox}{tail}; cloud machine \"{self.cloud_machine}\""
+        return t("uninstall.names_default" if default else "uninstall.names", name, cloud, inbox, self.cloud_machine)
 
     def show(self):
         r = self.roster
-        print("agent-mesh uninstall: what is on this Mac (nothing removed yet)")
-        line = lambda k, v: print(f"  {k:<14}{v}")
+        print(t("uninstall.inventory_title"))
+        line = lambda k, v: print(f"  {pad(t('uninstall.field_' + k), 14)}{v}")
+        none = t("uninstall.none")
+        sep = t("uninstall.list_separator")
         line("version", self.version)
         if self.team:
-            line("team/person", f"{self.team}  (from {', '.join(self.team_sources)})")
+            line("team_person", t("uninstall.team_from", self.team, sep.join(map(source_text, self.team_sources))))
         else:
-            line("team/person", "unknown")
+            line("team_person", t("uninstall.unknown"))
         if r.status == "in":
-            line("this machine", f"{r.me[0]}/{r.me[1]}")
+            line("this_machine", f"{r.me[0]}/{r.me[1]}")
             if self.cloud_rows:
-                states = ", ".join(row[2] for row in self.cloud_rows)
-                line("cloud", f"{r.me[0]}/{self.cloud_machine}  ({len(self.cloud_rows)} member(s): {states})")
+                states = sep.join(row[2] for row in self.cloud_rows)
+                line("cloud", t("uninstall.cloud_members", f"{r.me[0]}/{self.cloud_machine}", len(self.cloud_rows),
+                                states))
             else:
-                line("cloud", "not in the team")
+                line("cloud", t("uninstall.cloud_absent"))
         elif r.status == "left":
-            line("team", "this Mac already left its team")
+            line("team", t("uninstall.team_left"))
         elif r.status == "unknown":
-            line("team", "could not be listed: " + r.message)
+            line("team", t("uninstall.team_unlisted", r.message))
         else:
             line("team", r.message)
-        line("relay names", self.names_line())
+        line("relay_names", self.names_line())
         if self.loaded is None:
-            service = "unknown (" + self.launchd_note + ")"
+            service = t("uninstall.service_unknown", self.launchd_note)
+        elif self.loaded:
+            service = t("uninstall.service_running" if self.running else "uninstall.service_stopped")
         else:
-            service = ("loaded, running" if self.running else "loaded, not running") if self.loaded else "not loaded"
-        key = "signing key present" if self.key_present() else "no signing key"
-        line("relay", f"{service}; webhook {'configured' if self.webhook else 'not configured'}; {key}")
+            service = t("uninstall.service_unloaded")
+        key = t("uninstall.key_present" if self.key_present() else "uninstall.key_absent")
+        webhook = t("uninstall.webhook_set" if self.webhook else "uninstall.webhook_unset")
+        line("relay", t("uninstall.relay_status", service, webhook, key))
         q = self.queue_counts
         if isinstance(q, dict):
             line("queue", ", ".join(f"{k} {v}" for k, v in q.items()))
         else:
-            line("queue", "none" if q is None else "cannot be read")
-        line("dsh bridge", "present" if (self.dsh_block or self.dsh_plugin) else "none")
+            line("queue", none if q is None else t("uninstall.unreadable"))
+        line("dsh_bridge", t("uninstall.present") if (self.dsh_block or self.dsh_plugin) else none)
         members = [f"{row[0]}/{row[1]} ({row[2]})" for row in self.own_other + self.others]
-        line("other members", ", ".join(members) or "none")
-        line("foreign", "; ".join(f"{fid}: {what}" for fid, what in self.foreign) or "none")
+        line("other_members", sep.join(members) or none)
+        line("foreign", "; ".join(f"{fid}: {what}" for fid, what in self.foreign) or none)
         if self.custom_key:
-            line("custom key", f"{self.custom_key} (reported only, never removed)")
+            line("custom_key", t("uninstall.custom_key", self.custom_key))
         for note in self.notes:
             line("note", note)
         for key, why in sorted(self.skips.items()):
@@ -660,7 +676,7 @@ class Uninstaller:
 
     def result(self, label, state, note="", credential=False):
         self.results.append((label, state, note, credential))
-        print(f"  {label}: {state}" + (f" ({note})" if note else ""))
+        print("  " + t("uninstall.result_line", label, with_note(state_text(state), note)))
 
     def deep(self):
         return self.level in DEEP
@@ -668,70 +684,57 @@ class Uninstaller:
     def plan_rows(self):
         inv, p, deep, everything = self.inv, self.p, self.deep(), self.level == "all"
         keep, remove = "keep", "remove"
+        have = lambda present: "present" if present else "absent"
         rows = [
-            ("relay login service and plist", "present" if inv.plist_present or inv.loaded else "absent",
-             "stop and remove"),
-            ("relay program, temporary files, rollback/", "present" if p.relay.exists() or p.temp_files()
-             or p.rollback.exists() or p.rollback_tmp.exists() else "absent", remove),
-            ("deployment record, update lock, engine backups (~/.local/lib/agent-mesh)",
-             "present" if p.lib.exists() else "absent", remove if deep else keep),
-            ("relay settings and signing key (~/.config/agent-relay)", "present" if p.conf.exists() else "absent",
-             remove if deep else keep),
-            ("relay state: queue, replay protection, kept copies", "present" if p.state.exists() else "absent",
-             remove if deep else keep),
-            ("relay logs", "present" if p.log_files() else "absent", remove if everything else keep),
-            ("dsh bridge", "present" if inv.dsh_block or inv.dsh_plugin else "absent",
-             "remove (dsh/mac-uninstall.sh --no-restore)" if deep else keep),
-            ("dsh bridge backups and log", "present" if inv.dsh_backup or inv.dsh_logs else "absent",
-             remove if everything else keep),
-            ("cloud: team membership, identity, key, names", "Bot", "Bot leaves and removes them" if deep else keep),
-            ("cloud: inbox/, threads/, /workspace/agent-mesh", "Bot",
-             "Bot removes them (after listing your files)" if everything else keep),
-            ("this Mac's team membership", inv.roster.status, "leave" if deep else keep),
-            ("agent wiring and engine service", "present" if inv.engine else "absent",
-             "setup --remove" if deep else keep),
-            ("Reason Network identity and history (~/.reason/network)",
-             "present" if p.rn_home.exists() else "absent", remove if deep else keep),
-            ("Reason Network engine (~/.local/bin/reason-network)", "present" if p.rn_bin.exists() else "absent",
-             remove if everything else keep),
-            ("Grok routine (webhook URL and key)", "Grok UI", "you delete it" if deep else "you pause it"),
+            ("service", have(inv.plist_present or inv.loaded), "stop_remove"),
+            ("program", have(p.relay.exists() or p.temp_files() or p.rollback.exists() or p.rollback_tmp.exists()),
+             remove),
+            ("record", have(p.lib.exists()), remove if deep else keep),
+            ("settings", have(p.conf.exists()), remove if deep else keep),
+            ("state", have(p.state.exists()), remove if deep else keep),
+            ("logs", have(p.log_files()), remove if everything else keep),
+            ("dsh", have(inv.dsh_block or inv.dsh_plugin), "remove_dsh" if deep else keep),
+            ("dsh_backups", have(inv.dsh_backup or inv.dsh_logs), remove if everything else keep),
+            ("cloud_identity", "bot", "bot_leaves" if deep else keep),
+            ("cloud_data", "bot", "bot_removes" if everything else keep),
+            ("team", "roster_" + inv.roster.status, "leave" if deep else keep),
+            ("wiring", have(inv.engine), "setup_remove" if deep else keep),
+            ("identity", have(p.rn_home.exists()), remove if deep else keep),
+            ("engine", have(p.rn_bin.exists()), remove if everything else keep),
+            ("routine", "grok_ui", "you_delete" if deep else "you_pause"),
         ]
         if self.residual:
-            rows = [r for r in rows if not r[0].startswith(("this Mac's team", "agent wiring"))]
-        return rows
+            rows = [r for r in rows if r[0] not in ("team", "wiring")]
+        return [(t("uninstall.plan_" + what), t("uninstall.now_" + now), t("uninstall.action_" + action))
+                for what, now, action in rows]
 
     def show_plan(self):
-        title = {"program": "program: remove the relay, keep identity, settings and key",
-                 "identity": "identity: also leave the team on both computers and remove keys and identity",
-                 "all": "all: also remove logs, the engine and the cloud's data"}[self.level]
-        print(f"\n== plan for level {title}" + (" (residual)" if self.residual else ""))
+        title = t("uninstall.level_" + self.level)
+        print("\n" + t("uninstall.plan_header_residual" if self.residual else "uninstall.plan_header", title))
         for what, now, action in self.plan_rows():
-            print(f"  {what:<58} {now:<9} {action}")
+            print(f"  {pad(what, 58)} {pad(now, 9)} {action}")
         if self.level == "all":
-            print("  Only listed, never removed: this folder, PATH lines, reply convention templates, "
-                  "an external inbox folder, the Bot's long-term memory.")
+            print("  " + t("uninstall.plan_listed_only"))
         stops = self.inv.stops_for(self.level)
         for reason in stops:
             print(f"  STOP: {reason}")
         if self.deep():
             for fid, what in self.inv.foreign:
-                print(f"  STOP unless you type I accept {fid}: another deployment ({what}) shares this Mac; it is "
-                      "never changed, but removing the shared identity breaks it")
+                print("  " + t("uninstall.plan_foreign", fid, what))
         return not stops
 
     def confirm_main(self):
         if self.level == "program":
             if self.yes:
                 return True
-            return self.ask("Remove the relay program now? Type y: ") == "y"
+            return self.ask(t("uninstall.ask_program")) == "y"
         phrase = self.team if self.level == "identity" else f"delete {self.team}"
-        return self.ask(f"Type {phrase} to go on (anything else stops): ") == phrase
+        return self.ask(t("uninstall.ask_phrase", phrase)) == phrase
 
     def confirm_foreign(self):
         for fid, what in self.inv.foreign:
-            print(f"Another deployment uses this Mac: {fid} ({what}). It is never changed, but it may share "
-                  f"~/.reason/network, which level {self.level} removes.")
-            if self.ask(f"Type I accept {fid} to go on anyway (anything else stops): ") != f"I accept {fid}":
+            print(t("uninstall.foreign_warning", fid, what, self.level))
+            if self.ask(t("uninstall.ask_accept", f"I accept {fid}")) != f"I accept {fid}":
                 return False
         return True
 
@@ -743,12 +746,12 @@ class Uninstaller:
             return True
         counts = ", ".join(f"{k} {v}" for k, v in q.items())
         if self.level == "program":
-            print(f"queue {counts}: kept for a reinstall; 'sending' entries become 'unknown' and are not sent again.")
+            print(t("uninstall.queue_kept", counts))
             if not again or self.yes:
                 return True
-            return self.ask("The queue grew while the relay stopped. Go on? Type y: ") == "y"
-        print(f"queue {counts}: these are lost with level {self.level}.")
-        return self.ask("Type yes to lose them: ") == "yes"
+            return self.ask(t("uninstall.ask_queue_grew")) == "y"
+        print(t("uninstall.queue_lost", counts, self.level))
+        return self.ask(t("uninstall.ask_lose")) == "yes"
 
     def stop_relay(self):
         p = self.p
@@ -757,8 +760,8 @@ class Uninstaller:
         code, out = run(["launchctl", "print", service], timeout=30)
         if code == 0:
             if not self.inv.service_owned(out):
-                self.result("relay login service", "skipped", "the loaded service is not this home's")
-                raise Stop(f"the loaded {LABEL} service does not come from {p.plist}; it was not stopped")
+                self.result(t("uninstall.label_service"), "skipped", t("uninstall.service_not_ours"))
+                raise Stop(t("uninstall.service_not_stopped", LABEL, p.plist))
             run(["launchctl", "bootout", service], timeout=60)
             for _ in range(20):
                 code, out = run(["launchctl", "print", service], timeout=30)
@@ -766,13 +769,12 @@ class Uninstaller:
                     break
                 time.sleep(0.5)
             else:
-                self.result("relay login service", "failed", "launchctl bootout did not unload it")
-                raise Stop("the relay is still loaded; nothing else was changed")
+                self.result(t("uninstall.label_service"), "failed", t("uninstall.bootout_failed"))
+                raise Stop(t("uninstall.still_loaded"))
         if "service" in self.inv.skips:
-            self.result("relay login service", "skipped", "unloaded, but the plist was kept: "
-                        + self.inv.skips["service"])
+            self.result(t("uninstall.label_service"), "skipped", t("uninstall.plist_kept", self.inv.skips["service"]))
             return
-        self.remove_paths("relay login service", [p.plist] + [t for t in p.temp_files() if t.parent == p.agents],
+        self.remove_paths(t("uninstall.label_service"), [p.plist] + [t for t in p.temp_files() if t.parent == p.agents],
                           absent="absent" if not was else None)
 
     def remove_tree(self, path):
@@ -817,126 +819,113 @@ class Uninstaller:
         mode = "residual" if self.residual else "normal"
         challenge = secrets.token_hex(8)
         text = self.cloud_prompt(challenge, mode)
-        print("\n[GROK-UI] User: first pause the routine in Grok Bot and make sure no run is in progress.")
-        print("[GROK-UI] User: then send this to Grok Bot as one message. The Bot runs it on [BOT-CLOUD], its cloud "
-              "computer, and answers with a check result and a PROOF line:")
+        print("\n" + t("uninstall.cloud_pause"))
+        print(t("uninstall.cloud_send"))
         show = lambda: print(f"{RULE}\n{text}{RULE}")
         show()
         key = None if self.residual else self.inv.mac_key()
         while True:
-            answer = self.ask("[LOCAL] Type the PROOF value from the Bot, 'none' if it printed none, 'prompt' to "
-                              "show the prompt again, or 'skip': ")
+            answer = self.ask(t("uninstall.ask_proof"))
             if answer is None or answer == "skip":
-                return "skipped", "skipped by the user"
+                return "skipped", t("uninstall.skipped_by_user")
             if answer == "prompt":
                 show()
                 continue
             if answer == "none":
-                print("No proof: the Bot may run apply-no-proof only after you confirm in the chat that this is your "
-                      "own deployment and may be removed.")
+                print(t("uninstall.no_proof"))
                 break
             if re.fullmatch(r"[0-9a-f]{16}", answer):
                 if key is None:
-                    print("This Mac has no signing key to check the PROOF with; answer none to go on without proof, "
-                          "or skip.")
+                    print(t("uninstall.no_key_for_proof"))
                     continue
                 if not hmac.compare_digest(answer, tag(key, "proof", challenge)):
-                    print("The PROOF does not match this Mac's signing key: that cloud belongs to another deployment, "
-                          "or the key was replaced without copying it to the cloud. The cloud step stops here.")
-                    return "skipped", "PROOF did not match"
-                print(f"PROOF matches. [GROK-UI] User: send the Bot this confirmation code and say you agree: "
-                      f"{tag(key, 'ack', challenge)}")
+                    print(t("uninstall.proof_mismatch"))
+                    return "skipped", t("uninstall.proof_mismatch_note")
+                print(t("uninstall.proof_ok", tag(key, "ack", challenge)))
                 break
-            print("Not understood.")
+            print(t("uninstall.not_understood"))
         while True:
-            answer = self.ask("[LOCAL] Type done if the Bot reported DONE or KEPT, incomplete if it reported "
-                              "INCOMPLETE, or skip if it could not finish: ")
+            answer = self.ask(t("uninstall.ask_done"))
             if answer == "done":
-                return "done", "reported by the Bot"
+                return "done", t("uninstall.reported_by_bot")
             if answer == "incomplete":
-                return "incomplete", "the Bot reported INCOMPLETE: its files are gone, but it did not leave the team"
+                return "incomplete", t("uninstall.bot_incomplete")
             if answer is None or answer == "skip":
-                return "skipped", "the Bot did not finish"
+                return "skipped", t("uninstall.bot_unfinished")
             if answer == "prompt":
                 show()
 
     def cloud_member_check(self):
         inv = self.inv
-        label = "cloud team membership"
+        label = t("uninstall.label_cloud_member")
         if self.residual:
             done = self.cloud_status == "done"
-            note = ("reported by the Bot; this Mac has no team identity to check it" if done else
-                    f"the Bot reported INCOMPLETE; a member still in the team must run reason-network remove "
-                    f"{self.team}/{inv.cloud_machine}" if self.cloud_status == "incomplete"
-                    else "the Bot did not finish")
+            note = (t("uninstall.residual_reported") if done else
+                    t("uninstall.residual_incomplete", f"{self.team}/{inv.cloud_machine}")
+                    if self.cloud_status == "incomplete" else t("uninstall.bot_unfinished"))
             self.result(label, "done" if done else "skipped", note, True)
             return
         roster = inv.query_roster()
         if roster.status != "in":
-            self.result(label, "skipped", "the team list is unknown: " + roster.message, True)
+            self.result(label, "skipped", t("uninstall.team_list_unknown", roster.message), True)
             return
         cloud, own, others = inv.classify(roster)
         if not cloud:
-            self.result(label, "done", "the cloud is no longer in the team", True)
+            self.result(label, "done", t("uninstall.cloud_gone"), True)
             return
         if inv.same_name:
-            self.result(label, "skipped", f"this Mac is also named {inv.cloud_machine}, so it cannot remove the "
-                                          "cloud; only the cloud itself can leave", True)
+            self.result(label, "skipped", t("uninstall.same_name", inv.cloud_machine), True)
             return
         rest = own + others
         if rest and not any(Roster.online(row) for row in rest):
-            self.result(label, "skipped", "the other members are all offline, so a removal could not be passed "
-                                          "on", True)
+            self.result(label, "skipped", t("uninstall.all_offline"), True)
             return
         target = f"{roster.me[0]}/{inv.cloud_machine}"
-        print(f"The cloud {target} is still in the team ({len(cloud)} row(s): "
-              f"{', '.join(row[2] for row in cloud)}). This Mac can remove it: the team link changes and that "
-              "cloud's engine is cut off.")
-        if len(cloud) > 1 and self.ask(f"Are all {len(cloud)} rows your own cloud? Type y: ") != "y":
-            self.result(label, "skipped", "not confirmed", True)
+        print(t("uninstall.cloud_still_in", target, len(cloud), t("uninstall.list_separator").join(row[2] for row in cloud)))
+        if len(cloud) > 1 and self.ask(t("uninstall.ask_all_rows", len(cloud))) != "y":
+            self.result(label, "skipped", t("uninstall.not_confirmed"), True)
             return
-        if self.ask(f"Remove {target} from the team now? Type y: ") != "y":
-            self.result(label, "skipped", "not confirmed", True)
+        if self.ask(t("uninstall.ask_remove_cloud", target)) != "y":
+            self.result(label, "skipped", t("uninstall.not_confirmed"), True)
             return
         code, out = inv.rn("remove", target)
         if code != 0:
-            self.result(label, "skipped", "remove failed: " + short(out), True)
+            self.result(label, "skipped", t("uninstall.remove_failed", short(out)), True)
             return
         after = inv.query_roster()
         left = inv.classify(after)[0] if after.status == "in" else None
         if left == []:
-            self.result(label, "done", f"removed with reason-network remove {target}", True)
+            self.result(label, "done", t("uninstall.removed_with", f"reason-network remove {target}"), True)
         else:
-            self.result(label, "skipped", "the cloud still shows in the team after remove", True)
+            self.result(label, "skipped", t("uninstall.cloud_still_listed"), True)
 
     def dsh_step(self):
         inv = self.inv
         if "dsh" in inv.skips:
-            raise Stop("dsh: " + inv.skips["dsh"] + "; Reason Network was left in place")
+            raise Stop(t("uninstall.dsh_skipped", inv.skips["dsh"]))
         if not (inv.dsh_block or inv.dsh_plugin):
-            self.result("dsh bridge", "absent")
+            self.result(t("uninstall.label_dsh"), "absent")
             return
         code, out = run(["/bin/bash", str(inv.here / "dsh/mac-uninstall.sh"), "--no-restore"], timeout=120)
         for line in out.splitlines():
             print("    " + line)
         if code != 0:
-            self.result("dsh bridge", "failed", "dsh/mac-uninstall.sh --no-restore failed")
-            raise Stop(f"the dsh bridge was not removed, so Reason Network was left in place; fix {self.p.patch} "
-                       f"and run ./uninstall.sh --level {self.level} again")
-        self.result("dsh bridge", "done")
+            self.result(t("uninstall.label_dsh"), "failed", t("uninstall.dsh_failed"))
+            raise Stop(t("uninstall.dsh_not_removed", self.p.patch, f"./uninstall.sh --level {self.level}"))
+        self.result(t("uninstall.label_dsh"), "done")
 
     def leave_step(self):
         inv = self.inv
-        label = "this Mac's team membership"
+        label = t("uninstall.label_mac_member")
         roster = inv.query_roster() if inv.roster.status != "none" else inv.roster
         if roster.status == "left":
-            self.result(label, "absent", "already left", True)
+            self.result(label, "absent", t("uninstall.already_left"), True)
             return
         if roster.status == "none":
             self.result(label, "absent", roster.message, True)
             return
         if roster.status != "in":
-            self.result(label, "skipped", "the team list is unknown: " + roster.message, True)
+            self.result(label, "skipped", t("uninstall.team_list_unknown", roster.message), True)
             return
         code, out = inv.rn("leave")
         if code == 0:
@@ -944,31 +933,27 @@ class Uninstaller:
             return
         rest = [row for row in roster.rows]
         if rest and not any(Roster.online(row) for row in rest):
-            print("leave was refused: the other members are all offline, so none of them can hear that this Mac "
-                  "left. They need to remove it on their side (reason-network remove " f"{roster.me[0]}/"
-                  f"{roster.me[1]}).")
-            if self.ask("Type force to leave anyway: ") == "force":
+            print(t("uninstall.leave_refused", f"reason-network remove {roster.me[0]}/{roster.me[1]}"))
+            if self.ask(t("uninstall.ask_force")) == "force":
                 code, out = inv.rn("leave", "--force")
                 if code == 0:
-                    self.result(label, "done", "with --force; nobody confirmed hearing it", True)
+                    self.result(label, "done", t("uninstall.left_forced"), True)
                     return
         self.result(label, "failed", "leave: " + short(out), True)
-        raise Stop("this Mac did not leave the team, so its identity was kept; run this level again when the "
-                   "other members are online")
+        raise Stop(t("uninstall.leave_failed"))
 
     def setup_step(self):
         inv = self.inv
         if not inv.engine:
-            self.result("agent wiring and engine service", "absent", "no engine")
+            self.result(t("uninstall.label_wiring"), "absent", t("uninstall.no_engine"))
             return True
         code, out = inv.rn("setup", "--remove")
         for line in out.splitlines():
             print("    " + line)
         if code == 0:
-            self.result("agent wiring and engine service", "done")
+            self.result(t("uninstall.label_wiring"), "done")
             return True
-        self.result("agent wiring and engine service", "failed",
-                    f"run {self.p.rn_bin} setup --remove by hand; the engine is kept for it")
+        self.result(t("uninstall.label_wiring"), "failed", t("uninstall.setup_failed", f"{self.p.rn_bin} setup --remove"))
         return False
 
     def engine_stop(self):
@@ -976,39 +961,36 @@ class Uninstaller:
         if inv.engine and self.p.machine_key.is_file():
             code, out = inv.rn("stop", timeout=60)
             if code != 0:
-                print("    reason-network stop said: " + short(out))
+                print("    " + t("uninstall.stop_said", short(out)))
 
     def routine_step(self):
-        print("\n[GROK-UI] User: delete the routine in Grok Bot. Pausing is not enough: a paused routine keeps its "
-              "webhook URL and key valid.")
-        answer = self.ask("Type deleted when it is gone, or later: ")
+        print("\n" + t("uninstall.routine_delete"))
+        answer = self.ask(t("uninstall.ask_deleted"))
         if answer == "deleted":
-            self.result("Grok routine", "user-confirmed", "deleted, as you said", True)
+            self.result(t("uninstall.label_routine"), "user-confirmed", t("uninstall.routine_deleted"), True)
         else:
-            self.result("Grok routine", "user-pending", "its webhook key stays valid until you delete it", True)
+            self.result(t("uninstall.label_routine"), "user-pending", t("uninstall.routine_pending"), True)
 
     def manual_items(self):
-        print("\nLeft for you to handle (nothing below is changed):")
-        print(f"  this code folder: {self.inv.here}")
+        print("\n" + t("uninstall.manual_title"))
+        print("  " + t("uninstall.manual_folder", self.inv.here))
         for where in self.inv.rc_lines:
-            print(f"  PATH line with ~/.local/bin: {where}")
-        print("  reply convention: look for 'Reason Network reply convention' in the AGENTS.md / CLAUDE.md of your "
-              "repositories")
-        print("  an external inbox folder on [BOT-CLOUD] (RN_INBOX_DIR), if you set one")
-        print("  anything the Bot keeps in its long-term memory about this setup")
+            print("  " + t("uninstall.manual_path", where))
+        print("  " + t("uninstall.manual_convention"))
+        print("  " + t("uninstall.manual_inbox"))
+        print("  " + t("uninstall.manual_memory"))
 
     def run_program(self):
         if not self.confirm_queue(self.inv.queue_counts):
-            raise Stop("stopped; nothing was changed")
+            raise Stop(t("uninstall.stopped_unchanged"))
         before = self.inv.queue_counts
         self.stop_relay()
         after = self.inv.queue()
         if self.grew(before, after) and not self.confirm_queue(after, again=True):
-            raise Stop("stopped after the relay was stopped; run ./install.sh --restart-relay to start it again")
-        self.remove_paths("relay program, temporary files, rollback/", self.program_paths(), skip_key="program")
-        print("\n[GROK-UI] User: pause the routine in Grok Bot.")
-        print("To reinstall later: git pull, then ./install.sh --restart-relay in this folder, then resume the "
-              "routine. Do not run the full install again.")
+            raise Stop(t("uninstall.stopped_after_relay_restart"))
+        self.remove_paths(t("uninstall.label_program"), self.program_paths(), skip_key="program")
+        print("\n" + t("uninstall.routine_pause"))
+        print(t("uninstall.reinstall_hint"))
 
     @staticmethod
     def grew(before, after):
@@ -1023,15 +1005,15 @@ class Uninstaller:
         self.stop_relay()
         after = inv.queue()
         if self.grew(before, after):
-            print("The queue grew while the relay stopped.")
+            print(t("uninstall.queue_grew"))
             if not self.confirm_queue(after, again=True):
-                raise Stop("stopped after the relay was stopped; nothing else was changed")
+                raise Stop(t("uninstall.stopped_after_relay"))
         status, note = self.cloud_step()
         self.cloud_status = status
         removed = status in ("done", "incomplete")
-        self.result("cloud identity files", "done" if removed else "skipped", note, True)
+        self.result(t("uninstall.label_cloud_files"), "done" if removed else "skipped", note, True)
         if self.level == "all":
-            self.result("cloud inbox, threads and clone", "done" if removed else "skipped", note)
+            self.result(t("uninstall.label_cloud_data"), "done" if removed else "skipped", note)
         self.cloud_member_check()
         self.dsh_step()
         setup_ok = True
@@ -1039,69 +1021,72 @@ class Uninstaller:
             self.leave_step()
             setup_ok = self.setup_step()
         self.engine_stop()
-        self.remove_paths("relay program, temporary files, rollback/", self.program_paths(), skip_key="program")
-        self.remove_paths("deployment record, update lock and engine backups", [p.lib], skip_key="program")
-        self.remove_paths("relay settings and signing key", [p.conf], credential=True)
+        self.remove_paths(t("uninstall.label_program"), self.program_paths(), skip_key="program")
+        self.remove_paths(t("uninstall.label_record"), [p.lib], skip_key="program")
+        self.remove_paths(t("uninstall.label_settings"), [p.conf], credential=True)
         if inv.custom_key:
-            self.result("signing key outside ~/.config/agent-relay", "skipped",
-                        f"{inv.custom_key} is never removed automatically; delete it yourself", True)
-        self.remove_paths("relay state (queue, replay protection, kept copies)", [p.state], credential=True,
-                          skip_key="state")
-        self.remove_paths("Reason Network identity and history", [p.rn_home], credential=True)
+            self.result(t("uninstall.label_custom_key"), "skipped", t("uninstall.custom_key_kept", inv.custom_key), True)
+        self.remove_paths(t("uninstall.label_state"), [p.state], credential=True, skip_key="state")
+        self.remove_paths(t("uninstall.label_identity"), [p.rn_home], credential=True)
         if self.level == "all":
-            self.remove_paths("relay logs", p.log_files(), skip_key="logs")
+            self.remove_paths(t("uninstall.label_logs"), p.log_files(), skip_key="logs")
             if setup_ok:
-                self.remove_paths("Reason Network engine", [p.rn_bin], skip_key="rn-bin")
+                self.remove_paths(t("uninstall.label_engine"), [p.rn_bin], skip_key="rn-bin")
             else:
-                self.result("Reason Network engine", "skipped", "kept for setup --remove")
-            self.remove_paths("dsh bridge backups and log", [p.dsh_backup] + p.dsh_log_files(), skip_key="dsh")
+                self.result(t("uninstall.label_engine"), "skipped", t("uninstall.engine_kept"))
+            self.remove_paths(t("uninstall.label_dsh_backups"), [p.dsh_backup] + p.dsh_log_files(), skip_key="dsh")
             self.manual_items()
         self.routine_step()
 
     def summary(self, final=True):
-        print(f"\n== result (level {self.level})")
-        for label, state, note, _ in self.results:
-            print(f"  {label:<52} {state}" + (f" ({note})" if note else ""))
+        print("\n" + t("uninstall.result_header", self.level))
+        self.result_rows(self.results)
         if not final:
-            print(f"Stopped before the end; run ./uninstall.sh --level {self.level} again to go on.")
+            print(t("uninstall.stopped_early", f"./uninstall.sh --level {self.level}"))
             return 1
         if not self.deep():
             bad = [r for r in self.results if r[1] in ("failed", "skipped")]
-            print("level program complete" if not bad else "level program not complete; see the lines above")
+            print(t("uninstall.program_complete" if not bad else "uninstall.program_incomplete"))
             return 0 if not bad else 1
         open_items = [r for r in self.results if r[3] and r[1] not in ("done", "absent", "user-confirmed")]
         others = [r for r in self.results if not r[3] and r[1] in ("failed", "skipped")]
         if open_items:
-            print(f"This Mac is cleaned up, but level {self.level} is not complete yet. Still open:")
+            print(t("uninstall.level_open", self.level))
             for label, state, note, _ in open_items:
-                print(f"  - {label}: {state}" + (f" ({note})" if note else ""))
-            print(f"Run ./uninstall.sh --cloud-prompt --level {self.level} for the cloud step again, or delete the "
-                  "routine in Grok Bot, as listed.")
+                print("  - " + t("uninstall.result_line", label, with_note(state_text(state), note)))
+            print(t("uninstall.level_open_hint", f"./uninstall.sh --cloud-prompt --level {self.level}"))
         else:
-            print(f"level {self.level} complete")
+            print(t("uninstall.level_complete", self.level))
         if others:
-            print("Not done, but not needed for completion: " + ", ".join(r[0] for r in others))
-        print("Reopen your agent sessions.")
+            print(t("uninstall.not_needed", t("uninstall.list_separator").join(r[0] for r in others)))
+        print(t("uninstall.reopen_sessions"))
         return 1 if open_items else 0
+
+    @staticmethod
+    def result_rows(results):
+        for label, state, note, _ in results:
+            print(f"  {pad(label, 52)} {with_note(state_text(state), note)}")
 
 
 def residual_team(uninstaller):
-    answer = uninstaller.ask("[LOCAL] This Mac has no team identity left. Type the team name you installed with: ")
+    answer = uninstaller.ask(t("uninstall.ask_team"))
     if answer is None or not valid_name(answer):
-        raise Stop("not a valid team name (lowercase letters and digits joined by single '-', at most 40)")
+        raise Stop(t("uninstall.team_name_invalid"))
     return answer
 
 
 def choose_level(ask):
-    print("\nChoose a level:\n  1  program   remove the relay; keep the team, settings, key and the cloud\n"
-          "  2  identity  also leave the team on both computers, remove keys and identity\n"
-          "  3  all       also remove logs, the engine and the cloud's data\n  q  quit")
-    return {"1": "program", "2": "identity", "3": "all"}.get(ask("Level [1/2/3/q]: ") or "")
+    print("\n" + t("uninstall.choose_level"))
+    return {"1": "program", "2": "identity", "3": "all"}.get(ask(t("uninstall.ask_level")) or "")
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(2, t("uninstall.bad_option", message) + "\n")
 
 
 def parse(argv):
-    parser = argparse.ArgumentParser(prog="uninstall.sh", description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = Parser(prog="uninstall.sh", add_help=False)
     parser.add_argument("--level", choices=LEVELS)
     parser.add_argument("--all", action="store_true", help="same as --level all")
     parser.add_argument("--plan", action="store_true")
@@ -1112,48 +1097,66 @@ def parse(argv):
     args = parser.parse_args(argv)
     if args.all:
         if args.level not in (None, "all"):
-            parser.error("--all is the same as --level all")
+            parser.error(t("uninstall.error_all"))
         args.level = "all"
     if args.yes and args.level != "program":
-        parser.error("--yes works only with --level program; levels identity and all need your own terminal")
+        parser.error(t("uninstall.error_yes"))
     if (args.residual or args.cloud_prompt) and args.level not in DEEP:
-        parser.error("--residual and --cloud-prompt need --level identity or --level all")
+        parser.error(t("uninstall.error_residual"))
     return args
 
 
+def recorded_lang(paths):
+    try:
+        data = json.loads(paths.record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    lang = data.get("lang") if isinstance(data, dict) else None
+    return lang if lang in LANGS else None
+
+
+def resolve_lang(args, paths):
+    env = os.environ.get("AGENT_MESH_LANG")
+    return args.lang or recorded_lang(paths) or (env if env in LANGS else "en")
+
+
+def utf8_output():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
 def main(argv=None):
+    utf8_output()
     args = parse(sys.argv[1:] if argv is None else argv)
     here = ROOT
     paths = Paths(os.environ["HOME"])
     interactive = sys.stdin.isatty()
-    if not args.plan and args.level and (args.level in DEEP or not args.yes) and not interactive:
-        inv = Inventory(paths, here)
-        inv.show()
-        Uninstaller(inv, args.level, "en", residual=args.residual).show_plan()
-        print(f"\nThis is not a terminal, so nothing was removed. Level {args.level} asks for your confirmation: "
-              f"run ./uninstall.sh --level {args.level}{' --residual' if args.residual else ''} in your own terminal"
-              + (" (or add --yes)." if args.level == "program" else "."))
-        return 3
+    lang = resolve_lang(args, paths)
+    os.environ["AGENT_MESH_LANG"] = lang
     inv = Inventory(paths, here)
-    lang = args.lang or os.environ.get("AGENT_MESH_LANG") or inv.record_lang or "en"
-    if lang not in ("en", "zh-CN"):
-        lang = "en"
     inv.show()
+    if not args.plan and args.level and (args.level in DEEP or not args.yes) and not interactive:
+        Uninstaller(inv, args.level, lang, residual=args.residual).show_plan()
+        command = f"./uninstall.sh --level {args.level}{' --residual' if args.residual else ''}"
+        print("\n" + t("uninstall.no_tty_program" if args.level == "program" else "uninstall.no_tty", args.level,
+                       command))
+        return 3
     if args.plan:
         ok = True
         for level in ([args.level] if args.level else LEVELS):
             ok = Uninstaller(inv, level, lang, residual=args.residual).show_plan() and ok
-        print("\nNothing was removed (--plan).")
+        print("\n" + t("uninstall.plan_nothing_removed"))
         return 0
     level = args.level
     if level is None:
         if not interactive:
-            print("\nNothing was removed. Choose a level: ./uninstall.sh --plan shows what each level does.")
+            print("\n" + t("uninstall.choose_hint"))
             return 0
         u = Uninstaller(inv, "program", lang, interactive=True)
         level = choose_level(u.ask)
         if level is None:
-            print("Nothing was removed.")
+            print(t("uninstall.nothing_removed"))
             return 0
     u = Uninstaller(inv, level, lang, residual=args.residual, yes=args.yes, interactive=interactive)
     try:
@@ -1169,44 +1172,42 @@ def execute(u, args):
     inv = u.inv
     if args.residual:
         if inv.identity:
-            raise Stop("this Mac still has a Reason Network identity; run without --residual")
+            raise Stop(t("uninstall.residual_has_identity"))
     elif u.deep() and inv.roster.status == "none" and not inv.identity:
-        raise Stop("this Mac has no Reason Network identity, so the team name cannot be checked here; "
-                   f"run ./uninstall.sh --residual --level {u.level}")
+        raise Stop(t("uninstall.no_identity_use_residual", f"./uninstall.sh --residual --level {u.level}"))
     elif u.deep() and not inv.team:
-        raise Stop("the team name could not be found on this Mac; nothing was removed")
+        raise Stop(t("uninstall.team_not_found"))
     if args.cloud_prompt:
         stops = inv.stops_for(u.level)
         for reason in stops:
             print(f"  STOP: {reason}")
         if stops:
-            raise Stop("nothing was done; resolve the STOP lines above first")
+            raise Stop(t("uninstall.nothing_done"))
         if inv.foreign and not u.confirm_foreign():
-            raise Stop("stopped; nothing was changed")
+            raise Stop(t("uninstall.stopped_unchanged"))
         if args.residual:
             u.team = residual_team(u)
         status, note = u.cloud_step()
         u.cloud_status = status
-        u.result("cloud identity files", "done" if status in ("done", "incomplete") else "skipped", note, True)
+        u.result(t("uninstall.label_cloud_files"), "done" if status in ("done", "incomplete") else "skipped", note,
+                 True)
         u.cloud_member_check()
-        print(f"\n== result (cloud step only, level {u.level})")
-        for label, state, note, _ in u.results:
-            print(f"  {label:<52} {state}" + (f" ({note})" if note else ""))
+        print("\n" + t("uninstall.cloud_result_header", u.level))
+        u.result_rows(u.results)
         still = [r for r in u.results if r[3] and r[1] not in ("done", "absent", "user-confirmed")]
-        print("Only the cloud step ran; nothing on this Mac was removed. "
-              + ("The cloud step is not complete." if still else "The cloud step is complete."))
+        print(t("uninstall.cloud_only_incomplete" if still else "uninstall.cloud_only_complete"))
         return 1 if still else 0
     ok = u.show_plan()
     if not ok:
-        raise Stop("nothing was removed; resolve the STOP lines above first")
+        raise Stop(t("uninstall.nothing_removed_stops"))
     if args.residual:
         u.team = residual_team(u)
     if u.deep() and inv.foreign and not u.confirm_foreign():
-        raise Stop("stopped; nothing was changed")
+        raise Stop(t("uninstall.stopped_unchanged"))
     if not u.confirm_main():
-        raise Stop("not confirmed; nothing was changed")
+        raise Stop(t("uninstall.not_confirmed_unchanged"))
     if u.deep() and not u.confirm_queue(inv.queue_counts):
-        raise Stop("stopped; nothing was changed")
+        raise Stop(t("uninstall.stopped_unchanged"))
     print()
     if u.deep():
         u.run_deep()

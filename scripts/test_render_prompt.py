@@ -1,14 +1,17 @@
 import hashlib
+import json
 import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from render_prompt import ROOT, render_prompt
 
-ROUTINE_V041 = {"en": "4f8c6ff1996cc1432a8079302597f67d5a8fef0d5579d10807e31e8ce4fdad96",
-                "zh-CN": "65c9e2ac143736c720a937868bad2e9ca43c369e875ab5b4ffcb370bbfd8fb23"}
+ROUTINE_V082 = {"en": "3f1e26b18b221e700aed15a18ec33be184c96b7c10d9251a7538ab36b297b6b0",
+                "zh-CN": "3556ac4a966e2e911da0bae194625b38692d30a9697a5a64065da28866d47d06"}
 
 
 class Prompts(unittest.TestCase):
@@ -78,7 +81,7 @@ class Prompts(unittest.TestCase):
         self.assertIn(f"TAG='v1.2.3'; COMMIT='{'f' * 40}'", result.stdout)
 
     def test_default_relay_name_renders_the_routine_users_already_saved(self):
-        for lang, digest in ROUTINE_V041.items():
+        for lang, digest in ROUTINE_V082.items():
             text = render_prompt("routine", lang, relay_name="bot")
             self.assertEqual(hashlib.sha256(text.encode("utf-8")).hexdigest(), digest, lang)
 
@@ -130,22 +133,40 @@ class Prompts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 render_prompt(template, lang)
 
+    def empty_home(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        return Path(home.name)
+
     def test_installer_rejects_invalid_language_before_installing(self):
+        home = self.empty_home()
         for args in (("--lang", "fr"), ("--lang",), ("--lang", "")):
             result = subprocess.run(["bash", str(ROOT / "install.sh"), *args],
-                                    capture_output=True, text=True)
+                                    env=dict(os.environ, HOME=str(home)), capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
             self.assertIn("en or zh-CN", result.stderr)
             self.assertNotIn("1/6", result.stdout)
 
     def test_installer_language_precedence_without_side_effects(self):
-        # With no name, a valid language reaches name validation and exits before network/config access.
+        home = self.empty_home()
         for environment, args, expected in (("fr", (), "unsupported language"),
-                                             ("fr", ("--lang", "zh-CN"), "need --name"),
-                                             ("zh-CN", (), "need --name"),
+                                             ("en", ("--lang", "fr"), "不支持的语言"),
+                                             ("fr", ("--lang", "zh-CN"), "需要 --name"),
+                                             ("zh-CN", (), "需要 --name"),
+                                             ("zh-CN", ("--lang", "en"), "need --name"),
                                              ("", (), "need --name")):
             result = subprocess.run(["bash", str(ROOT / "install.sh"), *args],
-                                    env=dict(os.environ, AGENT_MESH_LANG=environment),
+                                    env=dict(os.environ, HOME=str(home), AGENT_MESH_LANG=environment),
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(expected, result.stderr)
+        record = home / ".local/lib/agent-mesh/deployed.json"
+        record.parent.mkdir(parents=True)
+        record.write_text(json.dumps({"schema": 1, "lang": "zh-CN"}))
+        for environment, args, expected in (("en", (), "需要 --name"), ("fr", (), "需要 --name"),
+                                             ("zh-CN", ("--lang", "en"), "need --name")):
+            result = subprocess.run(["bash", str(ROOT / "install.sh"), *args],
+                                    env=dict(os.environ, HOME=str(home), AGENT_MESH_LANG=environment),
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(expected, result.stderr)

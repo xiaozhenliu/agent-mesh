@@ -370,6 +370,40 @@ class Mac(Base):
         self.assertNotIn("bootout", self.calls())
         self.assertTrue(self.p(".config/agent-relay/env").exists())
 
+    def test_language_follows_the_flag_then_the_record_then_the_environment(self):
+        self.install()
+        english, chinese = "== plan for level program", "== 计划 · 级别 program"
+
+        def plan(*args, lang=None):
+            self.env.pop("AGENT_MESH_LANG", None)
+            if lang is not None:
+                self.env["AGENT_MESH_LANG"] = lang
+            r = self.run_un("--plan", "--level", "program", *args)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            return r.stdout
+
+        self.assertIn(english, plan(lang="zh-CN"))
+        zh = plan("--lang", "zh-CN")
+        self.assertIn(chinese, zh)
+        self.assertIn("relay 登录服务和 plist", zh)
+        self.assertNotIn(english, zh)
+        self.assertIn(chinese, plan("--lang=zh-CN", lang="en"))
+        record = self.p(".local/lib/agent-mesh/deployed.json")
+        record.write_text(json.dumps(dict(json.loads(record.read_text()), lang="zh-CN")))
+        self.assertIn(chinese, plan(lang="en"))
+        self.assertIn(english, plan("--lang", "en", lang="zh-CN"))
+        record.unlink()
+        self.assertIn(chinese, plan(lang="zh-CN"))
+        self.assertIn(english, plan(lang="fr"))
+        self.assertIn(english, plan())
+        r = self.run_un("--lang", "fr", "--plan")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("uninstall: unsupported language 'fr'; choose en or zh-CN / uninstall：不支持的语言“fr”", r.stderr)
+        self.env["AGENT_MESH_LANG"] = "zh-CN"
+        r = self.run_un("--level", "identity")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("当前不是终端，所以没有删除任何东西。identity 级别需要你确认", r.stdout)
+
     def test_without_a_terminal_deep_levels_exit_3_and_options_are_checked(self):
         self.install()
         for args in (("--level", "identity"), ("--level", "all"), ("--all",), ("--level", "program"),

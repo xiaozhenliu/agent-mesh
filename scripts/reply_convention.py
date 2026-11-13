@@ -22,6 +22,7 @@ from pathlib import Path
 
 import deploy_state
 import relay_names
+from messages import t
 from render_prompt import ROOT
 
 LANGS = ("en", "zh-CN")
@@ -53,7 +54,7 @@ def values():
     name = relay_names.from_env(deploy_state.env_path()) or deploy_state.recorded_name(data)
     team = person()
     if not name or not team:
-        raise ValueError("this Mac has no Bot address yet (no team or no address name); run ./install.sh first")
+        raise ValueError(t("reply.no_address"))
     return team, name, deploy_state.recorded_grok(data)
 
 
@@ -76,8 +77,7 @@ def fill(text, team, name, grok):
     lines = text.splitlines(keepends=True)
     found = find_block(lines)
     if found is None:
-        raise ValueError("no single, complete agent-mesh block (from '<!-- agent-mesh:bot-address lang=... -->' "
-                         f"to '{END}')")
+        raise ValueError(t("reply.no_block", END))
     start, end, lang = found
     newline = "\r\n" if lines[start].endswith("\r\n") else "\n"
     return "".join(lines[:start + 1] + [block_line(lang, team, name, grok) + newline] + lines[end:])
@@ -153,10 +153,9 @@ def overwrite_in_place(path, old, new):
                 try:
                     put(stream, old)
                 except BaseException:
-                    raise OSError(f"could not write {path} ({error}) and could not put the original back; the "
-                                  f"original is in {backup}")
+                    raise OSError(t("reply.write_lost", path, error, backup))
                 os.unlink(backup)
-                raise OSError(f"could not write {path} ({error}); the original was put back")
+                raise OSError(t("reply.write_restored", path, error))
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
@@ -168,7 +167,7 @@ def cmd_install(_args):
     for lang in LANGS:
         path = installed_dir() / template_path(lang).name
         if write_if_changed(path, rendered(lang, team, name, grok)):
-            print(f"reply convention with this Bot's address: {path}")
+            print(t("reply.installed", path))
 
 
 def cmd_render(args):
@@ -178,28 +177,25 @@ def cmd_render(args):
 def cmd_refresh(args):
     path = Path(args.file)
     if path.is_symlink() or not path.is_file():
-        raise ValueError(f"{path} is not a regular file; nothing was changed")
+        raise ValueError(t("reply.not_regular", path))
     backup = backup_path(path)
     if os.path.lexists(backup):
-        raise ValueError(f"{backup} is left from an interrupted refresh; compare it with {path}, keep the right text "
-                         "in the file and remove the backup, then run again; nothing was changed")
+        raise ValueError(t("reply.backup_left", backup, path))
     raw = path.read_bytes()
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        raise ValueError(f"{path} is not UTF-8 text; nothing was changed")
+        raise ValueError(t("reply.not_utf8", path))
     try:
         new = fill(text, *values())
     except ValueError as error:
-        raise ValueError(f"{path}: {error}; nothing was changed. If it holds an older copy of the reply convention, "
-                         f"replace that section with {installed_dir()}/{template_path('en').name} (or the zh-CN "
-                         "file)")
+        raise ValueError(t("reply.refresh_failed", path, error, f"{installed_dir()}/{template_path('en').name}"))
     data = new.encode("utf-8")
     if data == raw:
-        print(f"{path} already shows this Bot's address")
+        print(t("reply.up_to_date", path))
         return
     overwrite_in_place(path, raw, data)
-    print(f"updated the Bot address in {path}")
+    print(t("reply.updated", path))
 
 
 def main(argv=None):

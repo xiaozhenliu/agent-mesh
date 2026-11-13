@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -37,9 +38,10 @@ class Targets(unittest.TestCase):
                            f"  team) {team_cmd} ;;\n  *) exit 0 ;;\nesac\n")
         self.rn.chmod(0o755)
 
-    def run_it(self, pinned="0.10.7"):
+    def run_it(self, pinned="0.10.7", lang="en"):
         r = subprocess.run([sys.executable, str(SCRIPT), "--rn", str(self.rn), "--home", str(self.home),
-                            "--pinned", pinned], capture_output=True, text=True, timeout=30)
+                            "--pinned", pinned], capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, AGENT_MESH_LANG=lang))
         lines = r.stdout.splitlines()
         return r.returncode, lines[0] if lines else "", lines[1:]
 
@@ -54,6 +56,14 @@ class Targets(unittest.TestCase):
         code, source, urls = self.run_it("0.13.0")
         self.assertEqual((code, urls), (3, []))
         self.assertTrue(source.startswith("unknown:"))
+
+    def test_labels_follow_the_language_but_keep_the_unknown_prefix(self):
+        code, source, _ = self.run_it("0.10.7", lang="zh-CN")
+        self.assertEqual((code, source), (0, "Reason Network 0.10.7 的默认 relay（尚未安装）"))
+        code, source, _ = self.run_it("0.13.0", lang="zh-CN")
+        self.assertEqual((code, source), (3, "unknown: 未安装引擎，也没有 0.13.0 的已知默认 relay"))
+        code, source, _ = self.run_it("0.13.0", lang="en")
+        self.assertEqual(source, "unknown: no engine installed and no known default relays for 0.13.0")
 
     def test_an_explicit_team_relay_wins_on_any_version(self):
         for version in ("0.10.7", "0.12.17", "0.13.0"):

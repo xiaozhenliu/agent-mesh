@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from messages import t
+
 N0 = ["https://aps1-1.relay.n0.iroh.link/"]
 REASON = ["https://relay-sfo1.compute.reasonmachines.com/", "https://relay-iad1.compute.reasonmachines.com/",
           "https://relay-fra1.compute.reasonmachines.com/", "https://relay-sin1.compute.reasonmachines.com/"]
@@ -89,25 +91,25 @@ def targets(rn, home, pinned):
     if not installed:
         urls = defaults(series(pinned))
         if urls is None:
-            return "unknown: no engine installed and no known default relays for " + pinned, []
-        return f"default relays of Reason Network {pinned} (not installed yet)", urls
+            return "unknown: " + t("targets.no_defaults", pinned), []
+        return t("targets.defaults", pinned), urls
     explicit = team_relay(rn)
     if explicit:
-        return "the team's relay", [explicit]
+        return t("targets.team"), [explicit]
     out = run(rn, "--version") or ""
     version = out.split()[1] if len(out.split()) >= 2 else ""
     sv = series(version)
     if sv == (0, 10):
-        return f"n0 public relays (Reason Network {version})", N0
+        return t("targets.n0", version), N0
     if sv == (0, 12):
         url = last_on_relay(home)
         if url:
-            return f"home relay from daemon.log (Reason Network {version})", [url]
+            return t("targets.daemon_log", version), [url]
         urls = listed_relays(home)
         if urls:
-            return f"Reason's relay list in relays.json (Reason Network {version})", urls
-        return f"unknown: Reason Network {version} has not logged a relay yet and has no relays.json", []
-    return f"unknown: Reason Network version {version or 'unreadable'}", []
+            return t("targets.relays_json", version), urls
+        return "unknown: " + t("targets.not_logged", version), []
+    return "unknown: " + t("targets.version", version or t("targets.unreadable")), []
 
 
 def main():

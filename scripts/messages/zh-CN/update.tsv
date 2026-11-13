@@ -1,0 +1,140 @@
+update.help	agent-mesh：把已安装的 Mac 更新到这个 checkout 的版本。\n  ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--manual] [--repo-url URL]\n  --plan     显示哪些部分不同、将运行什么，然后退出；不改动部署\n  --no-pull  直接使用这个 checkout；否则先运行 git pull --ff-only\n  --yes      跳过开头唯一的一次确认\n  --manual   手动更新云端：暂停 routine，把命令块发给 Grok Bot，再把它的回复粘贴回来\n  --lang     终端提示和 routine 提示词的语言；默认依次取记录中的语言、AGENT_MESH_LANG、en\n  --repo-url 云端安装所用的仓库（默认是公开的 agent-mesh 仓库）；这个 checkout 中的云端脚本必须与该仓库的\n             发布 tag v<VERSION> 一致，改动任何内容之前会在线核对\n先更新这台 Mac（relay、dsh 插件、Reason Network）。routine 提示词有变化时，显示新提示词，请你粘贴进 routine。\n云端有变化时，从这台 Mac 给 Grok Bot 发一条更新请求，最多等 15 分钟，收到回信后核对并记录。从 v0.8.1 或更早\n版本第一次更新时，Grok Bot 会先在 Grok 里问你一次，再运行更新。\n同时刷新 ~/.local/lib/agent-mesh/templates 中填好地址的回复约定。\n退出码：0 完成或已是最新，1 未全部完成（见汇总），2 用法错误，3 需要终端（没有做任何改动）。
+update.lang_needs	--lang 需要 en 或 zh-CN
+update.url_needs	--repo-url 需要一个 URL
+update.unknown_option	未知选项：%s（见 ./update.sh --help）
+update.locked	另一个 ./update.sh 正在运行（pid %s）
+update.stale_lock	注意：移除之前未完成的 ./update.sh 留下的锁
+update.no_lock	无法创建 %s
+update.summary	== 汇总
+label.relay	relay
+label.engine	本机引擎
+label.dsh	dsh 插件
+label.cloud	云端脚本
+label.setup	云端安装
+label.cengine	云端引擎
+label.prompt	routine 提示词
+label.name	地址名
+label.release	云端发布版
+st.unchanged	未变
+st.changed	有变化
+st.pending	待确认
+st.unknown	未知
+st.absent	未安装
+st.ok	正常
+st.failed	失败
+update.engine_not_undone	!! 引擎切换没有撤销；按上面的步骤处理，然后重新运行 ./update.sh。记录：%s
+update.relay_not_back	!! relay 没能重新启动：请运行 ./install.sh --restart-relay
+update.engine_rolling_back	引擎步骤没有完成，正在回滚。
+update.exit_paused_cloud	!! [GROK-UI] routine 仍处于暂停状态。在 ./update.sh 记录云端步骤之前保持暂停；\n   如果 Grok Bot 的输出里有 'could not restore'，先检查云端的 clone，再在那里运行任何东西。
+update.exit_paused	!! [GROK-UI] routine 仍处于暂停状态：请在 Grok Bot 里恢复它。
+update.relay_running_again	已安装的 relay 重新运行了。
+update.stopped_at	更新停在 '%s'。在终端里重新运行 ./update.sh，从这里继续。
+update.not_git	这个目录不是 git clone；请自行获取新版本，然后运行 ./update.sh --no-pull
+update.no_upstream	这个分支没有上游；请自行拉取，然后运行 ./update.sh --no-pull
+update.dirty_checkout	已跟踪的文件有未提交的改动；请提交或 stash，或运行 ./update.sh --no-pull
+update.pull_failed	git pull --ff-only 失败；没有做任何改动
+update.at_latest	checkout 已是最新提交
+update.pulled	已拉取 %s..%s
+update.no_checkout	不是 git checkout
+update.release_ok	%s，提交 %s；这个 checkout 中的云端文件与它一致
+update.no_status	无法读取部署状态
+update.engine_refused	Reason Network %s 不是这个版本支持的版本（%s），不会被降级或替换；请先检查那份安装
+update.renamed	~/.config/agent-relay/env 中的 Bot 地址名（%s）不是这台 Mac 安装时用的（%s）；不支持改名。请改回原来的名字，或连同身份一起卸载后重新安装
+update.plan_head	== 计划（checkout %s，提示词语言 %s）
+update.plan_txn	  上次未完成的更新停在 '%s'：先继续完成它（需要终端）
+update.plan_name_unknown	%s（随本脚本记录的下一步一起记录）
+update.plan_release_failed	%s（更新在改动任何内容之前停在这里）
+update.plan_relay	安装这个 checkout 的 relay 并重启
+update.plan_etxn	  上次引擎升级停在 '%s'：先回滚（只回滚程序文件），然后重新进行
+update.plan_engine_older	把 Reason Network %s 升级到 %s：先切换 relay，备份、替换、核对，失败则回滚
+update.plan_engine_stale	重启守护进程：它仍在运行上次替换之前的程序
+update.plan_dsh_absent	-（未安装）
+update.plan_dsh	替换插件文件；桥接设置保留
+update.plan_cloud_pending	  云端：询问 Grok Bot 是否已完成安装程序给出的云端安装
+update.plan_cloud_manual	  云端：你在对话里把命令块发给 Grok Bot，再把回复粘贴到这里（需要终端；期间 routine 暂停）
+update.plan_cloud_first	  云端：第一次用这个版本更新：这台 Mac 把更新作为消息发给 Grok Bot，Grok Bot 会在 Grok 里问你一次；它检出发布版并检查 Reason Network %s，然后这台 Mac 核对它的回信
+update.plan_cloud_auto	  云端：这台 Mac 给 Grok Bot 发一条更新请求；Grok Bot 自动检出发布版并检查 Reason Network %s，然后这台 Mac 核对它的回信
+update.plan_prompt_pending	询问安装程序给出的提示词是否已保存
+update.plan_prompt	你在 [GROK-UI] 替换 routine 的提示词（需要终端）
+update.plan_engine_order	  引擎顺序：先在当前引擎上切换 relay，停止它，替换引擎，再启动 relay
+update.plan_manual_order	  顺序：停止 relay，暂停 routine，更新云端和/或提示词，恢复 routine，启动 relay
+update.manual_send_this	[GROK-UI] 在对话里直接把下面的内容发给 Grok Bot（不经过 routine）：
+update.manual_reply_lines	Grok Bot 的回复末尾必须有以 agent-mesh-result 开头的几行，显示提交\n%s、下面这些校验和以及 DONE %s：
+update.manual_reply_engine	在它们之前必须有引擎行：reason-network %s running (daemon pid ...)、box/bin/engine/reason-network 的\n固定构建，以及 launcher ok。
+update.paste_reply	把 Grok Bot 的回复粘贴到这里，然后输入只有一个点（.）的一行并按回车：
+update.manual_reply_rejected	云端没有记录为已更新。请和 Grok Bot 一起处理（routine 保持暂停），然后重新运行 ./update.sh 粘贴新的回复
+update.prompt_replace	[GROK-UI] 把 routine 里保存的提示词替换成下面这份（%s）：
+update.ask_prompt_saved_now	新提示词已保存到 routine 了吗？
+update.prompt_not_recorded	routine 提示词没有记录为已更新
+update.continuing	== 继续停在 '%s' 的更新
+update.g_stop_relay	== 1. 停止 relay（期间消息留在本机引擎里）
+update.relay_no_stop	无法停止 relay 服务
+update.g_still_paused	== 2. [GROK-UI] routine 仍处于暂停状态，且没有正在进行的运行吗？
+update.g_pause	== 2. [GROK-UI] 在 Grok Bot 里暂停 routine，等到没有正在进行的运行。完成了吗？
+update.stopped	已停止
+update.g_cloud	== 3. 更新云端脚本和云端引擎
+update.g_prompt	== 4. 替换 routine 提示词
+update.g_resume	== 5. [GROK-UI] 在 Grok Bot 里恢复 routine。完成了吗？
+update.g_start_relay	== 6. 启动 relay
+update.relay_no_start	relay 没有启动；处理上面显示的问题，然后重新运行 ./update.sh
+update.e_switch_relay	== 引擎 1. 在当前引擎（%s）上把 relay 切换到这个 checkout 的版本
+update.e_relay_no_switch	relay 没有切换，所以引擎没有改动；处理上面的问题，然后重新运行 ./update.sh
+update.e_others	下面这些进程也在使用 Reason Network。它们会自行重连到重启后的守护进程；更新完成后请重启这些 agent：
+update.e_restart	== 引擎 2. 重启守护进程：已安装 Reason Network %s，但守护进程是在程序替换之前启动的
+update.e_restart_failed	守护进程没有以新程序重新运行；请运行 reason-network stop，然后运行 ./check.sh
+update.e_relay_after_restart	relay 没有在重启后的引擎上启动；见上面的信息
+update.e_upgrade	== 引擎 2. 把 Reason Network %s 升级到 %s
+update.e_upgrade_explain	下载 %s 并核对固定的 sha256，停止 relay，备份程序和 ~/.reason/network，替换程序，重启守护进程并确认\n新版本在运行，然后启动 relay。失败时只放回旧程序；期间收到的消息保留。
+update.e_no_tmp	无法在 %s 中创建临时目录
+update.e_download_failed	新引擎无法下载或核对失败；引擎没有改动
+update.e_relay_no_stop	无法停止 relay 服务；引擎没有改动
+update.e_not_undone	引擎升级失败，且没有完全撤销；见上面的步骤
+update.e_failed_back	引擎升级失败；已恢复 Reason Network %s
+update.e_start_relay	== 引擎 3. 在 Reason Network %s 上启动 relay
+update.e_relay_not_undone	relay 没有在新引擎上注册，引擎也没有完全回滚；见上面的步骤
+update.e_relay_failed_back	relay 没有在新引擎上注册；已恢复 Reason Network %s
+update.e_not_recorded	注意：无法把引擎版本记录到 %s
+update.ask_setup_done	Grok Bot 已完成安装程序给出的云端安装了吗（它报告云端已加入，Reason Network %s）？
+update.setup_first	请先完成云端安装（./install.sh --cloud-prompt），然后重新运行 ./update.sh；没有做任何改动
+update.ask_prompt_saved	安装程序给出的 routine 提示词（%s）已保存到 routine 了吗？
+update.cloud_heading	== 云端：把 Grok Bot 的云端更新到 %s
+update.cloud_stopped	云端没有记录为已更新（见上面几行）。请在 Grok 里和 Grok Bot 一起处理原因，然后重新运行 ./update.sh；./update.sh --manual 可以手动完成云端步骤
+update.cloud_earlier_reply	Grok Bot 对上次请求的回信已到，核对一致，已记录。
+update.relay_down	relay 没有运行，Grok Bot 收不到更新请求；请运行 ./install.sh --restart-relay，然后重新运行 ./update.sh
+update.no_address	无法从 ~/.config/agent-relay/env 读取 Bot 地址（见上面）
+update.no_request	无法记录更新请求（见上面）；没有发送任何内容
+update.send_failed	无法把更新请求发给 %s（见上面）；请重新运行 ./update.sh
+update.sent	已把更新请求发给 Grok Bot（%s）。
+update.sent_first	已把更新发给 Grok Bot（%s）。这是第一次，Grok Bot 运行前会在 Grok 里问你：请在那里确认一次，以后不再需要。
+update.waiting	等待 Grok Bot 完成（通常 1～3 分钟，最多 15 分钟）…
+update.still_waiting	  仍在等待（%s 分钟）
+update.timeout	15 分钟内没有收到 Grok Bot 的回信。它可能还在执行，结果也会出现在 Grok 里。\n稍后重新运行 ./update.sh：它会先查找这次请求的回信并记录，找不到才重新发送请求。\n如果 Grok Bot 没有处理这条请求，请用 ./update.sh --manual。
+update.preflight_failed	处理上面的问题，然后重新运行 ./update.sh；没有做任何改动
+update.needs_terminal	这一步需要在终端里回答问题，而当前不是终端：没有做任何改动。\n[LOCAL] 用户：在终端里进入这个仓库，运行   ./update.sh --lang %s
+update.convention_failed	注意：无法在 %s 中刷新填好这个 Bot 地址的回复约定
+update.up_to_date	已是最新
+update.will_paste	这次更新中需要你把新的 routine 提示词粘贴进 Grok。
+update.continue	继续？
+update.stopped_nothing	已停止；没有做任何改动
+update.etxn_first	== 上次引擎升级没有完成（'%s'）；先回滚
+update.etxn_failed	未完成的引擎升级无法回滚；见上面的步骤
+update.check	== 检查
+update.check_failed	check.sh 报告了 FAIL 行；上面的更新步骤保留
+r.unchanged	未变
+r.updated	已更新
+r.confirmed	已确认
+r.failed	失败；见上面的信息
+r.restarted	已重启
+r.engine_confirmed	已确认 Reason Network %s
+r.restart_failed	重启失败；见上面的信息
+r.daemon_restarted	守护进程已重启
+r.daemon_restarted_on	守护进程已在 %s 上重启
+r.download_failed	未改动（下载失败）
+r.rolled_back	失败，已回滚到 %s（备份：%s）
+r.relay_rolled_back	relay 在 %s 上失败；已回滚到 %s（备份：%s）
+r.upgraded	已从 %s 升级到 %s（备份：%s；./check.sh 通过后可删除）
+r.dsh_updated	已更新（用 ⌘Q 退出 DeepSeek Harness 后重新打开）
+r.dsh_failed	失败；保留之前的插件
+r.cloud_updated	已更新到 %s
+r.cloud_stopped	未更新；Grok Bot 停下了（见上面）
+r.cloud_waiting	等待 Grok Bot 的回信；请稍后重新运行 ./update.sh

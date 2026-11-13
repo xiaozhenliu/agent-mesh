@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 
 from render_prompt import ROOT, render_prompt
-from test_render_prompt import ROUTINE_V041
+from test_render_prompt import ROUTINE_V082
 from write_launch_agent import write_launch_agent
 
 
@@ -76,6 +76,7 @@ class Installation(unittest.TestCase):
         self.who = self.base / "who"
         self.who.mkdir(exist_ok=True)
         (self.who / "all.json").write_text(json.dumps(EMPTY_DIRECTORY))
+        (self.who / "bot.py").write_text(BOT)
         self.env["MOCK_WHO"] = str(self.who)
         self.tool("reason-network", '[ "$1" = --version ] || echo "rn $*" >> "$CALL_LOG"\n'
                                     'case "$1" in --version) echo "reason-network $MOCK_VERSION" ;; '
@@ -84,6 +85,7 @@ class Installation(unittest.TestCase):
                                     'if [ "$*" = "who --all --json" ]; then cat "$MOCK_WHO/all.json"; '
                                     'elif [ -f "$MOCK_WHO/text" ]; then cat "$MOCK_WHO/text"; fi ;; '
                                     'team) [ ! -f "$MOCK_WHO/team" ] || cat "$MOCK_WHO/team" ;; '
+                                    'send) [ "$3" != - ] || exec python3 "$MOCK_WHO/bot.py" "$2" ;; '
                                     '*) exit 0 ;; esac', path)
         cfg = self.home / ".reason/network/config.toml"
         cfg.parent.mkdir(parents=True)
@@ -693,6 +695,21 @@ exit 0""")
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn("nothing to change", again.stdout)
 
+    def test_dsh_scripts_speak_chinese_when_asked(self):
+        patch, own, plugin = self.dsh_installed()
+        self.env["AGENT_MESH_LANG"] = "zh-CN"
+        result = self.run_script("dsh/mac-install.sh", "--plugin-only")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("== 1. 用应用自带的运行时跑单元测试", result.stdout)
+        self.assertIn("没有改动，bridge 设置保持不变。", result.stdout)
+        self.assertEqual(self.run_script("dsh/mac-install.sh", "nobody").stdout, "团队名必须与这台 Mac 当前的部署一致：demo\n")
+        result = self.run_script("dsh/mac-uninstall.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("== 已移除 bridge；备份：", result.stdout)
+        self.assertIn("已放回 Reason Network 自己的 MCP 区块", result.stdout)
+        self.assertIn("中没有 bridge；无需改动", self.run_script("dsh/mac-uninstall.sh").stdout)
+        self.assertFalse(plugin.exists())
+
     def test_dsh_uninstall_falls_back_to_backups_then_to_setup_hint(self):
         patch, own, _ = self.dsh_installed()
         backups = self.home / ".dsh/backup-reason-network-bridge"
@@ -1074,6 +1091,7 @@ exit 0""")
         self.assertIn("RESULT ok", result.stdout)
         self.assertNotIn("rn setup", self.calls())
         self.assertNotIn("rn invite", self.calls())
+        self.assertNotIn("rn send", self.calls())
 
     def test_update_compares_generated_output(self):
         repo = self.installed()
@@ -1121,14 +1139,16 @@ exit 0""")
 
     def test_update_guided_flow_runs_in_order_and_records_each_step(self):
         repo = self.installed(record=False)
-        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *self.cloud_reply(repo), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", "--manual", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.sent(), [])
         self.assertIn("match: commit, checksums and engine", result.stdout)
         self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", result.stdout)
         self.assertNotIn("pull --ff-only", result.stdout)
         self.assertIn(f"TAG={self.release_tag(repo)}; COMMIT={'a' * 40}", result.stdout)
         self.assertRegex(result.stdout, r"cloud release\s+ok")
-        self.assertIn("rn-cloud-setup.sh --upgrade-engine", result.stdout)
+        self.assertRegex(result.stdout, r"; REQ=[0-9a-f]{16}\n")
+        self.assertIn('exec bash "$A/box/rn-cloud-update.sh" --after-checkout', result.stdout)
         data = self.record()
         self.assertEqual(data["cloud_engine"]["version"], "0.12.17")
         for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
@@ -1144,20 +1164,20 @@ exit 0""")
     def test_update_stop_restores_the_relay_and_rerun_continues(self):
         repo = self.installed(record=False)
         relay, _ = self.relay_files()
-        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "n"])
+        result = self.run_tty(repo, "--no-pull", "--manual", answers=["y", "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertTrue(self.loaded())
         self.assertEqual(self.started()[-1], self.sha(relay))
         self.assertEqual(self.record()["txn"]["stage"], "relay_stopped")
         self.assertIn("stopped at 'relay_stopped'", result.stdout)
-        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("continuing the update that stopped at 'relay_stopped'", result.stdout)
         self.assertNotIn("txn", self.record())
 
     def paused_after_cloud(self):
         repo = self.installed(record=False)
-        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *self.cloud_reply(repo), "n"])
+        result = self.run_tty(repo, "--no-pull", "--manual", answers=["y", "y", *self.cloud_reply(repo), "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("The routine is still paused: resume it in Grok Bot", result.stdout)
         self.assertTrue(self.loaded())
@@ -1169,7 +1189,7 @@ exit 0""")
 
     def test_update_rerun_stops_the_restored_relay_before_continuing(self):
         repo = self.paused_after_cloud()
-        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.service_changes()[0].split()[1], "bootout")
         self.assertIn("still paused", result.stderr)
@@ -1180,7 +1200,7 @@ exit 0""")
         repo = self.paused_after_cloud()
         with open(repo / "box/rn-cloud.sh", "a") as stream:
             stream.write("\n")
-        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo, engine=False), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Send this to Grok Bot", result.stdout)
         self.assertEqual(self.record()["cloud"]["hash"],
@@ -1198,7 +1218,7 @@ exit 0""")
         self.assertNotIn("resume it in Grok Bot", result.stdout)
         data = self.record()
         self.assertEqual(data["txn"]["stage"], "routine_paused")
-        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo, engine=False), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("txn", self.record())
 
@@ -1217,7 +1237,7 @@ exit 0""")
                     answer = self.cloud_reply(repo, commit="b" * 40)
                 elif label == "wrong checksum":
                     answer = self.cloud_reply(repo, fetch_sum="c" * 64)
-                result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *answer, "y", "y"])
+                result = self.run_tty(repo, "--no-pull", "--manual", answers=["y", "y", *answer, "y", "y"])
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("mismatch:", result.stdout)
                 self.assertIn("The routine is still paused. Keep it paused until ./update.sh records the cloud step",
@@ -1227,7 +1247,7 @@ exit 0""")
                 data = self.record()
                 self.assertNotEqual(data.get("cloud", {}).get("state"), "confirmed")
                 self.assertEqual(data["txn"]["stage"], "routine_paused")
-                result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo), "y", "y"])
+                result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("Send this to Grok Bot", result.stdout)
                 self.assertEqual(self.record()["cloud"]["state"], "confirmed")
@@ -1253,6 +1273,7 @@ exit 0""")
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn(why, result.stderr)
                 self.assertNotIn("Send this to Grok Bot", result.stdout)
+                self.assertEqual(self.sent(), [])
                 self.assertEqual(self.service_changes(), [])
                 self.assertEqual(path_.read_bytes() if path_.exists() else None, before)
                 self.assertTrue(self.loaded())
@@ -1273,11 +1294,11 @@ exit 0""")
     def test_update_release_points_elsewhere_and_the_reply_must_show_it(self):
         repo = self.installed(record=False)
         (self.git / "release-commit").write_text("b" * 40 + "\n")
-        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y", *self.cloud_reply(repo), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", "--manual", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(f"TAG={self.release_tag(repo)}; COMMIT={'b' * 40}", result.stdout)
         self.assertIn("mismatch: the reply shows commit aaaaaaaaaaaa, not bbbbbbbbbbbb", result.stdout)
-        result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo, commit="b" * 40), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo, commit="b" * 40), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.record()["cloud"]["state"], "confirmed")
 
@@ -1287,7 +1308,7 @@ exit 0""")
                 self.setUp()
                 repo = self.installed(record=False)
                 partial = self.cloud_reply(repo)[:4]
-                rc, out, err = self.run_tty_until(repo, "--no-pull", answers=["y", "y", "y", *partial],
+                rc, out, err = self.run_tty_until(repo, "--no-pull", "--manual", answers=["y", "y", *partial],
                                                   wait_for="Paste Grok Bot's reply", sig=sig)
                 self.assertEqual(rc, code, out + err)
                 self.assertIn("The routine is still paused", out)
@@ -1296,7 +1317,7 @@ exit 0""")
                 self.assertNotEqual(data.get("cloud", {}).get("state"), "confirmed")
                 self.assertEqual(data["txn"]["stage"], "routine_paused")
                 self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
-                result = self.run_tty(repo, "--no-pull", answers=["y", *self.cloud_reply(repo), "y", "y"])
+                result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(self.record()["cloud"]["state"], "confirmed")
 
@@ -1366,7 +1387,7 @@ exit 0""")
 
     def test_update_terminated_while_waiting_restores_the_relay(self):
         repo = self.installed(record=False)
-        code, out, err = self.run_tty_until(repo, "--no-pull", answers=["y", "y"], wait_for="Pause the routine")
+        code, out, err = self.run_tty_until(repo, "--no-pull", "--manual", answers=["y"], wait_for="Pause the routine")
         self.assertEqual(code, 143, out + err)
         self.assertTrue(self.loaded())
         self.assertEqual(self.record()["txn"]["stage"], "relay_stopped")
@@ -1416,8 +1437,9 @@ exit 0""")
         self.assertEqual(self.service_changes(), [])
         self.assertEqual(self.record(), before)
         (self.git / "release/box/rn-cloud.sh").unlink()
-        result = self.run_tty(repo, "--no-pull", answers=["y", "n"])
+        result = self.run_tty(repo, "--no-pull", answers=["n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.sent(), [])
         self.assertEqual(self.record()["cloud"], before["cloud"])
         self.assertTrue(self.loaded())
 
@@ -1430,13 +1452,316 @@ exit 0""")
         data = self.record()
         for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
             self.assertEqual(data[field]["state"], "confirmed", field)
+        self.assertEqual(data["cloud"]["release"], (repo / "VERSION").read_text().strip())
         self.assertEqual(self.service_changes(), [])
+        self.assertEqual(self.sent(), [])
         data["prompt"]["state"] = "pending"
         self.write_record(data)
-        result = self.run_tty(repo, "--no-pull", answers=["n", "y", "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["n", "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Replace the prompt saved in the routine", result.stdout)
         self.assertEqual(self.record()["prompt"]["state"], "confirmed")
+
+    def cloud_changed(self, repo, name="box/rn-cloud.sh"):
+        with open(repo / name, "a") as stream:
+            stream.write("\n")
+
+    def good_reply(self, repo, **kwargs):
+        return "\n".join(["agent-mesh-result request {req}"] + self.cloud_reply(repo, **kwargs)[:-1]) + "\n"
+
+    def bot_replies(self, repo=None, body=None, **conf):
+        conf["body"] = body if body is not None else self.good_reply(repo)
+        (self.who / "bot.json").write_text(json.dumps(conf))
+
+    def bot_silent(self):
+        (self.who / "bot.json").unlink(missing_ok=True)
+
+    def sent(self):
+        path = self.who / "sent"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def put_reply(self, req, body, sender="demo/bot"):
+        db = sqlite3.connect(self.home / ".reason/network/network.db")
+        db.execute(BOT_TABLE)
+        db.execute("INSERT INTO messages VALUES (?, ?, 'demo/terminal', ?, ?, 0)",
+                   (os.urandom(8).hex(), sender, body.replace("{req}", req), int(time.time() * 1000)))
+        db.commit()
+        db.close()
+
+    def digest(self, repo, field):
+        return subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "digest", field],
+                              env=self.env, capture_output=True, text=True, check=True).stdout.strip()
+
+    def test_update_asks_grok_bot_to_update_the_cloud_and_records_its_reply(self):
+        repo = self.installed()
+        version = (repo / "VERSION").read_text().strip()
+        self.assertEqual(self.record()["cloud"]["release"], version)
+        self.cloud_changed(repo)
+        self.bot_replies(repo)
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertRegex(plan.stdout, r"cloud release\s+ok")
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.sent(), [])
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [message] = self.sent()
+        self.assertEqual(message["to"], "demo/bot")
+        self.assertRegex(message["body"], rf"\Aagent-mesh update v{version} {'a' * 40} [0-9a-f]{{16}}\Z")
+        self.assertIn("rn send demo/bot -", self.calls())
+        self.assertIn("match: commit, checksums and engine 0.12.17", result.stdout)
+        data = self.record()
+        self.assertEqual(data["cloud"], {"hash": self.digest(repo, "cloud"), "state": "confirmed", "release": version})
+        for field in ("cloud_setup", "cloud_engine"):
+            self.assertEqual(data[field]["state"], "confirmed", field)
+        self.assertNotIn("request", data)
+        self.assertEqual(self.service_changes(), [])
+        self.assertIn("RESULT ok", result.stdout)
+        self.assertNotIn("[GROK-UI]", result.stdout)
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertIn("already up to date", result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+
+    def test_update_records_only_the_reply_to_its_own_request(self):
+        repo = self.installed()
+        self.cloud_changed(repo)
+        self.env["AGENT_MESH_REPLY_WAIT"] = "10"
+        good = self.good_reply(repo)
+        cases = {
+            "another request": {"req": "0" * 16},
+            "another sender": {"sender": "demo/other"},
+            "sent before the request": {"ago_ms": 3600000},
+            "held by the engine": {"held": 1},
+            "no request line": {"body": good.replace("agent-mesh-result request {req}", "request {req}")},
+        }
+        for n, (label, conf) in enumerate(cases.items(), 1):
+            with self.subTest(label):
+                body = conf.pop("body", good)
+                self.bot_replies(body=body, **conf)
+                result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("No reply from Grok Bot within 15 minutes", result.stdout)
+                self.assertEqual(len(self.sent()), n)
+                data = self.record()
+                self.assertNotEqual(data["cloud"]["hash"], self.digest(repo, "cloud"))
+                self.assertEqual(data["request"]["req"], self.sent()[-1]["body"].split()[-1])
+        self.bot_silent()
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.put_reply(self.record()["request"]["req"], good)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("reply to the earlier request arrived and matches", result.stdout)
+        self.assertEqual(len(self.sent()), len(cases) + 1)
+        self.assertEqual(self.record()["cloud"]["hash"], self.digest(repo, "cloud"))
+
+    def test_update_shows_a_stop_reply_and_records_nothing(self):
+        repo = self.installed()
+        self.cloud_changed(repo)
+        before = self.record()
+        self.bot_replies(body="agent-mesh-result request {req}\nchanged files in /workspace/agent-mesh:\n  M box/x\n"
+                              "STOP: /workspace/agent-mesh has local changes; nothing was changed\n")
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("STOP: /workspace/agent-mesh has local changes", result.stdout)
+        self.assertIn("mismatch: the reply has a STOP line", result.stdout)
+        self.assertIn("the cloud side was not recorded as updated", result.stderr)
+        data = self.record()
+        self.assertEqual(data["cloud"], before["cloud"])
+        self.assertNotIn("request", data)
+        self.bot_replies(repo)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.sent()), 2)
+
+    def test_update_sends_again_when_the_checkout_moved_after_the_request(self):
+        repo = self.installed()
+        self.cloud_changed(repo)
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        old = self.record()["request"]["req"]
+        self.put_reply(old, self.good_reply(repo))
+        self.cloud_changed(repo, "box/rn-fetch.py")
+        self.bot_replies(repo)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("this checkout changed after the update request was sent", result.stdout)
+        self.assertEqual(len(self.sent()), 2)
+        self.assertNotIn(old, self.sent()[-1]["body"])
+        self.assertEqual(self.record()["cloud"]["hash"], self.digest(repo, "cloud"))
+
+    def test_update_has_the_prompt_pasted_before_it_asks_grok_bot(self):
+        repo = self.installed()
+        prompt = repo / "prompts/routine.md"
+        text = prompt.read_text()
+        fence = text.index("```\n") + 4
+        prompt.write_text(text[:fence] + "Changed. " + text[fence:])
+        self.cloud_changed(repo)
+        self.bot_replies(repo)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        result = self.run_tty(repo, "--no-pull", answers=["y", "n"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("You will paste a new routine prompt into Grok", result.stdout)
+        self.assertIn("the routine prompt was not recorded as updated", result.stderr)
+        self.assertEqual(self.sent(), [])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertLess(result.stdout.index("Changed. "), result.stdout.index("Sent the update request to Grok Bot"))
+        data = self.record()
+        self.assertEqual(data["prompt"]["state"], "confirmed")
+        self.assertEqual(data["cloud"]["hash"], self.digest(repo, "cloud"))
+        self.assertEqual(len(self.sent()), 1)
+
+    def test_update_from_a_record_without_the_release_sends_the_checked_block(self):
+        repo = self.installed()
+        version = (repo / "VERSION").read_text().strip()
+        data = self.record()
+        del data["cloud"]["release"]
+        self.write_record(data)
+        self.cloud_changed(repo)
+        self.bot_replies(repo)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [message] = self.sent()
+        body = message["body"]
+        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", body)
+        self.assertRegex(body, rf"TAG=v{version}; COMMIT={'a' * 40}; REQ=[0-9a-f]{{16}}\n")
+        self.assertIn(f"{self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py", body)
+        self.assertIn('exec bash "$A/box/rn-cloud-update.sh" --after-checkout "$TAG" "$COMMIT" "$REQ"', body)
+        self.assertIn("This first time, Grok Bot asks you in Grok", result.stdout)
+        self.assertEqual(self.record()["cloud"]["release"], version)
+
+    def test_update_does_not_ask_grok_bot_without_a_running_relay_or_a_sent_request(self):
+        repo = self.installed()
+        self.cloud_changed(repo)
+        self.bot_replies(repo)
+        (self.state / "loaded").unlink()
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("the relay is not running", result.stderr)
+        self.assertEqual(self.sent(), [])
+        self.assertNotIn("request", self.record())
+        (self.state / "loaded").write_text("")
+        (self.who / "send-fail").write_text("")
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not send the update request to demo/bot", result.stderr)
+        self.assertNotEqual(self.record()["cloud"]["hash"], self.digest(repo, "cloud"))
+
+    def test_update_speaks_the_chosen_language_and_passes_it_on(self):
+        import messages
+        repo = self.installed()
+        (repo / "check.sh").write_text('#!/bin/bash\necho "RESULT ok lang=$AGENT_MESH_LANG"\n')
+        self.mark(repo, "prompt", "confirmed", "zh-CN")
+        self.cloud_changed(repo)
+        self.bot_replies(repo)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(messages.t("update.sent", "demo/bot", lang="zh-CN"), result.stdout)
+        self.assertIn(messages.t("update.waiting", lang="zh-CN"), result.stdout)
+        self.assertIn("RESULT ok lang=zh-CN", result.stdout)
+        self.assertRegex(self.sent()[0]["body"], r"\Aagent-mesh update v")
+
+    def test_installer_and_uninstaller_keep_the_recorded_language(self):
+        import messages
+        self.configured()
+        self.assertEqual(self.run_script("install.sh", "--cloud-prompt").returncode, 0)
+        self.assertEqual(self.run_script("install.sh", "--webhook", "--lang", "zh-CN").returncode, 0)
+        self.assertEqual(self.record()["lang"], "zh-CN")
+        result = self.run_script("install.sh", "--webhook")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.record()["lang"], "zh-CN")
+        result = self.run_script("install.sh", "--help")
+        self.assertEqual(result.stdout, messages.t("install.help", lang="zh-CN") + "\n")
+        result = self.run_script("install.sh", "--name")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(messages.t("install.option_value", "--name", lang="zh-CN"), result.stderr)
+        result = self.run_script("install.sh", "--bogus")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(messages.t("install.see_help", lang="zh-CN"), result.stderr)
+        self.assertEqual(self.run_script("install.sh", "--help", "--lang", "en").stdout,
+                         messages.t("install.help", lang="en") + "\n")
+        result = self.run_script("uninstall.sh", "--plan", "--help")
+        self.assertEqual(result.stdout, messages.t("uninstall.help", lang="zh-CN") + "\n")
+        result = self.run_script("uninstall.sh", "--level", "nothing")
+        self.assertEqual(result.returncode, 2)
+        self.assertTrue(result.stderr.startswith("uninstall："), result.stderr)
+        self.assertEqual(self.record()["lang"], "zh-CN")
+
+    def test_update_checks_the_release_before_pending_questions_when_a_cloud_part_changed(self):
+        repo = self.installed()
+        self.mark(repo, "cloud_engine", "pending")
+        self.cloud_changed(repo)
+        (self.git / "release-fail").write_text("")
+        before = self.record()
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertRegex(plan.stdout, r"cloud release\s+failed")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "y"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not be fetched", result.stderr)
+        self.assertNotIn("Did Grok Bot finish the cloud setup", result.stdout)
+        self.assertEqual(self.record(), before)
+        self.assertEqual(self.sent(), [])
+
+    def test_update_asks_grok_bot_when_only_the_update_or_setup_script_changed(self):
+        for name, label in (("box/rn-cloud-update.sh", "cloud scripts"), ("box/rn-cloud-setup.sh", "cloud setup")):
+            with self.subTest(name):
+                self.setUp()
+                repo = self.installed()
+                self.cloud_changed(repo, name)
+                self.bot_replies(repo)
+                plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+                self.assertRegex(plan.stdout, label + r"\s+changed")
+                result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(len(self.sent()), 1)
+                for field in ("cloud", "cloud_setup"):
+                    self.assertEqual(self.record()[field]["hash"], self.digest(repo, field))
+
+    def test_update_after_a_manual_cloud_step_asks_grok_bot_next_time(self):
+        repo = self.installed()
+        data = self.record()
+        del data["cloud"]["release"]
+        self.write_record(data)
+        self.cloud_changed(repo)
+        result = self.run_tty(repo, "--no-pull", "--manual", answers=["y", "y", *self.cloud_reply(repo), "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.record()["cloud"]["release"], (repo / "VERSION").read_text().strip())
+        self.assertEqual(self.sent(), [])
+        self.cloud_changed(repo, "box/rn-fetch.py")
+        self.bot_replies(repo)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [message] = self.sent()
+        self.assertTrue(message["body"].startswith("agent-mesh update v"), message["body"])
+
+    def test_update_interrupted_while_waiting_for_grok_bot_keeps_the_request(self):
+        repo = self.installed()
+        self.cloud_changed(repo)
+        self.tool("sleep", 'exec /bin/sleep "$@"')
+        proc = subprocess.Popen(["/bin/bash", str(repo / "update.sh"), "--no-pull", "--yes"], env=self.env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                preexec_fn=os.setpgrp)
+        deadline = time.time() + 60
+        while time.time() < deadline and not self.sent():
+            time.sleep(0.2)
+        time.sleep(1)
+        os.killpg(proc.pid, signal.SIGTERM)
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 143, out.decode() + err.decode())
+        self.assertIn("cloud scripts", out.decode())
+        req = self.record()["request"]["req"]
+        self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
+        self.assertTrue(self.loaded())
+        self.tool("sleep", "exit 0")
+        self.put_reply(req, self.good_reply(repo))
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("reply to the earlier request arrived and matches", result.stdout)
+        self.assertEqual(len(self.sent()), 1)
 
     def test_update_pulls_once_and_hands_over_to_the_new_script(self):
         repo = self.installed()
@@ -1727,6 +2052,9 @@ exit 0""")
         result = self.run_script("install.sh", "--name", "demo", "--relay-name", "xiaozhushou", "--grok-name", grok,
                                  "--yes", "--lang", "zh-CN")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1/6 网络", result.stdout)
+        self.assertIn("3/6 团队", result.stdout)
+        self.assertNotIn("1/6 network", result.stdout)
         data = self.record()
         self.assertEqual((data["relay_name"], data["grok_name"]), ("xiaozhushou", grok))
         self.assertNotIn(grok, self.env_file().read_text())
@@ -1744,8 +2072,13 @@ exit 0""")
             self.assertEqual([i for i, (a, b) in enumerate(zip(lines, source)) if a != b],
                              [i for i, line in enumerate(source) if "<relay-name>" in line], name)
         result = self.run_script("install.sh", "--cloud-prompt")
+        self.assertIn(f"Bot 地址：demo/xiaozhushou → Grok: {grok}（云端会话 xiaozhushou-cloud", result.stdout)
+        result = self.run_script("install.sh", "--cloud-prompt", "--lang", "en")
         self.assertIn(f"Bot address: demo/xiaozhushou → Grok: {grok} (cloud sessions", result.stdout)
-        self.assertIn(f"PASS  Bot address: demo/xiaozhushou → Grok: {grok}\n", self.run_script("check.sh").stdout)
+        self.assertEqual(self.record()["lang"], "zh-CN")
+        self.assertIn(f"PASS  Bot 地址：demo/xiaozhushou → Grok: {grok}\n", self.run_script("check.sh").stdout)
+        self.assertIn(f"PASS  Bot address: demo/xiaozhushou → Grok: {grok}\n",
+                      self.run_script("check.sh", "--lang", "en").stdout)
 
     def test_grok_name_on_its_own_only_labels_an_existing_installation(self):
         result = self.run_script("install.sh", "--grok-name", "Nova")
@@ -2060,7 +2393,7 @@ exit 0""")
         repo = self.installed()
         old = self.record()
         old.pop("relay_name")
-        old["prompt"]["hash"] = ROUTINE_V041["en"]
+        old["prompt"]["hash"] = ROUTINE_V082["en"]
         self.write_record(old)
         result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -2184,6 +2517,36 @@ exit 0""")
                 team.write_text(f"{head}  demo{v}  mac    this machine\n")
                 self.assertIn("SKIP  cloud machine", self.run_script("check.sh").stdout)
 
+    def test_check_language_follows_the_flag_then_the_record_then_the_environment(self):
+        self.configured(relay="alice")
+        english = "PASS  Bot address: demo/alice (no Grok name recorded;"
+        chinese = "PASS  Bot 地址：demo/alice（没有记录 Grok 名字；"
+
+        def check(*args, lang=None):
+            self.env.pop("AGENT_MESH_LANG", None)
+            if lang is not None:
+                self.env["AGENT_MESH_LANG"] = lang
+            return self.run_script("check.sh", *args)
+
+        for args, lang, expected in (((), None, english), ((), "fr", english), ((), "zh-CN", chinese),
+                                     (("--lang", "en"), "zh-CN", english), (("--lang=zh-CN",), "en", chinese)):
+            out = check(*args, lang=lang).stdout
+            self.assertIn(expected, out, (args, lang))
+            self.assertIn("RESULT fix the FAIL lines above" if expected == english else "RESULT 请修复上面的 FAIL 行", out)
+        zh = check(lang="zh-CN").stdout
+        self.assertIn("FAIL  relay 没有在运行中的引擎上注册：", zh)
+        self.assertNotIn("PASS  Bot address", zh)
+        self.mark(ROOT, "prompt", "confirmed", "zh-CN")
+        self.assertIn(chinese, check(lang="en").stdout)
+        self.assertIn(english, check("--lang", "en", lang="zh-CN").stdout)
+        self.mark(ROOT, "prompt", "confirmed", "en")
+        self.assertIn(english, check(lang="zh-CN").stdout)
+        bad = check("--lang", "fr")
+        self.assertEqual(bad.returncode, 2)
+        self.assertEqual(bad.stdout, "")
+        self.assertIn("check: unsupported language 'fr'; choose en or zh-CN / check：不支持的语言“fr”", bad.stderr)
+        self.assertEqual(check("--bogus").returncode, 2)
+
     def test_check_probes_the_relay_the_engine_actually_uses(self):
         self.configured()
         self.env["MOCK_VERSION"] = "0.10.7"
@@ -2276,6 +2639,31 @@ exit 0
 
 
 EMPTY_DIRECTORY = {"team": "demo", "person": "demo", "machine": "mac", "machines": [], "sessions": []}
+
+BOT_TABLE = ("CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, body TEXT, "
+             "sent_at INTEGER, held INTEGER)")
+
+BOT = r'''import json, os, re, sqlite3, sys, time
+from pathlib import Path
+who = Path(os.environ["MOCK_WHO"])
+if (who / "send-fail").exists():
+    sys.exit(1)
+body = sys.stdin.read()
+with open(who / "sent", "a") as stream:
+    stream.write(json.dumps({"to": sys.argv[1], "body": body}) + "\n")
+conf_path = who / "bot.json"
+if not conf_path.exists():
+    sys.exit(0)
+conf = json.loads(conf_path.read_text())
+found = re.search(r"^agent-mesh update \S+ \S+ ([0-9a-f]{16})$|REQ=([0-9a-f]{16})$", body, re.M)
+req = conf.get("req") or found.group(1) or found.group(2)
+db = sqlite3.connect(Path(os.environ["HOME"]) / ".reason/network/network.db")
+db.execute(TABLE)
+db.execute("INSERT INTO messages VALUES (?, ?, 'demo/terminal', ?, ?, ?)",
+           (os.urandom(8).hex(), conf.get("sender", "demo/bot"), conf["body"].replace("{req}", req),
+            int(time.time() * 1000) - conf.get("ago_ms", 0), conf.get("held", 0)))
+db.commit()
+'''.replace("TABLE", repr(BOT_TABLE))
 
 SESSIONS = """CREATE TABLE IF NOT EXISTS sessions (name TEXT PRIMARY KEY, key TEXT NOT NULL, agent TEXT NOT NULL,
 cwd TEXT NOT NULL, repo TEXT, branch TEXT, doing TEXT, tier TEXT NOT NULL, last_seen INTEGER NOT NULL);

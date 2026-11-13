@@ -1,0 +1,101 @@
+check.lang_value	check：--lang 需要 en 或 zh-CN
+check.lang_unsupported	check：不支持的语言“%s”，请选择 en 或 zh-CN
+check.unknown_option	check：未知选项：%s（只支持 --lang en|zh-CN）
+check.skip_reason	%s（%s）
+check.not_macos	不是 macOS
+check.not_macos_fix	请在 [LOCAL]（用户的 Mac）上运行这个检查
+check.custom_rn_home	自定义了 REASON_NETWORK_HOME
+check.custom_rn_home_fix	这个安装程序只支持默认的用户配置
+check.python_ok	Python 3.9+，带 ssl 和 sqlite3
+check.python_bad	缺少 Python 3.9+，或安装不完整
+check.python_fix	安装 Python 3.9+，并确认 python3 在 PATH 中；见 README.zh-CN.md「准备」
+check.path_ok	PATH 包含 ~/.local/bin
+check.path_bad	PATH 不含 ~/.local/bin
+check.path_fix	在 shell 启动文件里把 ~/.local/bin 加入 PATH；见 README.zh-CN.md「准备」
+check.relay_hint	允许直连整个 iroh.link 和 reasonmachines.com 域名（不做 HTTPS 解密）；见 README.zh-CN.md「常见问题」
+check.relay_ok	relay 可以连接：%s
+check.relay_bad	relay 无法连接（%s）：%s
+check.relay_unknown	无法确定 relay 是否可以连接
+check.relay_unknown_why	%s；%s
+check.targets_failed	relay_targets.py 运行失败
+check.engine_same	reason-network %s（本版本固定的版本）
+check.engine_older	reason-network %s 比本版本固定的 %s 旧
+check.engine_older_fix	运行 ./update.sh：它会先备份再升级引擎，失败时回滚（UPGRADE.zh-CN.md）
+check.engine_other	本版本不支持 reason-network %s（固定的版本是 %s）
+check.engine_other_fix	agent-mesh 从不降级引擎；请使用为这个引擎版本发布的 agent-mesh，或重新安装 %s
+check.unknown_version	（未知版本）
+check.upgrade_unfinished	有一次引擎升级没有完成
+check.upgrade_unfinished_fix	在终端里运行 ./update.sh：它会先回滚这次切换（备份：%s）
+check.unknown	未知
+check.team_name	团队名：%s
+check.no_person	%s 里没有 person
+check.run_install	运行 ./install.sh
+check.cloud_joined	云端机器已加入
+check.cloud_machine	云端机器
+check.cloud_not_joined	还没有加入：把 ./install.sh --cloud-prompt 打印的内容发给 Grok Bot
+check.team_only	团队里只有这台机器和云端
+check.team_extra	团队里有意外的成员：%s
+check.team_extra_fix	如果不是你加的：对每个成员运行 reason-network remove <person>/<machine>，然后运行 ./install.sh --rotate-key（README.zh-CN.md「安全与隐私」）
+check.no_team	不在团队中
+check.daemon_fresh	引擎守护进程运行的是已安装的程序（%s）
+check.daemon_stale	引擎守护进程（%s）在程序替换之前就已启动，所以仍在运行旧版本
+check.daemon_stale_fix	运行 reason-network stop，然后再运行 ./check.sh（下一条命令会用已安装的程序启动它）
+check.daemon	引擎守护进程
+check.daemon_none	没有运行
+check.daemon_unknown	无法检查：%s
+check.auto_update_ok	auto_update 已关闭
+check.auto_update_bad	auto_update 没有关闭
+check.auto_update_fix	在 %s 里设置  auto_update = false
+check.lan_ok	lan 广播已关闭
+check.lan_bad	lan 没有关闭
+check.lan_fix	在 %s 里设置  lan = false
+check.no_engine	reason-network 没有安装
+check.env_names	env 里的 relay 名字不是由同一个名字派生的
+check.env_names_fix	%s；请把 LISTEN_NAME/CLOUD_NAME/INBOX_NAME 设为 <name>、<name>-cloud、<name>-inbox（README.zh-CN.md「安装」）
+check.bot_address	Bot 地址
+check.no_address	还没有选定地址名：运行 ./install.sh（AGENT-INSTALL.zh-CN.md）
+check.bot_address_is	Bot 地址：%s
+check.bot_address_no_grok	Bot 地址：%s（没有记录 Grok 名字；可用 ./install.sh --grok-name '<its name in Grok>' 添加）
+check.bot_address_grok_unreadable	Bot 地址：%s（无法读取 Grok 名字：%s）
+check.env_mode_ok	env 文件权限为 600
+check.env_mode_bad	env 文件权限不是 600
+check.webhook_ok	webhook 已配置
+check.webhook_bad	webhook 没有配置
+check.run_webhook	运行 ./install.sh --webhook
+check.relay_unconfigured	relay 没有配置
+check.key_ok	签名密钥存在
+check.key_bad	缺少签名密钥
+check.relay_missing	缺少 relay 文件
+check.relay_current	relay 已安装（与这个 checkout 的版本相同）
+check.relay_old	已安装的 relay 早于 Reason Network 0.12 的 terminal 地址
+check.relay_old_fix	运行 ./update.sh（它会安装这个 checkout 的 relay）
+check.relay_version	relay 版本
+check.relay_differs	已安装的 relay 与这个 checkout 不同；./update.sh 会安装这个 checkout 的版本
+check.service_ok	relay 服务已加载
+check.service_bad	relay 服务没有加载
+check.log_up	relay 日志显示 'agent-relay up'
+check.log_never_up	relay 从未启动成功
+check.post_ok	最近一次 webhook POST 成功（code=%s）
+check.post_recovered	最近一次 webhook POST 成功（code=%s；之前失败过，现已恢复）
+check.post_failed	最近一次 webhook POST 失败（code=%s）
+check.post_fix	检查 Webhook URL 和密钥：./install.sh --webhook
+check.post_failures	最近有 webhook POST 失败
+check.registration	relay 注册
+check.name_unknown	不知道 Bot 地址名
+check.no_process	relay 服务没有正在运行的进程
+check.registered_other	relay 注册成了别的名字：%s
+check.registered_other_fix	另一个会话占用了 %s；relay 收不到发给 %s 的邮件（README.zh-CN.md「常见问题」）
+check.listening	relay 正以 %s 监听（已在运行中的引擎守护进程上注册）
+check.not_registered	relay 没有在运行中的引擎上注册：%s
+check.not_registered_fix	如果还没有为这个 checkout 运行过 ./update.sh，请运行它；否则查看 tail -n 30 ~/Library/Logs/agent-relay.log，并运行 ./install.sh --restart-relay（README.zh-CN.md「常见问题」）
+check.sessions_ok	名单上有 %s 个 agent 会话
+check.sessions	agent 会话
+check.sessions_none	打开一个 Claude Code / Codex 会话后再运行
+check.cloud_engine_ok	云端引擎最近一次确认的版本是 %s
+check.cloud_engine_old	云端引擎最近一次确认的版本是 %s，不是 %s
+check.cloud_engine_old_fix	运行 ./update.sh：它的云端引擎步骤会让 Grok Bot 运行 box/rn-cloud-setup.sh --upgrade-engine
+check.cloud_engine	云端引擎
+check.cloud_engine_pending	安装程序打印的云端设置还没有确认；./update.sh 会询问
+check.cloud_engine_none	没有记录已确认的云端引擎版本；./update.sh 的云端引擎步骤会记录它
+check.cloud_engine_unreadable	无法读取 %s：%s
+check.result_fail	请修复上面的 FAIL 行

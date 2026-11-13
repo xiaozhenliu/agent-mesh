@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import relay_names
 from relay_names import from_env, problem
@@ -61,6 +62,15 @@ class Rules(unittest.TestCase):
             self.assertIsNotNone(problem(name), repr(name))
         self.assertIn("reserved", problem("terminal-3"))
         self.assertIn("34", problem("x" * 35))
+
+    def test_reasons_follow_the_language_and_english_is_unchanged(self):
+        with mock.patch.dict(os.environ, {"AGENT_MESH_LANG": "en"}):
+            self.assertEqual(problem(""), "the Bot address name is empty")
+            self.assertEqual(problem("x" * 35), f"the Bot address name {'x' * 35!r} is longer than 34 characters")
+        with mock.patch.dict(os.environ, {"AGENT_MESH_LANG": "zh-CN"}):
+            self.assertEqual(problem(""), "Bot 地址名为空")
+            self.assertEqual(problem("terminal"), "Bot 地址名 'terminal' 是保留名：Reason Network 自己使用 terminal 和 terminal-<数字>")
+            self.assertEqual(relay_names.grok_problem(" a"), "Bot 在 Grok 里的名字开头或结尾有空格")
 
     def test_valid_names_survive_the_engine_slug_and_invalid_ones_may_not(self):
         for name in VALID:

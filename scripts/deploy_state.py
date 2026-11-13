@@ -6,17 +6,23 @@ import importlib.util
 import json
 import os
 import re
+import secrets
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import relay_names
+from messages import t
 from render_prompt import ROOT, render_prompt
 from write_launch_agent import launch_agent_bytes
 
 SCHEMA = 1
 REMOTE = ("cloud", "cloud_setup", "prompt", "cloud_engine")
+CLOUD_PARTS = ("cloud", "cloud_setup", "cloud_engine")
+UPDATE_SCRIPT = "box/rn-cloud-update.sh"
 NEEDS = ("cloud", "prompt", "cloud_engine")
 STATES = ("pending", "confirmed")
 TXN_KEYS = ("stage", "relay_was_loaded", "need", "lang", "commit", "target")
@@ -87,7 +93,7 @@ def relay_name(fallback=None):
     if name is None:
         return fallback or relay_names.DEFAULT
     if fallback and fallback != name:
-        raise ValueError(f"{env_path()} uses the Bot address name {name}, not {fallback}")
+        raise ValueError(t("state.env_name_differs", env_path(), name, fallback))
     return name
 
 
@@ -116,7 +122,8 @@ def name_status(data, fallback=None):
 
 def digest(field, lang, relay=None):
     if field == "cloud":
-        parts = [sha((ROOT / "box" / name).read_bytes()) for name in ("rn-cloud.sh", "rn-fetch.py")]
+        names = ("rn-cloud.sh", "rn-fetch.py", "rn-cloud-update.sh")
+        parts = [sha((ROOT / "box" / name).read_bytes()) for name in names]
         return sha("\n".join(parts).encode())
     if field == "cloud_setup":
         return sha((ROOT / "box/rn-cloud-setup.sh").read_bytes())
@@ -139,11 +146,11 @@ def load(warn=True):
         return {}
     except (OSError, ValueError) as exc:
         if warn:
-            print(f"update: {path} is unreadable ({exc}); treating cloud and prompt as unknown", file=sys.stderr)
+            print(t("state.unreadable_unknown", path, exc), file=sys.stderr)
         return {}
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         if warn:
-            print(f"update: {path} has an unknown format; treating cloud and prompt as unknown", file=sys.stderr)
+            print(t("state.format_unknown", path), file=sys.stderr)
         return {}
     return data
 
@@ -216,8 +223,7 @@ def txn_of(data, warn=False):
     if txn is None or valid_txn(txn):
         return txn
     if warn:
-        print("update: the record of an unfinished update is damaged and was ignored; "
-              "if the routine is still paused in Grok Bot, resume it", file=sys.stderr)
+        print(t("state.txn_damaged"), file=sys.stderr)
     return None
 
 
@@ -245,6 +251,9 @@ def cmd_status(args):
     print(f"etxn {engine_txn_stage()}")
     recorded = entry(data, "cloud_engine")
     print(f"cloud_engine_version {recorded.get('version') or '-' if recorded else '-'}")
+    print(f"cloud_release {cloud_release(data) or '-'}")
+    request = request_of(data)
+    print(f"request {request['req'] + ' ' + request['mode'] if request else '-'}")
     status = name_status(data)
     print(f"name {status}" if status.startswith("changed ") else f"name {status} {relay_name()}")
 
@@ -254,37 +263,49 @@ def cmd_mark(args):
     status = name_status(data, args.relay_name)
     if status.startswith("changed "):
         _, recorded, current = status.split()
-        raise SystemExit(f"update: the Bot address name changed from {recorded} (recorded when this Mac was "
-                         f"installed) to {current}; renaming is not supported, nothing was recorded")
+        raise SystemExit(t("state.renamed_not_recorded", recorded, current))
     value = {"hash": digest(args.field, args.lang, args.relay_name), "state": args.state}
     if args.field == "cloud_engine":
         value["version"] = pinned()
     old = entry(data, args.field)
     if args.expect and args.expect != value["hash"]:
-        raise SystemExit(f"update: this checkout changed after {args.field} was shown; nothing was recorded, "
-                         "run ./update.sh again")
+        raise SystemExit(t("state.checkout_moved", args.field))
     if args.if_pending and not (old and old["state"] == "pending" and old["hash"] == value["hash"]):
-        raise SystemExit(f"update: the {args.field} record changed after it was shown; nothing was recorded, "
-                         "run ./update.sh again")
+        raise SystemExit(t("state.record_moved", args.field))
     data[args.field] = value
     if status == "unknown":
         data["relay_name"] = relay_name(args.relay_name)
     if args.field == "prompt":
         data["lang"] = args.lang
+    stamp_release(data)
     save(data)
 
 
-def load_strict():
+def version():
+    return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+
+
+def cloud_release(data):
+    value = data.get("cloud")
+    release_ = value.get("release") if isinstance(value, dict) else None
+    return release_ if isinstance(release_, str) and re.fullmatch(r"\d+\.\d+\.\d+", release_) else None
+
+
+def stamp_release(data):
+    if all(remote_status(data, field, "en") == "unchanged" for field in CLOUD_PARTS):
+        data["cloud"]["release"] = version()
+
+
+def load_strict(plain=False):
     path = record_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:
-        raise ValueError(f"{path} is unreadable ({exc}); nothing was recorded. Run ./update.sh --plan to see "
-                         "what it reports, or restore the file from a backup")
+        raise ValueError(t("state.unreadable_plain" if plain else "state.unreadable_strict", path, exc))
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
-        raise ValueError(f"{path} has an unknown format; nothing was recorded")
+        raise ValueError(t("state.format_plain" if plain else "state.format_strict", path))
     return data
 
 
@@ -296,8 +317,7 @@ def cmd_set_grok_name(args):
     status = name_status(data, args.relay_name)
     if status.startswith("changed "):
         _, recorded, current = status.split()
-        raise ValueError(f"the Bot address name changed from {recorded} to {current}; renaming is not supported, "
-                         "nothing was recorded")
+        raise ValueError(t("state.renamed", recorded, current))
     if args.check:
         return
     data["grok_name"] = args.grok_name
@@ -307,8 +327,9 @@ def cmd_set_grok_name(args):
 
 
 def utf8_stdout():
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
 
 
 def cmd_label(args):
@@ -322,9 +343,9 @@ def cmd_label(args):
 
 def cmd_recorded_name(_args):
     try:
-        data = load_strict()
+        data = load_strict(plain=True)
     except ValueError as error:
-        print(str(error).replace("; nothing was recorded", ""), file=sys.stderr)
+        print(str(error), file=sys.stderr)
         raise SystemExit(4)
     name = recorded_name(data)
     if not name:
@@ -370,7 +391,7 @@ def cmd_txn_set(args):
     data = load(warn=False)
     txn = txn_of(data)
     if not txn:
-        raise SystemExit("update: no unfinished update to change")
+        raise SystemExit(t("state.no_txn"))
     if args.key == "need":
         txn["need"] = [part for part in args.value.split(",") if part]
         txn["target"] = {part: digest(part, txn.get("lang", "en")) for part in txn["need"]}
@@ -386,7 +407,7 @@ DEFAULT_REPO_URL = "https://github.com/xiaozhenliu/agent-mesh.git"
 
 
 def release_tag():
-    return "v" + (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    return "v" + version()
 
 
 def git(*args, cwd=None):
@@ -405,24 +426,23 @@ def release(url):
                 done = git(*step)
                 if done.returncode != 0:
                     why = done.stderr.decode("utf-8", "replace").strip().splitlines()
-                    raise ValueError(f"the release {tag} could not be fetched from {url} (not published yet, or a "
-                                     f"network problem): {why[-1] if why else 'git failed'}; nothing was changed")
+                    raise ValueError(t("release.fetch_failed", tag, url, why[-1] if why else "git failed"))
             done = git("-C", tmp, "rev-parse", "--verify", "-q", f"refs/tags/{tag}^{{commit}}")
             commit = done.stdout.decode().strip()
             if done.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", commit):
-                raise ValueError(f"the release {tag} at {url} does not point to a commit; nothing was changed")
+                raise ValueError(t("release.not_commit", tag, url))
             sums = []
-            for name in CLOUD_FILES:
+            for name in CLOUD_FILES + (UPDATE_SCRIPT,):
                 done = git("-C", tmp, "cat-file", "blob", f"{commit}:{name}")
                 if done.returncode != 0:
-                    raise ValueError(f"the release {tag} has no {name}; nothing was changed")
+                    raise ValueError(t("release.missing_file", tag, name))
                 want = sha(done.stdout)
                 if want != sha((ROOT / name).read_bytes()):
-                    raise ValueError(f"{name} in this checkout differs from the release {tag}; the cloud installs only "
-                                     "the release, so update this checkout to it first. Nothing was changed")
-                sums.append((want, name))
+                    raise ValueError(t("release.differs", name, tag))
+                if name in CLOUD_FILES:
+                    sums.append((want, name))
         except (OSError, subprocess.SubprocessError) as error:
-            raise ValueError(f"could not check the release {tag} at {url}: {error}; nothing was changed")
+            raise ValueError(t("release.check_failed", tag, url, error))
     return tag, commit, sums
 
 
@@ -441,49 +461,161 @@ TAIL = r"[ \t`*_]*$"
 def reply_problems(text, commit, tag=None, engine=None):
     problems = []
     if re.search(LEAD + r"STOP:", text, re.M):
-        problems.append("the reply has a STOP line")
+        problems.append(t("reply.stop"))
     result = LEAD + r"agent-mesh-result "
     if tag and not re.search(result + r"DONE " + re.escape(tag) + TAIL, text, re.M):
-        problems.append(f"no line 'agent-mesh-result DONE {tag}' in the reply")
+        problems.append(t("reply.no_done", tag))
     commits = {c.lower() for c in re.findall(result + r"commit ([0-9a-fA-F]{40})" + TAIL, text, re.M)}
     if not commits:
-        problems.append("no line 'agent-mesh-result commit <40 hex characters>' in the reply")
+        problems.append(t("reply.no_commit"))
     elif commits != {commit.lower()}:
         others = ", ".join(sorted(other[:12] for other in commits - {commit.lower()}))
-        problems.append(f"the reply shows commit {others}, not {commit.lower()[:12]}")
+        problems.append(t("reply.other_commit", others, commit.lower()[:12]))
     for name in CLOUD_FILES:
         want = sha((ROOT / name).read_bytes())
         pattern = result + r"sum ([0-9a-fA-F]{64})[ \t]+\*?(?:\./)?" + re.escape(name) + TAIL
         found = {f.lower() for f in re.findall(pattern, text, re.M)}
         if not found:
-            problems.append(f"no line 'agent-mesh-result sum <sha256>  {name}' in the reply")
+            problems.append(t("reply.no_sum", name))
         elif found != {want}:
-            problems.append(f"the checksum of {name} differs from this checkout")
+            problems.append(t("reply.sum_differs", name))
     if engine:
         found_engine = set(re.findall(LEAD + ENGINE_LINE.pattern, text, re.M))
         found_builds = set(re.findall(LEAD + BUILD_LINE.pattern + TAIL, text, re.M))
         if not found_engine:
-            problems.append("no line 'engine: reason-network <version> running (daemon pid ...' in the reply")
+            problems.append(t("reply.no_engine"))
         elif found_engine != {engine}:
-            problems.append(f"the cloud engine runs {', '.join(sorted(found_engine))}, not {engine}")
+            problems.append(t("reply.other_engine", ", ".join(sorted(found_engine)), engine))
         allowed = set(rn_engine().PINNED_BUILDS.get(engine, {}).values())
         if not found_builds:
-            problems.append("no line 'engine: pinned build <sha256> at box/bin/engine/reason-network' in the reply")
+            problems.append(t("reply.no_build"))
         elif not found_builds <= allowed:
-            problems.append(f"the cloud engine is not a pinned Reason Network {engine} build")
+            problems.append(t("reply.unpinned_build", engine))
         if not re.search(LEAD + r"engine: launcher ok" + TAIL, text, re.M):
-            problems.append("no line 'engine: launcher ok' in the reply")
+            problems.append(t("reply.no_launcher"))
     return problems
+
+
+def print_problems(problems):
+    for problem in problems:
+        print(t("reply.mismatch", problem))
 
 
 def cmd_cloud_reply(args):
     engine = pinned() if args.engine else None
     problems = reply_problems(sys.stdin.read(), args.commit, args.tag, engine)
     if problems:
-        for problem in problems:
-            print(f"  mismatch: {problem}")
+        print_problems(problems)
         raise SystemExit(1)
-    print(f"  match: commit, checksums{' and engine ' + engine if engine else ''}")
+    print(t("reply.match_engine", engine) if engine else t("reply.match"))
+
+
+def bot_address():
+    try:
+        text = env_path().read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise ValueError(t("request.no_env", env_path(), error.strerror or error))
+    person = relay_names.parse_env(text).get("PERSON", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", person):
+        raise ValueError(t("request.no_person", env_path()))
+    return f"{person}/{relay_name()}"
+
+
+def request_of(data):
+    value = data.get("request")
+    if (isinstance(value, dict) and isinstance(value.get("req"), str) and re.fullmatch(r"[0-9a-f]{16}", value["req"])
+            and value.get("mode") in ("line", "block") and isinstance(value.get("sent_ms"), int)
+            and isinstance(value.get("tag"), str) and isinstance(value.get("commit"), str)
+            and isinstance(value.get("target"), dict)):
+        return value
+    return None
+
+
+def find_reply(req, sender, floor_ms):
+    path = relay_names.default_db()
+    if not path.exists():
+        raise LookupError(t("request.no_db", path))
+    marker = re.compile(LEAD + r"agent-mesh-result request " + re.escape(req) + TAIL, re.M)
+    try:
+        db = relay_names.open_ro(path)
+        try:
+            cols = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
+            sql = "SELECT body FROM messages WHERE sender = ? AND sent_at >= ? AND body LIKE ?"
+            if "held" in cols:
+                sql += " AND COALESCE(held, 0) = 0"
+            rows = db.execute(sql + " ORDER BY sent_at, id", (sender, floor_ms, f"%{req}%")).fetchall()
+        finally:
+            db.close()
+    except sqlite3.Error as error:
+        raise LookupError(t("request.db_error", path, error))
+    for (body,) in rows:
+        if isinstance(body, str) and marker.search(body):
+            return body
+    return None
+
+
+def cmd_bot_address(_args):
+    print(bot_address())
+
+
+def cmd_request_new(args):
+    data = load_strict()
+    req = secrets.token_hex(8)
+    data["request"] = {"req": req, "tag": args.tag, "commit": args.commit, "mode": args.mode,
+                       "sent_ms": int(time.time() * 1000) - 2000,
+                       "target": {field: digest(field, "en") for field in CLOUD_PARTS}}
+    save(data)
+    print(req)
+
+
+def drop_request(data):
+    if "request" in data:
+        data.pop("request")
+        save(data)
+
+
+def cmd_request_check(args):
+    try:
+        check_request(args)
+    except ValueError as error:
+        print(str(error))
+        raise SystemExit(4)
+
+
+def check_request(args):
+    data = load_strict()
+    request = request_of(data)
+    if request is None or (request["tag"], request["commit"]) != (args.tag, args.commit):
+        drop_request(data)
+        raise SystemExit(3)
+    if any(request["target"].get(field) != digest(field, "en") for field in CLOUD_PARTS):
+        drop_request(data)
+        print(t("request.checkout_moved"))
+        raise SystemExit(3)
+    try:
+        text = find_reply(request["req"], bot_address(), request["sent_ms"])
+    except LookupError as error:
+        print(str(error))
+        raise SystemExit(4)
+    if text is None:
+        raise SystemExit(3)
+    stops = [line.strip() for line in text.splitlines() if re.match(LEAD + r"STOP:", line)]
+    problems = reply_problems(text, args.commit, args.tag, pinned())
+    if problems:
+        drop_request(data)
+        for line in stops:
+            print(f"  {line}")
+        print_problems(problems)
+        raise SystemExit(1)
+    for field in CLOUD_PARTS:
+        data[field] = {"hash": digest(field, "en"), "state": "confirmed"}
+    data["cloud_engine"]["version"] = pinned()
+    if name_status(data) == "unknown":
+        data["relay_name"] = relay_name()
+    data.pop("request")
+    stamp_release(data)
+    save(data)
+    print(t("reply.match_engine", pinned()))
 
 
 def cmd_set_engine(args):
@@ -562,7 +694,18 @@ def main(argv=None):
     p = sub.add_parser("release")
     p.add_argument("--repo-url", default=DEFAULT_REPO_URL)
     p.set_defaults(run=cmd_release)
+    sub.add_parser("bot-address").set_defaults(run=cmd_bot_address)
+    p = sub.add_parser("request-new")
+    p.add_argument("--tag", required=True)
+    p.add_argument("--commit", required=True)
+    p.add_argument("--mode", required=True, choices=("line", "block"))
+    p.set_defaults(run=cmd_request_new)
+    p = sub.add_parser("request-check")
+    p.add_argument("--tag", required=True)
+    p.add_argument("--commit", required=True)
+    p.set_defaults(run=cmd_request_check)
     args = parser.parse_args(argv)
+    utf8_stdout()
     try:
         args.run(args)
     except ValueError as error:

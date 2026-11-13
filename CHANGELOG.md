@@ -4,6 +4,24 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.2 — 2026-11-13
+
+Updating takes one command. `./update.sh` shows what will change, asks once, and then updates the Mac side and asks Grok Bot to update the cloud by itself: no pausing the routine, no copying command blocks or replies. Terminal text follows the chosen language. Update with `./update.sh` in a terminal; the routine prompt changes in this version, so paste the new prompt into Grok once when `update.sh` asks.
+
+### Added
+
+- `box/rn-cloud-update.sh <tag> <commit> <request>`: the cloud update as one written command. It checks that the cloud clone has no local changes, never moves to an older version, fetches the release tag, checks that the tag points to the release commit, checks it out, and then runs the copy of itself from the new checkout, which runs the cloud engine step and prints the `agent-mesh-result` lines. On a problem found before the checkout it prints `STOP: <reason>` and changes nothing; if the engine step fails, the checked release stays checked out. It does not repair anything by itself.
+- The routine prompt gains one exception to "ask before production changes": a one-line `agent-mesh update <tag> <commit> <request>` message from the owner (the same team name as `box/person`) runs `box/rn-cloud-update.sh` without asking and replies with its full output. Other update-like messages are not run.
+- Terminal text in `install.sh`, `update.sh`, `check.sh`, `uninstall.sh`, the dsh scripts and the helper scripts follows `--lang en|zh-CN`, then the language recorded at install, then `AGENT_MESH_LANG`, then English. `check.sh` gains `--lang`. Machine-read output (status words, `PASS`/`FAIL`/`WARN`/`RESULT`, `agent-mesh-result`, `STOP:`, cloud script output, logs) stays English. The texts live in `scripts/messages/<lang>/*.tsv`.
+
+### Changed
+
+- `./update.sh` asks a single "Continue? [Y/n]" after showing the plan (`--yes` skips it). The questions about whether the cloud side is set up and whether to do the cloud engine step are gone: the cloud update always runs the engine step, and later cloud migrations go into `rn-cloud-setup.sh --upgrade-engine` or `rn-cloud-update.sh`. The local engine step no longer asks separately.
+- When the cloud needs an update, `./update.sh` sends `agent-mesh update <tag> <commit> <request>` to Grok Bot's address and waits up to 15 minutes (`AGENT_MESH_REPLY_WAIT`) for the reply carrying the same request id. Only a complete reply that matches the release is recorded; a `STOP` reply is shown and nothing is recorded. If no reply arrives in time, rerun `./update.sh`: it first checks whether the reply to the saved request has arrived.
+- The first update from a version without the new script sends a command block that checks and checks out the release and then runs the new script. `./update.sh --manual` keeps the guided flow of v0.8.1, in the chosen language.
+- The release check also compares `box/rn-cloud-update.sh` with the published release, and a change to it alone triggers a cloud update.
+- `rn-cloud-setup.sh` limits engine downloads to 20 seconds to connect and 3600 seconds in total.
+
 ## v0.8.1 — 2026-11-13
 
 Security fixes for the cloud side. The cloud installs and updates only a published release after checking it, and the cloud engine can no longer be replaced by another engine daemon updating itself. Update with `./update.sh` in a terminal: the cloud scripts and the cloud engine step run in one guided cloud step; the routine prompt does not change.

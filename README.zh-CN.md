@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| **版本** | agent-mesh **v0.8.1** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
+| **版本** | agent-mesh **v0.8.2** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
 | **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证，但 Linux 本地安装尚不支持（见[准备](#准备)）· Bot 云端：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
@@ -289,9 +289,9 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 - **已加入团队的云电脑重跑 `rn-cloud-setup.sh` 时停在 `join`**：改用完整的邀请链接（含 `tincan1…` 的那条，`./install.sh --cloud-prompt` 打印的就是）。只有短邀请码时，脚本无法确认云端在同一个团队里。
 - **check.sh 报引擎版本较旧、守护进程还在跑被替换前的二进制，或有未完成的引擎升级**：在终端运行 `./update.sh`。它会升级较旧的引擎，询问是否重启早于二进制替换启动的守护进程，并先回滚未完成的切换；每一步和备份的说明见[升级指南](UPGRADE.zh-CN.md#reason-network-引擎)。
 - **check.sh 报 `relay not registered on the running engine`**：守护进程或 relay 刚重启时，relay 正在重新注册，最多 11 分钟内报 SKIP。超过之后报 FAIL，说明 relay 没有在正在运行的守护进程上 listen：先看 `tail -n 30 ~/Library/Logs/agent-relay.log`，再运行 `./install.sh --restart-relay`，新 relay 注册不上时它会报失败并换回原来的 relay。
-- **`install.sh --cloud-prompt` 或 `./update.sh` 说发布 `v<VERSION>` 取不到，或某个文件与发布版本不同**：云端只安装已发布的 tag，本地仓库中的四个云端脚本（`box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`）必须与它一致。检查网络，以及 `--repo-url` 是否就是云端安装来源的仓库；本地仓库领先于最新发布时，要等下一次发布，或者换回已发布的文件。什么都没有改动。
+- **`install.sh --cloud-prompt` 或 `./update.sh` 说发布 `v<VERSION>` 取不到，或某个文件与发布版本不同**：云端只安装已发布的 tag，本地仓库中的云端脚本（`box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`、`box/rn-cloud-update.sh`）必须与它一致。检查网络，以及 `--repo-url` 是否就是云端安装来源的仓库；本地仓库领先于最新发布时，要等下一次发布，或者换回已发布的文件。什么都没有改动。
 - **Grok Bot 运行的命令块打印 `STOP:` 行，而不是 `READY <tag>` 或 `agent-mesh-result` 结果行**：命令块没有改动任何东西，或者已经恢复到原来的提交（它会打印 `restored …`）。提示 `the engine step failed` 时，仓库停在已核对的发布版本，引擎的情况见上方引擎步骤自己打印的行。把 Grok Bot 的完整输出连同这一行交给维护部署的人；提示 `could not restore` 时不要运行云端脚本。`/workspace/agent-mesh` 里的本地改动要先查看，不要盲目 reset。提示同名的另一个 tag 已经存在时，让 Grok Bot 用 `git -C /workspace/agent-mesh tag -d <tag>` 删掉它，再发同一个命令块；命令块照常核对提交号和校验值。
-- **`rn-cloud.sh` 停止并提示 `box/bin/engine/reason-network is not a Reason Network build pinned by agent-mesh`**：引擎字节不属于固定构建，所以没有运行它。在 `[GROK-UI]` 暂停 routine，在对话中直接让 Grok Bot 运行 `bash /workspace/agent-mesh/box/rn-cloud-setup.sh --upgrade-engine`，它不运行旧引擎，直接换成固定版本；然后恢复 routine。提示 `the engine has not been moved to box/bin/engine yet` 时，在 `[LOCAL]` 运行 `./update.sh` 并完成云端引擎这一步。
+- **`rn-cloud.sh` 停止并提示 `box/bin/engine/reason-network is not a Reason Network build pinned by agent-mesh`**：引擎字节不属于固定构建，所以没有运行它。在 `[GROK-UI]` 暂停 routine，在对话中直接让 Grok Bot 运行 `bash /workspace/agent-mesh/box/rn-cloud-setup.sh --upgrade-engine`，它不运行旧引擎，直接换成固定版本；然后恢复 routine。提示 `the engine has not been moved to box/bin/engine yet` 时，在 `[LOCAL]` 运行 `./update.sh`，它的云端更新会移动引擎。
 - **`rn-cloud.sh` 提示启动器被替换过，或 `--upgrade-engine` 打印 `engine: note: other engine daemons run from box/bin`**：有另一个在本版本之前从 `box/bin/reason-network` 启动的引擎守护进程自我更新了。它无法替换 `box/bin/engine` 里的引擎，`rn-cloud.sh` 每次都会把启动器恢复。不需要的守护进程用 `REASON_NETWORK_HOME=<它的状态目录> REASON_NETWORK_NO_UPDATE=1 /workspace/agent-mesh/box/bin/engine/reason-network stop` 逐个停止，状态目录取提示里打印的值；不要指向 `box/state`，那是云端自己的引擎。
 - **正文里的 `<` 变成了 `[`**：0.10.7 版的 `listen` 会对部分标签做防伪改写，字符数不变。重投是按 relay 保存的副本发的，保持原文。
 
@@ -319,7 +319,7 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 ./update.sh --lang <en|zh-CN>
 ```
 
-它先拉取更新，再逐项与本机已部署的版本比较：relay 和 dsh 插件由它自己更新，云端脚本或 routine 提示词有变化时一步步引导你完成。`./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署。细节、手动升级顺序和回退顺序见[升级指南](UPGRADE.zh-CN.md)。agent-mesh 0.7.0 还会把两台电脑上的 Reason Network 升级到 0.12.17，先备份，失败时回滚，见 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)。
+它先拉取更新，再逐项与本机已部署的版本比较，改动之前只问一次。relay、dsh 插件和本机引擎由它自己更新；routine 提示词有变化时显示新提示词，请你粘贴；云端有变化时从这台 Mac 给 Grok Bot 发一条更新请求，并核对 Grok Bot 的回信。从 v0.8.1 或更早版本第一次更新云端时，会在 Grok 里问你一次；`./update.sh --manual` 可以手动完成云端步骤。`./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署。细节、手动升级顺序和回退顺序见[升级指南](UPGRADE.zh-CN.md)。agent-mesh 0.7.0 还会把两台电脑上的 Reason Network 升级到 0.12.17，先备份，失败时回滚，见 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)。
 
 ## 文档与语言
 

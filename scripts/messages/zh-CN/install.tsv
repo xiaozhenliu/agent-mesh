@@ -1,0 +1,125 @@
+install.grok_name_value	install：--grok-name 需要填写 Bot 在 Grok 里的名字
+install.lang_value	install：--lang 需要 en 或 zh-CN
+install.unknown_option	未知选项：%s
+install.lang_unsupported	install：不支持的语言“%s”，请选择 en 或 zh-CN
+install.grok_name_mode	install：--grok-name 只能用于完整安装、--webhook 或 --cloud-prompt，或单独使用
+install.cpu	不支持的 CPU：%s
+install.no_pin	没有 Reason Network %s 在 %s 上的固定 sha256
+install.download_failed	无法下载 Reason Network %s；没有安装任何东西
+install.checksum	reason-network-%s.tar.gz 的校验和不符（应为 %s，实际为 %s）；没有安装任何东西。再运行一次会重新下载；如果一直失败，请不要安装它
+install.no_binary	下载的压缩包里没有 reason-network 程序；没有安装任何东西
+install.binary_version	下载的程序报告的版本不是 Reason Network %s；没有安装任何东西
+install.rename_refused	这个安装使用的 Bot 地址名是“%s”。不支持改名，未完成的安装也不行：排队的邮件、routine 提示词和云端设置都用当前的名字。\n不带 --relay-name 再运行一次即可保留“%s”；或者连同身份一起卸载（README.zh-CN.md「卸载」）后重新安装。
+install.tmp_failed	无法在 %s 中创建临时文件；%s 没有改动
+install.env_write_failed	无法写入 %s；它没有改动
+install.env_read_failed	无法读取 %s；没有任何改动
+install.reply_failed	注意：无法把带有本 Bot 地址的回复约定写入 %s
+install.hint_suggested	根据 --grok-name，建议的地址是：--relay-name %s
+install.hint_no_latin	Grok 名字里没有可用来生成地址的拉丁字母或数字：请自己给这个 Bot 起一个字母地址（例如它名字的拼音或英文）。
+install.need_relay_name	新安装需要 Bot 的地址名。你的 Grok Bot 叫什么？请加上\n--relay-name <address> --grok-name '<its name in Grok>' 再运行一次。地址由小写字母和数字组成，用单个 '-' 连接，\n最多 34 个字符（例如 Nova 用 nova）；你的 agent 靠它找到这个 Bot，以后不能更改。%s
+install.record_failed	注意：无法更新 %s；./update.sh 会询问这一步
+install.bootstrap_failed	launchctl bootstrap 失败
+install.up_then_died	relay 报告了 'agent-relay up'，但现在已经不在运行
+install.no_up	relay 在 10 秒内没有报告 'agent-relay up'
+install.rollback_bad	%s 中保存的副本没有通过校验；没有恢复任何东西，请手动恢复
+install.unload_failed	无法卸载 relay 服务；之前的文件仍保留在 %s
+install.restore_files_failed	无法从 %s 放回之前的文件
+install.previous_not_up	之前的 relay 没有重新启动；请查看 %s
+install.interrupted	已中断；正在恢复之前的 relay
+install.not_fully_restored	之前的 relay 没有完全恢复；请看上面的输出
+install.unfinished_switch	上一次切换 relay 没有完成；先恢复之前的 relay
+install.backup_failed	无法保存当前 relay 的副本；没有任何改动
+install.prepare_failed	无法准备新的 relay；没有任何改动
+install.relay_up	relay 已启动（日志：%s）
+install.last_log	最后几行日志：
+install.restoring	正在恢复之前的 relay
+install.restored	之前的 relay 已恢复
+install.reg_no_process	无（relay 服务没有正在运行的进程）
+install.registered	relay 已注册为 %s
+install.reg_nothing	无（%s）
+install.reg_timeout	无（新的 relay 在 %s 秒内没有报告注册）
+install.registered_other	relay 注册成了 %s，而不是 %s；团队里可能有别的会话在用这个名字（reason-network who --all）。relay 会继续运行，但收不到发给 %s 的邮件；见 README.zh-CN.md「常见问题」
+install.new_registered_other	新的 relay 注册成了 %s，而不是 %s；团队里可能有别的会话在用这个名字（reason-network who --all）
+install.need_team_key	缺少团队或签名密钥；请先运行 ./install.sh --name <team-name>
+install.no_engine	Reason Network 没有安装；请先完成完整安装
+install.no_team	还没有加入团队；请先完成完整安装
+install.routine_intro	[GROK-UI] 用户：在 Grok Bot 里新建一个由 webhook 触发的 routine，粘贴下面的提示词。Bot 会在 [BOT-CLOUD]（它的云电脑）上执行：
+install.routine_panel	之后 routine 面板会显示一个 Webhook URL 和一个密钥。
+install.webhook_no_tty	当前不是终端，无法在这里输入这两个值。
+install.webhook_run_later	[LOCAL] 用户：在你 Mac 上的这个仓库里运行   %s   ，在那里粘贴这两个值（绝不要粘贴到聊天里）。
+install.ask_url	Webhook URL：
+install.ask_key	Webhook 密钥（输入时不显示）：
+install.url_https	Webhook URL 必须以 https:// 开头（密钥放在请求头里传输）
+install.both_required	两个值都必须填写
+install.release_failed	%s。没有打印云端设置提示词；等这个 checkout 与已发布的版本一致后，再运行 ./install.sh --cloud-prompt
+install.cloud_intro	[GROK-UI] 用户：把下面的内容作为一条消息发给 Grok Bot。Bot 会在 [BOT-CLOUD]（它的云电脑）上执行。第一行是邀请，在 [LOCAL]（你的 Mac）在线时 24 小时内有效：
+install.copy_key	[GROK-UI] 用户：批准 CopyToBox，把 [LOCAL] %s 复制到 [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key。之后由负责安装的 agent 在 [LOCAL] 上运行 ./check.sh。
+install.bot_address_cloud	Bot 地址：%s（云端会话 %s、%s）
+install.bot_address	Bot 地址：%s
+install.refresh_copies	各仓库 AGENTS.md 里的回复约定副本会保留旧文字，直到你运行
+install.rotate_unconfigured	relay 还没有配置；请先完成 ./install.sh（首次安装会生成新密钥）
+install.rotate_read_failed	无法读取 %s；密钥没有改动
+install.rotate_inline	%s 里直接写了 OUTBOUND_KEY，relay 会优先用它而不是 %s；删掉那一行后再更换密钥
+install.rotate_other_file	%s 没有从 %s 加载密钥（OUTBOUND_KEY_FILE）；改好那一行后再更换密钥
+install.rotate_warning	这会替换 %s 并重启 relay。在 [BOT-CLOUD] 拿到新密钥之前，\nrelay 会拒收 Bot 的回复，云端的 fetch 也会报告签名错误。
+install.ask_rotate	现在更换签名密钥吗？[y/N] 
+install.rotate_stopped	已停止；密钥没有改动
+install.rotate_no_tty	当前不是终端：没有任何改动。加上 --yes 再运行一次即可更换。
+install.keygen_failed	无法生成新密钥；旧密钥没有改动
+install.key_written	新的签名密钥已写入 %s（权限 600）
+install.rotate_copy	[GROK-UI] 用户：让 Grok Bot 用 CopyToBox 复制新密钥，并批准这次复制：\n  来源 [LOCAL] %s\n  目标 [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key（替换旧文件），然后在那里对它执行 chmod 600。\n  密钥不能出现在聊天里。
+install.rotate_after	然后在 [LOCAL] 上运行 ./check.sh，并发一条测试消息（README.zh-CN.md「验证」）。\n此前已转发、但 [BOT-CLOUD] 还没取走的邮件带着旧签名：fetch 会报告 mismatch，且不会重新投递；\n请发件人重新发送（README.zh-CN.md「更换密钥」）。
+install.rotate_leak	如果 Webhook URL 或密钥也可能已泄露：在 [GROK-UI] 里重新生成密钥（或重建 routine），\n然后在 [LOCAL] 上运行   %s   。
+install.rotate_restart_failed	relay 没有重启；请看上面的日志，然后运行 ./install.sh --webhook
+install.purge_symlink	拒绝通过符号链接删除：%s；没有删除任何东西
+install.purge_racing	删除时不断出现新的副本（有邮件正在到达）；请再运行一次 --purge-copies
+install.purged	已删除 %s 份保留的消息副本（位于 %s）
+install.purge_after	以后对这些消息的重新转发请求都会得到 no-copy；发件人需要重新发送。\n消息正文也保留在引擎数据库（~/.reason/network/network.db）和 [BOT-CLOUD] 上；见 README.zh-CN.md「安全与隐私」。
+install.need_name	需要 --name <team-name>（用 --help 查看用法）
+install.need_macos	[LOCAL] 这个安装程序需要 macOS（Apple Silicon 或 Intel）
+install.no_sudo	请以当前登录的 Mac 用户运行，不要用 sudo
+install.bad_home	HOME 必须是可写的用户主目录，并且是绝对路径
+install.missing_tool	缺少 %s；请先查看 README.zh-CN.md「准备」再重试
+install.python_broken	python3 无法启动；请先完成或修复它的安装再重试
+install.python_old	需要带 ssl 和 sqlite3 的 Python 3.9+；请安装它并把 python3 加入 PATH
+install.fetch_dir	%s 需要一个已存在的空目录
+install.no_gui	没有 macOS 图形登录会话；请先以这个用户登录 Mac 桌面
+install.custom_rn_home	不支持自定义 REASON_NETWORK_HOME；请使用默认的用户配置，或先停下来检查现有部署
+install.repo_url	%s 必须是无需云端凭据即可访问的公开 HTTPS 克隆地址
+install.env_names	%s。安装程序只管理 <name>、<name>-cloud、<name>-inbox；请让 LISTEN_NAME/CLOUD_NAME/INBOX_NAME 对应一致，或把三行都删掉，然后再运行
+install.recorded_other	这台 Mac 安装时用的 Bot 地址名是“%s”（记录在 %s），不是“%s”。不支持改名：请用 --relay-name %s 或不带 --relay-name 再运行，或者连同身份一起卸载（README.zh-CN.md「卸载」）后重新安装。
+install.env_other	这台 Mac 安装时用的 Bot 地址名是“%s”，但 %s 现在写的是“%s”。不支持改名：请把 LISTEN_NAME/CLOUD_NAME/INBOX_NAME 改回“%s”，或者连同身份一起卸载（README.zh-CN.md「卸载」）后重新安装。
+install.other_engine	%s 已经有一个 reason-network；使用 %s 之前请先检查那个安装
+install.engine_older	现有的 Reason Network 是 %s；这个版本需要 %s。请运行 ./update.sh 升级（它会保留备份，失败时回滚）；现有版本没有被覆盖
+install.engine_unsupported	现有的 Reason Network 是 %s；这个版本支持 %s，不会降级，也不会替换更新的或无法识别的引擎。请先检查那个安装；它没有被改动
+install.unknown_version	未知版本
+install.label_nothing	还没有可以记录名字的安装：请先用 ./install.sh --name <team-name> --relay-name <address> --grok-name '<its name in Grok>' 安装；没有记录任何东西
+install.not_configured	relay 还没有配置；请运行 ./install.sh --webhook
+install.no_plist	缺少 relay 登录服务；请运行 ./install.sh --webhook
+install.not_switched	relay 没有切换；请看上面的输出
+install.name_rule	名字必须是 1-40 个小写字母和数字，用单个 '-' 连接（开头和结尾不能是 '-'，也不能连续出现：Reason Network 会把它们合并）
+install.step_network	1/6 网络
+install.relay_unreachable	无法连接 relay %s（HTTP '%s'；%s）。请允许直连整个 iroh.link 和 reasonmachines.com 域名，并把它们排除在 HTTPS 解密之外。确认 curl 检查输出 200 后再运行一次。见 README.zh-CN.md「常见问题」。
+install.relay_ok	正常（%s）
+install.relay_unchecked	未检查 relay：%s。如果引擎连不上，请允许直连整个 iroh.link 和 reasonmachines.com 域名；见 README.zh-CN.md「常见问题」。
+install.targets_failed	relay_targets.py 运行失败
+install.step_engine	2/6 Reason Network %s
+install.engine_present	已经安装：%s
+install.engine_installed	已安装 %s，位置：%s
+install.path_note	注意：请在 shell 启动文件里把 %s 加入 PATH；见 README.zh-CN.md「准备」
+install.step_team	3/6 团队
+install.team_other	现有团队的 person 是“%s”，这次要求的是“%s”；修改前请先检查现有部署。任何名字都不能原地改
+install.team_present	已经在团队中
+install.cfg_failed	无法写入 %s
+install.who_failed	无法列出团队的会话（reason-network who --all --json 失败），所以没有检查 Bot 地址名“%s”；其他都没有改动，请再运行一次
+install.step_wiring	4/6 接入本机的 agent
+install.ask_apply	应用这些更改吗？[y/N] 
+install.apply_stopped	已在应用前停止。加上 --yes 再运行一次即可应用。
+install.apply_no_tty	当前不是终端：没有应用任何更改。请查看上面的计划，然后加上 --yes 再运行一次。
+install.reopen_sessions	已经打开的 Claude Code / Codex 会话需要重新打开。
+install.step_key	5/6 签名密钥和 routine webhook
+install.grok_not_recorded	注意：没有记录 Grok 名字（%s）；之后请运行 ./install.sh --grok-name '<name>'
+install.step_cloud	6/6 云端
+install.help	agent-mesh：一次完成 Mac 端安装。\n  ./install.sh --name <团队名> --relay-name <地址名> --grok-name <名字> [--machine mac] [--yes] [--lang en|zh-CN]\n  ./install.sh --grok-name <名字>  记录或修改 Bot 在 Grok 里显示的名字（只是标签，地址不变）\n  ./install.sh --webhook        填写（或修改）routine 的 Webhook URL 和密钥，然后（重新）启动 relay\n  ./install.sh --cloud-prompt   重新打印邀请和要发给 Grok Bot 的文字\n  ./install.sh --rotate-key     更换签名密钥并重启 relay，打印把它复制到云端的方法\n  ./install.sh --purge-copies   删除 relay 保留的已转发消息副本（之后补发会回复 no-copy）\n  --repo-url https://...       Bot 云电脑能访问的公开发布地址\n  ./install.sh --version      打印 agent-mesh 和固定的 Reason Network 版本；不安装\n  ./install.sh --restart-relay  （供 update.sh 使用）安装这个 checkout 的 relay 并重启；没有启动或没有以自己的\n                                名字注册时回滚\n  ./install.sh --preflight      （供 update.sh 使用）检查这台 Mac 和现有安装；不做任何改动\n  ./install.sh --fetch-engine DIR  （供 update.sh 使用）下载这台 Mac 用的固定版 Reason Network，核对 sha256 和\n                                版本后解压到 DIR；不改动其他内容\n--lang 在所有模式下选择提示词和终端文字的语言。默认依次取安装时记录的语言、AGENT_MESH_LANG，否则 en。\n团队名也是你在团队里的名字：1～40 个字符，小写字母和数字，用单个 '-' 连接，不要用真名。团队建立后不能再改。\n--relay-name 选定 Bot 的地址 <团队名>/<名字>（云端使用 <名字>-cloud 和 <名字>-inbox）：1～34 个字符，字符规则\n相同，不能是 terminal。用 Bot 自己的名字，方便 agent 区分不同的 Bot。新安装必须提供；已有安装保留原来的名字\n（包括 bot）。一经选定不能修改。\n--grok-name 是 Grok 里显示的 Bot 名字，任何语言都可以；按原样保存，不用于路由。\ncheck.sh 和回复约定显示为 <团队名>/<地址名> → Grok: <名字>。\n它做什么：安装 Reason Network，建立你的私有团队，接入本机 agent（先展示计划），生成签名密钥，询问 routine 的\nwebhook，把 relay 安装为登录服务，最后打印要发给 Grok Bot 的内容。可以放心重复运行。
+install.option_value	install：%s 需要一个值
+install.see_help	运行 ./install.sh --help 查看选项

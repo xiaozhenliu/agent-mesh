@@ -20,7 +20,8 @@
 - 消息正文支持多种语言，但团队/person 标识符仍用 ASCII。`text_len` 按 Python 的 Unicode 码点数计数，哈希按 UTF-8 字节计算。已签名文本不能翻译或归一化。
 - 各份提示词文档（`routine`、`cloud-setup`、`cloud-uninstall`）各自只放一个未标语言或标为 `text` 的围栏代码块。安装器和卸载器直接读取该块，shell 里不再保存另一份提示词。云端模板的 `<repo-url>`、`<team-name>`、`<relay-name>`、`<mac-home>`、`<invite-link>` 在各语言中保持一致；routine 模板只用 `<team-name>` 和 `<relay-name>`，名字为 `bot` 时渲染结果必须与以前逐字节相同（测试保留旧摘要）。邀请单独打印，由接收的 agent 填入。云端卸载模板使用 `<level>`、`<mode>`、`<team-name>`、`<mac-machine>`、`<relay-name>`、`<script-sha256>` 和 `<cloud-script>`；`<cloud-script>` 替换为填好的 `box/rn-cloud-uninstall.sh`，云端脚本只保存这一份。
 - 增加语言时，先补齐成对指南、导航、渲染器支持、安装器校验和测试，再声明支持。未知语言代码明确报错。
-- 诊断输出和协议字段暂时保持英文。`--lang` 选择提示词语言，不翻译 Reason Network 引擎或 CLI 诊断。
+- `--lang`（没有时依次取记录中的语言、`AGENT_MESH_LANG`）同时选择提示词和 `install.sh`、`update.sh`、`check.sh`、`uninstall.sh` 及其辅助脚本的终端文字。这些文字放在 `scripts/messages/<语言>/*.tsv`，每行 `key<TAB>text`，由 `scripts/msg.sh`（`t`/`tq`）和 `scripts/messages.py`（`t`）读取。文字是可信的格式串：转换只允许 `%s` 和 `%%`，转义只允许 `\n`、`\t`、`\\`；值只作为 `%s` 的参数传入，不拼进格式串。各语言的 key 相同，每个 key 的 `%s` 个数相同；英文输出保持原样。被机器读取的输出保持英文、不翻译：脚本读取的状态词、哈希、`agent-mesh-result`、`engine:`、`STOP:`、`cloud-setup:`、`check.sh` 的 `PASS`/`FAIL`/`WARN`/`RESULT` 前缀、确认口令、发给 Grok Bot 的命令块和消息、日志、`[LOCAL]`/`[GROK-UI]`/`[BOT-CLOUD]` 标识，以及所有云端脚本的输出。Reason Network 引擎和 CLI 诊断不翻译。
+- 需要在 `[BOT-CLOUD]` 上做迁移的版本，把迁移放进 `box/rn-cloud-setup.sh --upgrade-engine` 或 `box/rn-cloud-update.sh` 的 `--after-checkout` 部分：每次云端更新都会从新 checkout 运行这两处。
 
 ## 离线检查
 
@@ -32,10 +33,10 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 test_relay.py
 python3 box/test_rn_fetch.py
 node dsh/reason-network-bridge.test.mjs
-for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh box/rn-cloud-uninstall.sh; do bash -n "$script" || exit; done
+for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh box/rn-cloud-update.sh box/rn-cloud-uninstall.sh; do bash -n "$script" || exit; done
 ```
 
-dsh 测试也可以用[插件指南](dsh/README.zh-CN.md)中的 App 自带运行时。安装器和卸载器测试使用临时 home 和模拟的系统、网络、服务、引擎命令，不安装软件、不删除临时目录以外的东西，也不接触真实服务。文档检查覆盖语言配对、相对链接和锚点、提示词占位符、AGENTS 模板里的生成块和协议向量；不能代替人工核对翻译含义。
+dsh 测试也可以用[插件指南](dsh/README.zh-CN.md)中的 App 自带运行时。安装器和卸载器测试使用临时 home 和模拟的系统、网络、服务、引擎命令，不安装软件、不删除临时目录以外的东西，也不接触真实服务。文档检查覆盖语言配对、相对链接和锚点、提示词占位符、AGENTS 模板里的生成块、协议向量和消息目录（各语言 key 与 `%s` 个数一致、只用允许的转换和转义、每个 key 都被使用、被使用的 key 都存在）；不能代替人工核对翻译含义。
 
 只预览提示词，不安装、不读取凭证、不创建邀请、不联网：
 

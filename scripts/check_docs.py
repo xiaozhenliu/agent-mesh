@@ -21,8 +21,66 @@ def anchors(text):
     return result
 
 
+MESSAGES = ROOT / "scripts/messages"
+LANGUAGES = ("en", "zh-CN")
+KEY = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+")
+SHELL_USE = re.compile(r"(?<![\w-])(?:t|tq|die|ask|usage_error)[ \t]+([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)\b")
+PY_USE = re.compile(r"(?<![\w.])t\(\s*[\"']([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)[\"']")
+DYNAMIC = (re.compile(r"(?<![\w.])t\(\s*f?[\"']([a-z][a-z0-9_.]*)(?:[\"']\s*\+|\{)"),
+           re.compile(r"\b([a-z][a-z0-9_]*\.[a-z0-9_]*)\$"))
+
+
+def code_files():
+    for path in sorted(ROOT.rglob("*")):
+        if path.is_file() and MESSAGES not in path.parents and not path.name.startswith("test_"):
+            if path.suffix in (".sh", ".py") or path.name in ("install.sh", "update.sh", "check.sh", "uninstall.sh"):
+                yield path
+
+
+def check_messages():
+    errors, tables = [], {}
+    for lang in LANGUAGES:
+        table = {}
+        for path in sorted((MESSAGES / lang).glob("*.tsv")):
+            where = path.relative_to(ROOT)
+            for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+                if not line:
+                    continue
+                key, sep, text = line.partition("\t")
+                if not sep or not KEY.fullmatch(key):
+                    errors.append(f"{where}:{number}: expected key<TAB>text with a dotted lowercase key")
+                    continue
+                if key in table:
+                    errors.append(f"{where}:{number}: duplicate key {key}")
+                if re.search(r"%(?!s|%)", text.replace("%%", "")):
+                    errors.append(f"{where}:{number}: {key}: only %s and %% are allowed")
+                if re.search(r"\\(?![nt\\])", text.replace("\\\\", "")):
+                    errors.append(f"{where}:{number}: {key}: only \\n, \\t and \\\\ are allowed")
+                table[key] = text
+        tables[lang] = table
+    en, zh = tables["en"], tables["zh-CN"]
+    for key in sorted(set(en) ^ set(zh)):
+        errors.append(f"messages: {key} is in only one language")
+    for key in sorted(set(en) & set(zh)):
+        if en[key].replace("%%", "").count("%s") != zh[key].replace("%%", "").count("%s"):
+            errors.append(f"messages: {key} has a different number of %s in en and zh-CN")
+    code = {path: path.read_text(encoding="utf-8", errors="replace") for path in code_files()}
+    prefixes = {prefix for text in code.values() for pattern in DYNAMIC for prefix in pattern.findall(text)}
+    used = set()
+    for path, text in code.items():
+        for key in (SHELL_USE if path.suffix != ".py" else PY_USE).findall(text):
+            used.add(key)
+            if key not in en and not key.startswith(tuple(prefixes)):
+                errors.append(f"{path.relative_to(ROOT)}: unknown message key {key}")
+    joined = "\n".join(code.values())
+    for key in sorted(set(en) - used):
+        if key not in joined and not key.startswith(tuple(prefixes)):
+            errors.append(f"messages: {key} is not used")
+    return errors
+
+
 def check_docs():
-    errors = []
+    errors = check_messages()
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         errors.append("VERSION: expected major.minor.patch")
@@ -115,5 +173,5 @@ if __name__ == "__main__":
         print(f"FAIL {error}")
     if not errors:
         print("PASS release version, bilingual pairs, local links and anchors, prompt placeholders, template blocks, "
-              "protocol vectors")
+              "protocol vectors, message catalogs")
     raise SystemExit(bool(errors))

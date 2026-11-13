@@ -45,7 +45,7 @@ pinned_sha256() {   # the same table is in install.sh; change both with VERSION
 fetch_engine() {   # $1: empty directory; leaves the verified binary at $1/reason-network
   local want got
   want="$(pinned_sha256 "$VERSION/$t")" || die "no pinned sha256 for Reason Network $VERSION on $t"
-  curl -fsSL "https://github.com/reason-machines/reason-network/releases/download/$VERSION/reason-network-$t.tar.gz" \
+  curl -fsSL --connect-timeout 20 --max-time 3600 "https://github.com/reason-machines/reason-network/releases/download/$VERSION/reason-network-$t.tar.gz" \
     -o "$1/e.tgz" || die "could not download Reason Network $VERSION; nothing was changed"
   got="$(sha256sum "$1/e.tgz" | cut -d' ' -f1)"
   [ "$got" = "$want" ] || die "checksum mismatch for reason-network-$t.tar.gz (expected $want, got $got); nothing was changed. Run again to download it again; if it keeps failing, stop and tell the user"

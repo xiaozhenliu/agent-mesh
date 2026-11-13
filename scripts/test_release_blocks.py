@@ -1,5 +1,6 @@
 """The release check and the cloud bash blocks against real git repositories in a temporary directory."""
 import hashlib
+import importlib.util
 import os
 import re
 import shutil
@@ -13,6 +14,26 @@ from render_prompt import ROOT, render_prompt
 
 CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py")
 TAG = "v" + (ROOT / "VERSION").read_text().strip()
+UPDATE = "box/rn-cloud-update.sh"
+REQ = "0123456789abcdef"
+ENGINE_STEP = 'bash "$A/box/rn-cloud-setup.sh" --upgrade-engine </dev/null'
+
+
+def rn_engine():
+    spec = importlib.util.spec_from_file_location("rn_engine", ROOT / "box/rn-engine.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def stubbed_update_script():
+    build = next(iter(rn_engine().PINNED_BUILDS["0.12.17"].values()))
+    lines = ["engine: reason-network 0.12.17 running (daemon pid 4321, started 2026-11-12T08:00:00Z)",
+             f"engine: pinned build {build} at box/bin/engine/reason-network", "engine: launcher ok"]
+    stub = "{ " + "; ".join(f"echo '{line}'" for line in lines) + "; [ ! -f \"$A/.git/engine-fails\" ]; } </dev/null"
+    text = (ROOT / UPDATE).read_text()
+    assert text.count(ENGINE_STEP) == 1
+    return text.replace(ENGINE_STEP, stub)
 
 
 @unittest.skipUnless(shutil.which("git") and shutil.which("sha256sum"), "needs git and sha256sum")
@@ -55,7 +76,23 @@ class ReleaseBlocks(unittest.TestCase):
             path = self.src / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes((ROOT / name).read_bytes() + (b"\n# old\n" if old else b""))
+        (self.src / UPDATE).write_text((ROOT / UPDATE).read_text() if old else stubbed_update_script())
+        (self.src / UPDATE).chmod(0o755)
         (self.src / "README.md").write_text("old\n" if old else "release\n")
+        (self.src / "VERSION").write_text("0.0.1\n" if old else TAG[1:] + "\n")
+
+    def retag(self, update_text=None, version=None, tag=TAG):
+        if update_text is not None:
+            (self.src / UPDATE).write_text(update_text)
+        if version is not None:
+            (self.src / "VERSION").write_text(version + "\n")
+        self.git("-C", str(self.src), "commit", "-q", "-am", f"retag {tag}")
+        self.git("-C", str(self.src), "tag", "-f", "-a", "-m", "release", tag)
+        self.git("-C", str(self.src), "push", "-q", "-f", str(self.bare), f"refs/tags/{tag}")
+        commit = self.rev(self.src, "HEAD")
+        if tag == TAG:
+            self.commit = commit
+        return commit
 
     def existing_clone(self, branch=False):
         self.git("clone", "-q", self.url, str(self.clone))
@@ -78,22 +115,27 @@ class ReleaseBlocks(unittest.TestCase):
         return subprocess.run(["bash", "-c", text], cwd=self.base, env=self.env, capture_output=True, text=True,
                               timeout=120)
 
-    def update_block(self, commit=None, sums=None, engine=0, message=False):
+    def update_block(self, commit=None, sums=None, message=False, call="cloud_step"):
         harness = f'''set -u
+. "{ROOT}/scripts/msg.sh"
 state() {{ :; }}
 read_reply() {{ REPLY_TEXT=""; }}
 die() {{ exit 0; }}
 REL_TAG={TAG}; REL_COMMIT={commit or self.commit}; S_EPIN=0.12.17
 REL_SUMS="$(cat "$1")"$'\\n'
 eval "$(cat "$2")"
-cloud_step {engine}
+new_req() {{ echo {REQ}; }}
+{call}
 '''
         sums_file = self.base / "sums"
         sums_file.write_text(self.sums if sums is None else sums)
         script = (ROOT / "update.sh").read_text()
-        start = script.index("\ncloud_step() {") + 1
         func = self.base / "cloud_step.sh"
-        func.write_text(script[start:script.index("\nprompt_step() {", start) + 1])
+        parts = []
+        for name, end in (("cloud_block", "prompt_text"), ("bootstrap_message", "cloud_auto")):
+            start = script.index(f"\n{name}() {{") + 1
+            parts.append(script[start:script.index(f"\n{end}() {{", start) + 1])
+        func.write_text("".join(parts))
         out = subprocess.run(["bash", "-c", harness, "harness", str(sums_file), str(func)],
                              env=self.env, capture_output=True, text=True, timeout=60, check=True).stdout
         if message:
@@ -116,13 +158,23 @@ cloud_step {engine}
         return sorted(p.name for p in self.ws.iterdir() if p.name.startswith(".agent-mesh-setup."))
 
     def test_release_check_reads_the_tag_commit_and_checksums(self):
+        self.retag((ROOT / UPDATE).read_text())
         result = self.release()
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual(lines[:2], [f"tag {TAG}", f"commit {self.commit}"])
         self.assertEqual(lines[2:], ["sum " + line for line in self.sums.splitlines()])
 
+    def test_release_check_fails_when_only_the_update_script_differs(self):
+        result = self.release()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"{UPDATE} in this checkout differs from the release {TAG}", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.retag((ROOT / UPDATE).read_text())
+        self.assertEqual(self.release().returncode, 0)
+
     def test_release_check_fails_for_a_missing_tag_or_different_files(self):
+        self.retag((ROOT / UPDATE).read_text())
         self.git("-C", str(self.bare), "tag", "-d", TAG)
         result = self.release()
         self.assertEqual(result.returncode, 1)
@@ -245,9 +297,10 @@ cloud_step {engine}
         self.assertNotIn(f"DONE {TAG}", result.stdout)
 
     def test_update_block_with_the_engine_step_stops_when_the_step_fails(self):
+        self.retag((ROOT / UPDATE).read_text())
         self.existing_clone()
-        block = self.update_block(engine=1)
-        self.assertIn('bash "$A/box/rn-cloud-setup.sh" --upgrade-engine </dev/null', block)
+        block = self.update_block()
+        self.assertIn('exec bash "$A/box/rn-cloud-update.sh" --after-checkout "$TAG" "$COMMIT" "$REQ"', block)
         tools = self.base / "tools"
         tools.mkdir()
         (tools / "uname").write_text("#!/bin/sh\necho Darwin\n")
@@ -256,6 +309,105 @@ cloud_step {engine}
         result = self.run_block(block)
         self.assert_stopped(result, "the engine step failed", self.commit)
         self.assertIn("requires Linux", result.stdout + result.stderr)
+
+    def run_update(self, *args, script=None):
+        script = script or self.clone / UPDATE
+        return subprocess.run(["bash", str(script), *args], cwd=self.base, env=self.env, capture_output=True,
+                              text=True, timeout=120)
+
+    def engine_reply_check(self, text):
+        return subprocess.run([sys.executable, str(ROOT / "scripts/deploy_state.py"), "cloud-reply", "--commit",
+                               self.commit, "--tag", TAG, "--engine"], input=text, env=self.env,
+                              capture_output=True, text=True, timeout=60)
+
+    def newer_clone(self):
+        self.write_files(old=False)
+        newer = self.retag(version="99.0.0", tag="v99.0.0")
+        self.git("clone", "-q", self.url, str(self.clone))
+        self.git("-C", str(self.clone), "checkout", "-q", "--detach", newer)
+        return newer
+
+    def test_update_block_reports_the_request_first_and_never_downgrades(self):
+        self.existing_clone()
+        (self.clone / "README.md").write_text("mine\n")
+        result = self.run_block(self.update_block())
+        self.assertEqual(result.stdout.splitlines()[0], f"agent-mesh-result request {REQ}")
+        self.assert_stopped(result, "has local changes", self.old)
+        shutil.rmtree(self.clone)
+        newer = self.newer_clone()
+        result = self.run_block(self.update_block())
+        self.assertEqual(result.stdout.splitlines()[0], f"agent-mesh-result request {REQ}")
+        self.assert_stopped(result, f"this clone is at 99.0.0, newer than {TAG}", newer)
+        self.assertNotIn("origin:", result.stdout)
+
+    def test_first_update_message_explains_and_carries_the_block(self):
+        text = self.update_block(message=True, call=f"bootstrap_message {REQ}")
+        self.assertTrue(text.startswith("This is my update request from my Mac (sent by ./update.sh)."))
+        self.assertIn(f"REQ={REQ}", text)
+        self.assertTrue(text.rstrip("\n").endswith("AGENT_MESH_UPDATE"))
+
+    def test_update_script_runs_the_new_checkouts_copy_and_its_reply_is_recorded(self):
+        self.existing_clone()
+        self.assertEqual((self.clone / UPDATE).read_text(), (ROOT / UPDATE).read_text())
+        result = self.run_update(TAG, self.commit, REQ)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], f"agent-mesh-result request {REQ}")
+        self.assertEqual(lines[-1], f"agent-mesh-result DONE {TAG}")
+        self.assertIn("engine: launcher ok", lines)
+        self.assertEqual(self.head(), self.commit)
+        self.assertEqual(self.engine_reply_check(result.stdout).returncode, 0)
+        again = self.run_update(TAG, self.commit, REQ)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(self.engine_reply_check(again.stdout).returncode, 0)
+
+    def test_update_script_stops_before_changing_anything(self):
+        cases = {
+            "bad tag": (lambda: None, ("1.2.3", None, REQ), "the tag must look like v1.2.3"),
+            "bad commit": (lambda: None, (TAG, "ABC", REQ), "the commit must be 40 lowercase hex"),
+            "uppercase commit": (lambda: None, (TAG, "upper", REQ), "the commit must be 40 lowercase hex"),
+            "bad request": (lambda: None, (TAG, None, "xyz; rm"), "the request id must be 8 to 32"),
+            "local changes": (lambda: (self.clone / "README.md").write_text("mine\n"), (TAG, None, REQ),
+                              "has local changes"),
+            "other commit": (lambda: None, (TAG, "old", REQ), "points to"),
+            "other local tag": (lambda: self.git("-C", str(self.clone), "tag", "-f", TAG, "v0.0.1"), (TAG, None, REQ),
+                                f"could not fetch {TAG}, or a different tag"),
+            "tag missing": (lambda: self.git("-C", str(self.bare), "tag", "-d", TAG), (TAG, None, REQ),
+                            f"could not fetch {TAG}"),
+        }
+        for label, (prepare, args, why) in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                self.existing_clone()
+                prepare()
+                tag, commit, req = args
+                commit = {None: self.commit, "old": self.old, "upper": self.commit.upper()}.get(commit, commit)
+                result = self.run_update(tag, commit, req)
+                self.assert_stopped(result, why, self.old)
+                self.assertEqual("agent-mesh-result request" in result.stdout, label != "bad request")
+        self.setUp()
+        self.existing_clone()
+        (self.clone / "box/extra").write_text("x\n")
+        result = self.run_update(TAG, self.commit, REQ)
+        self.assertIn("changed files in", result.stdout)
+        self.assertIn("?? box/extra", result.stdout)
+        self.assertEqual(self.run_update(TAG, self.commit).returncode, 2)
+
+    def test_update_script_never_downgrades(self):
+        newer = self.newer_clone()
+        result = self.run_update(TAG, self.commit, REQ)
+        self.assert_stopped(result, "newer than", newer)
+
+    def test_update_script_keeps_the_new_checkout_when_the_engine_step_fails(self):
+        self.existing_clone()
+        (self.clone / ".git/engine-fails").write_text("")
+        result = self.run_update(TAG, self.commit, REQ)
+        self.assert_stopped(result, f"the engine step failed (see the lines above); the clone stays at {TAG}",
+                            self.commit)
+        self.assertEqual(self.engine_reply_check(result.stdout).returncode, 1)
+        (self.clone / ".git/engine-fails").unlink()
+        result = self.run_update(TAG, self.commit, REQ)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_setup_block_clones_the_release_into_a_new_directory(self):
         result = self.run_block(self.setup_block())

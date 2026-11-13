@@ -1,0 +1,37 @@
+state.unreadable_unknown	update：%s 无法读取（%s）；云端和提示词按"未知"处理
+state.format_unknown	update：%s 格式无法识别；云端和提示词按"未知"处理
+state.txn_damaged	update：上次未完成更新的记录已损坏，已忽略；如果 Grok Bot 里的 routine 仍处于暂停状态，请恢复它
+state.renamed_not_recorded	update：Bot 地址名从 %s（这台 Mac 安装时记录）变成了 %s；不支持改名，没有记录任何内容
+state.checkout_moved	update：显示 %s 之后这个 checkout 又变了；没有记录任何内容，请重新运行 ./update.sh
+state.record_moved	update：显示之后 %s 的记录又变了；没有记录任何内容，请重新运行 ./update.sh
+state.env_name_differs	%s 使用的 Bot 地址名是 %s，不是 %s
+state.unreadable_strict	%s 无法读取（%s）；没有记录任何内容。运行 ./update.sh --plan 查看它的报告，或从备份恢复该文件
+state.unreadable_plain	%s 无法读取（%s）。运行 ./update.sh --plan 查看它的报告，或从备份恢复该文件
+state.format_strict	%s 格式无法识别；没有记录任何内容
+state.format_plain	%s 格式无法识别
+state.renamed	Bot 地址名从 %s 变成了 %s；不支持改名，没有记录任何内容
+state.no_txn	update：没有可修改的未完成更新
+release.fetch_failed	无法获取发布版 %s（来源 %s；可能尚未发布，或网络有问题）：%s；没有做任何改动
+release.not_commit	发布版 %s（来源 %s）没有指向一个提交；没有做任何改动
+release.missing_file	发布版 %s 里没有 %s；没有做任何改动
+release.differs	这个 checkout 里的 %s 与发布版 %s 不同；云端只安装发布版，请先把这个 checkout 更新到该版本。没有做任何改动
+release.check_failed	无法核对发布版 %s（来源 %s）：%s；没有做任何改动
+reply.stop	回信里有 STOP 行
+reply.no_done	回信里没有 'agent-mesh-result DONE %s' 这一行
+reply.no_commit	回信里没有 'agent-mesh-result commit <40 位十六进制>' 这一行
+reply.other_commit	回信显示的提交是 %s，不是 %s
+reply.no_sum	回信里没有 'agent-mesh-result sum <sha256>  %s' 这一行
+reply.sum_differs	%s 的校验和与这个 checkout 不同
+reply.no_engine	回信里没有 'engine: reason-network <版本> running (daemon pid ...' 这一行
+reply.other_engine	云端引擎运行的是 %s，不是 %s
+reply.no_build	回信里没有 'engine: pinned build <sha256> at box/bin/engine/reason-network' 这一行
+reply.unpinned_build	云端引擎不是固定的 Reason Network %s 构建
+reply.no_launcher	回信里没有 'engine: launcher ok' 这一行
+reply.mismatch	  不一致：%s
+reply.match	  一致：提交、校验和
+reply.match_engine	  一致：提交、校验和与引擎 %s
+request.no_env	无法读取 %s（%s）；请先运行 ./install.sh
+request.no_person	%s 里没有 PERSON 行；请重新运行 ./install.sh --webhook
+request.no_db	%s 不存在；这台 Mac 装了 Reason Network 吗？
+request.db_error	无法读取 %s：%s
+request.checkout_moved	发出更新请求之后这个 checkout 又变了；会重新发送请求

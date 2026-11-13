@@ -1,0 +1,264 @@
+uninstall.known_v011	3c810b5 至 v0.1.1
+uninstall.known_v041	v0.2.0 至 v0.4.1
+uninstall.known_untagged	一个没有标签的提交
+uninstall.source_team_list	团队列表
+uninstall.source_person	本机的 person
+uninstall.source_config	config.toml
+uninstall.source_env	relay env
+uninstall.with_note	%s（%s）
+uninstall.list_separator	、
+uninstall.outside_home	%s 在主目录之外
+uninstall.cannot_check	无法检查 %s：%s
+uninstall.is_symlink	%s 是符号链接
+uninstall.other_owner	%s 属于其他用户
+uninstall.resolves_outside	%s 实际指向主目录之外
+uninstall.cmd_not_found	%s：找不到
+uninstall.cmd_timeout	%s：%s 秒内没有响应
+uninstall.unexpected_output	意外的输出：%s
+uninstall.no_this_machine	团队列表里没有 'this machine' 这一行
+uninstall.rn_not_run	没有运行：Reason Network 的文件夹不安全（见 STOP 行）
+uninstall.rn_unsafe	%s；identity 和 all 级别会停止，也不会查询 Reason Network
+uninstall.plist_unreadable	无法读取（%s）
+uninstall.plist_label	的 Label 不同
+uninstall.plist_program	启动的不是安装在 ~/.local/lib/agent-mesh 的 relay
+uninstall.plist_env	的环境变量设置异常
+uninstall.plist_overrides	覆盖了 AGENT_RELAY_* 设置
+uninstall.plist_rn_home	使用了另一个 REASON_NETWORK_HOME
+uninstall.plist_foreign	%s %s：它不是 install.sh 写入的登录服务；请手动检查，不会删除任何东西
+uninstall.service_foreign	已加载的 %s 服务来自 %s，而不是 %s；它属于另一个主目录或是手动加载的，所以不会停止它
+uninstall.unknown_plist	未知的 plist
+uninstall.launchd_unknown	无法检查 %s 是否已加载：%s
+uninstall.agents_unlisted	无法列出 %s 来查找其他 relay：%s
+uninstall.foreign_service	登录服务 %s
+uninstall.ps_failed	无法列出进程来查找其他 relay：%s
+uninstall.foreign_process	进程 %s 正在运行 %s（不显示参数）
+uninstall.cannot_read	无法读取 %s：%s
+uninstall.name_unclear	%s；Bot 地址名不明确，所以 identity 和 all 级别会停止
+uninstall.cloud_machine_invalid	relay env 里的 CLOUD_MACHINE 不是有效的机器名
+uninstall.other_rn_bin	relay env 指定了另一个引擎（RN_BIN）；这里只使用 %s
+uninstall.record_unreadable	无法读取 %s
+uninstall.name_mismatch	relay env 里的 Bot 地址名是 %s，但这台 Mac 安装时用的是 %s（deployed.json）；identity 和 all 级别会停止
+uninstall.no_identity	这台 Mac 上没有 Reason Network 身份
+uninstall.engine_unusable	引擎不存在，或它的文件夹不安全
+uninstall.team_differs	不同来源的团队名不一致（%s）；identity 和 all 级别会停止
+uninstall.team_invalid	团队名 %s 不是有效的名字
+uninstall.update_running	./update.sh 正在运行（pid %s，%s）；请先等它完成
+uninstall.stale_lock	之前的 ./update.sh 留下了 %s；identity 和 all 级别会删除它
+uninstall.not_regular	%s 不是普通文件
+uninstall.dsh_unsafe	%s；dsh/mac-uninstall.sh 会通过它写入，所以 identity 和 all 级别会停止；请手动删除它
+uninstall.no_relay_program	没有 relay 程序
+uninstall.same_as_checkout	与这个 checkout 相同
+uninstall.unknown_layout	未知版本，布局相同
+uninstall.relay_sha	relay sha %s（%s）
+uninstall.with_record	%s；有 deployed.json（v0.4.0 或更新）
+uninstall.engine_upgrade_unfinished	有一次引擎升级没有完成（engine-upgrade.json）；~/.local/bin/reason-network 可能已是新版本。如果要保留引擎，请先运行 ./update.sh 把它回滚
+uninstall.rollback_left	之前有一次 relay 切换没有完成（存在 rollback/）；它会被删除，不会被恢复
+uninstall.names	%s、%s、%s；云端机器“%s”
+uninstall.names_default	%s、%s、%s（默认）；云端机器“%s”
+uninstall.inventory_title	agent-mesh 卸载：这台 Mac 上装了什么（还没有删除任何东西）
+uninstall.field_version	版本
+uninstall.field_team_person	团队/person
+uninstall.field_this_machine	本机
+uninstall.field_cloud	云端
+uninstall.field_team	团队
+uninstall.field_relay_names	relay 名字
+uninstall.field_relay	relay
+uninstall.field_queue	队列
+uninstall.field_dsh_bridge	dsh 桥接
+uninstall.field_other_members	其他成员
+uninstall.field_foreign	其他部署
+uninstall.field_custom_key	自定义密钥
+uninstall.field_note	注意
+uninstall.field_skipped	跳过
+uninstall.none	无
+uninstall.unknown	未知
+uninstall.unreadable	无法读取
+uninstall.present	存在
+uninstall.team_from	%s（来自 %s）
+uninstall.cloud_members	%s（%s 个成员：%s）
+uninstall.cloud_absent	不在团队中
+uninstall.team_left	这台 Mac 已经离开了它的团队
+uninstall.team_unlisted	无法列出：%s
+uninstall.service_unknown	未知（%s）
+uninstall.service_running	已加载，正在运行
+uninstall.service_stopped	已加载，没有运行
+uninstall.service_unloaded	没有加载
+uninstall.key_present	签名密钥存在
+uninstall.key_absent	没有签名密钥
+uninstall.webhook_set	已配置
+uninstall.webhook_unset	没有配置
+uninstall.relay_status	%s；webhook %s；%s
+uninstall.custom_key	%s（只报告，从不删除）
+uninstall.result_line	%s：%s
+uninstall.state_done	完成
+uninstall.state_skipped	跳过
+uninstall.state_absent	不存在
+uninstall.state_failed	失败
+uninstall.state_user_confirmed	用户已确认
+uninstall.state_user_pending	等待用户处理
+uninstall.plan_service	relay 登录服务和 plist
+uninstall.plan_program	relay 程序、临时文件、rollback/
+uninstall.plan_record	部署记录、更新锁、引擎备份（~/.local/lib/agent-mesh）
+uninstall.plan_settings	relay 设置和签名密钥（~/.config/agent-relay）
+uninstall.plan_state	relay 状态：队列、防重放记录、保留的副本
+uninstall.plan_logs	relay 日志
+uninstall.plan_dsh	dsh 桥接
+uninstall.plan_dsh_backups	dsh 桥接的备份和日志
+uninstall.plan_cloud_identity	云端：团队成员身份、身份、密钥、名字
+uninstall.plan_cloud_data	云端：inbox/、threads/、/workspace/agent-mesh
+uninstall.plan_team	这台 Mac 的团队成员身份
+uninstall.plan_wiring	agent 接入和引擎服务
+uninstall.plan_identity	Reason Network 身份和历史（~/.reason/network）
+uninstall.plan_engine	Reason Network 引擎（~/.local/bin/reason-network）
+uninstall.plan_routine	Grok routine（webhook URL 和密钥）
+uninstall.now_present	存在
+uninstall.now_absent	不存在
+uninstall.now_bot	Bot
+uninstall.now_grok_ui	Grok 界面
+uninstall.now_roster_in	在团队中
+uninstall.now_roster_left	已离开
+uninstall.now_roster_none	无身份
+uninstall.now_roster_unknown	未知
+uninstall.action_keep	保留
+uninstall.action_remove	删除
+uninstall.action_stop_remove	停止并删除
+uninstall.action_remove_dsh	删除（dsh/mac-uninstall.sh --no-restore）
+uninstall.action_bot_leaves	Bot 离开团队并删除它们
+uninstall.action_bot_removes	Bot 删除它们（先列出你的文件）
+uninstall.action_leave	离开
+uninstall.action_setup_remove	setup --remove
+uninstall.action_you_delete	由你删除
+uninstall.action_you_pause	由你暂停
+uninstall.level_program	program：删除 relay，保留身份、设置和密钥
+uninstall.level_identity	identity：另外让两台电脑都离开团队，并删除密钥和身份
+uninstall.level_all	all：另外删除日志、引擎和云端的数据
+uninstall.plan_header	== 计划 · 级别 %s
+uninstall.plan_header_residual	== 计划（仅残留）· 级别 %s
+uninstall.plan_listed_only	只列出、从不删除：这个文件夹、PATH 行、回复约定模板、外部收件箱文件夹、Bot 的长期记忆。
+uninstall.plan_foreign	STOP，除非你输入 I accept %s：另一个部署（%s）也在用这台 Mac；它不会被改动，但删除共用的身份会让它失效
+uninstall.ask_program	现在删除 relay 程序吗？输入 y：
+uninstall.ask_phrase	输入 %s 继续（输入其他内容则停止）：
+uninstall.foreign_warning	另一个部署也在用这台 Mac：%s（%s）。它不会被改动，但它可能共用 ~/.reason/network，而 %s 级别会删除它。
+uninstall.ask_accept	仍要继续请输入 %s（输入其他内容则停止）：
+uninstall.queue_kept	队列 %s：保留给重新安装使用；'sending' 条目会变成 'unknown'，不会再次发送。
+uninstall.ask_queue_grew	relay 停止期间队列变长了。继续吗？输入 y：
+uninstall.queue_lost	队列 %s：使用 %s 级别会丢失这些条目。
+uninstall.ask_lose	确定丢弃请输入 yes：
+uninstall.label_service	relay 登录服务
+uninstall.service_not_ours	已加载的服务不属于这个主目录
+uninstall.service_not_stopped	已加载的 %s 服务不是来自 %s；没有停止它
+uninstall.bootout_failed	launchctl bootout 没能卸载它
+uninstall.still_loaded	relay 仍然处于加载状态；其他都没有改动
+uninstall.plist_kept	已卸载，但保留了 plist：%s
+uninstall.cloud_pause	[GROK-UI] 用户：先在 Grok Bot 里暂停 routine，并确认没有正在进行的运行。
+uninstall.cloud_send	[GROK-UI] 用户：然后把下面的内容作为一条消息发给 Grok Bot。Bot 会在 [BOT-CLOUD]（它的云电脑）上运行，并回复检查结果和一行 PROOF：
+uninstall.ask_proof	[LOCAL] 输入 Bot 给出的 PROOF 值；它没有给出时输入 'none'，要再次显示提示词输入 'prompt'，或输入 'skip'：
+uninstall.skipped_by_user	用户选择跳过
+uninstall.no_proof	没有 PROOF：只有你在聊天里确认这是你自己的部署、可以删除之后，Bot 才能运行 apply-no-proof。
+uninstall.no_key_for_proof	这台 Mac 没有可用来核对 PROOF 的签名密钥；回答 none 可在没有 PROOF 的情况下继续，或回答 skip。
+uninstall.proof_mismatch	PROOF 与这台 Mac 的签名密钥不符：那个云端属于另一个部署，或者密钥更换后没有复制到云端。云端步骤到此停止。
+uninstall.proof_mismatch_note	PROOF 不符
+uninstall.proof_ok	PROOF 相符。[GROK-UI] 用户：把这个确认码发给 Bot，并说明你同意：%s
+uninstall.not_understood	没有看懂这个回答。
+uninstall.ask_done	[LOCAL] Bot 报告 DONE 或 KEPT 时输入 done，报告 INCOMPLETE 时输入 incomplete，没能完成时输入 skip：
+uninstall.reported_by_bot	由 Bot 报告
+uninstall.bot_incomplete	Bot 报告 INCOMPLETE：它的文件已删除，但它没有离开团队
+uninstall.bot_unfinished	Bot 没有完成
+uninstall.label_cloud_member	云端的团队成员身份
+uninstall.residual_reported	由 Bot 报告；这台 Mac 没有团队身份，无法核实
+uninstall.residual_incomplete	Bot 报告 INCOMPLETE；需要由仍在团队中的成员运行 reason-network remove %s
+uninstall.team_list_unknown	无法获得团队列表：%s
+uninstall.cloud_gone	云端已不在团队中
+uninstall.same_name	这台 Mac 也叫 %s，所以无法移除云端；只能由云端自己离开
+uninstall.all_offline	其他成员都离线了，移除操作无法传达
+uninstall.cloud_still_in	云端 %s 仍在团队中（%s 行：%s）。这台 Mac 可以移除它：团队链接会改变，那个云端的引擎会被断开。
+uninstall.ask_all_rows	这 %s 行都是你自己的云端吗？输入 y：
+uninstall.not_confirmed	没有确认
+uninstall.ask_remove_cloud	现在把 %s 移出团队吗？输入 y：
+uninstall.remove_failed	移除失败：%s
+uninstall.removed_with	已用 %s 移除
+uninstall.cloud_still_listed	移除后云端仍显示在团队中
+uninstall.dsh_skipped	dsh：%s；Reason Network 保持原样
+uninstall.label_dsh	dsh 桥接
+uninstall.dsh_failed	dsh/mac-uninstall.sh --no-restore 失败
+uninstall.dsh_not_removed	dsh 桥接没有删除，所以 Reason Network 保持原样；请修好 %s，然后再运行一次 %s
+uninstall.label_mac_member	这台 Mac 的团队成员身份
+uninstall.already_left	已经离开
+uninstall.leave_refused	leave 被拒绝：其他成员都离线了，没有人能收到这台 Mac 离开的消息。需要由他们在自己那边移除它（%s）。
+uninstall.ask_force	仍要离开请输入 force：
+uninstall.left_forced	使用了 --force；没有成员确认收到
+uninstall.leave_failed	这台 Mac 没有离开团队，所以保留了它的身份；等其他成员上线后再运行一次这个级别
+uninstall.label_wiring	agent 接入和引擎服务
+uninstall.no_engine	没有引擎
+uninstall.setup_failed	请手动运行 %s；为此保留了引擎
+uninstall.stop_said	reason-network stop 的输出：%s
+uninstall.routine_delete	[GROK-UI] 用户：在 Grok Bot 里删除 routine。只暂停不够：暂停的 routine 的 webhook URL 和密钥仍然有效。
+uninstall.ask_deleted	删除后输入 deleted，稍后再删输入 later：
+uninstall.label_routine	Grok routine
+uninstall.routine_deleted	已删除（按你的回答）
+uninstall.routine_pending	在你删除之前，它的 webhook 密钥一直有效
+uninstall.manual_title	留给你处理的事项（下面这些都不会被改动）：
+uninstall.manual_folder	这个代码文件夹：%s
+uninstall.manual_path	含 ~/.local/bin 的 PATH 行：%s
+uninstall.manual_convention	回复约定：在你各仓库的 AGENTS.md / CLAUDE.md 里查找 'Reason Network reply convention'（中文版为“Reason Network 回复约定”）
+uninstall.manual_inbox	[BOT-CLOUD] 上的外部收件箱文件夹（RN_INBOX_DIR），如果你设置过
+uninstall.manual_memory	Bot 长期记忆里关于这套部署的内容
+uninstall.stopped_unchanged	已停止；没有任何改动
+uninstall.stopped_after_relay_restart	已在 relay 停止后停下；运行 ./install.sh --restart-relay 可重新启动它
+uninstall.label_program	relay 程序、临时文件、rollback/
+uninstall.routine_pause	[GROK-UI] 用户：在 Grok Bot 里暂停 routine。
+uninstall.reinstall_hint	以后要重新安装：先 git pull，然后在这个文件夹里运行 ./install.sh --restart-relay，再恢复 routine。不要再运行完整安装。
+uninstall.queue_grew	relay 停止期间队列变长了。
+uninstall.stopped_after_relay	已在 relay 停止后停下；其他都没有改动
+uninstall.label_cloud_files	云端身份文件
+uninstall.label_cloud_data	云端 inbox、threads 和克隆
+uninstall.label_record	部署记录、更新锁和引擎备份
+uninstall.label_settings	relay 设置和签名密钥
+uninstall.label_custom_key	~/.config/agent-relay 之外的签名密钥
+uninstall.custom_key_kept	%s 从不自动删除；请自己删除
+uninstall.label_state	relay 状态（队列、防重放记录、保留的副本）
+uninstall.label_identity	Reason Network 身份和历史
+uninstall.label_logs	relay 日志
+uninstall.label_engine	Reason Network 引擎
+uninstall.engine_kept	为 setup --remove 保留
+uninstall.label_dsh_backups	dsh 桥接的备份和日志
+uninstall.result_header	== 结果（级别 %s）
+uninstall.stopped_early	没有执行到最后；再运行一次 %s 可以继续。
+uninstall.program_complete	program 级别已完成
+uninstall.program_incomplete	program 级别没有完成；请看上面的输出
+uninstall.level_open	这台 Mac 已清理完毕，但 %s 级别还没有完成。尚未完成：
+uninstall.level_open_hint	请按上面所列，运行 %s 重新执行云端步骤，或在 Grok Bot 里删除 routine。
+uninstall.level_complete	%s 级别已完成
+uninstall.not_needed	没有完成、但不影响完成判定的项目：%s
+uninstall.reopen_sessions	请重新打开你的 agent 会话。
+uninstall.ask_team	[LOCAL] 这台 Mac 上已没有团队身份。请输入安装时用的团队名：
+uninstall.team_name_invalid	不是有效的团队名（小写字母和数字，用单个 '-' 连接，最多 40 个字符）
+uninstall.choose_level	选择一个级别：\n  1  program   删除 relay；保留团队、设置、密钥和云端\n  2  identity  另外让两台电脑都离开团队，删除密钥和身份\n  3  all       另外删除日志、引擎和云端的数据\n  q  退出
+uninstall.ask_level	级别 [1/2/3/q]：
+uninstall.error_all	--all 等同于 --level all
+uninstall.error_yes	--yes 只能与 --level program 一起用；identity 和 all 级别需要在你自己的终端里运行
+uninstall.error_residual	--residual 和 --cloud-prompt 需要 --level identity 或 --level all
+uninstall.no_tty	当前不是终端，所以没有删除任何东西。%s 级别需要你确认：请在你自己的终端里运行 %s。
+uninstall.no_tty_program	当前不是终端，所以没有删除任何东西。%s 级别需要你确认：请在你自己的终端里运行 %s（或加上 --yes）。
+uninstall.plan_nothing_removed	没有删除任何东西（--plan）。
+uninstall.choose_hint	没有删除任何东西。请选择一个级别：./uninstall.sh --plan 会显示每个级别做什么。
+uninstall.nothing_removed	没有删除任何东西。
+uninstall.residual_has_identity	这台 Mac 仍有 Reason Network 身份；请不带 --residual 运行
+uninstall.no_identity_use_residual	这台 Mac 没有 Reason Network 身份，所以无法在这里核对团队名；请运行 %s
+uninstall.team_not_found	在这台 Mac 上找不到团队名；没有删除任何东西
+uninstall.nothing_done	什么也没做；请先解决上面的 STOP 行
+uninstall.cloud_result_header	== 结果（只有云端步骤，级别 %s）
+uninstall.cloud_only_incomplete	只运行了云端步骤；这台 Mac 上没有删除任何东西。云端步骤没有完成。
+uninstall.cloud_only_complete	只运行了云端步骤；这台 Mac 上没有删除任何东西。云端步骤已完成。
+uninstall.nothing_removed_stops	没有删除任何东西；请先解决上面的 STOP 行
+uninstall.not_confirmed_unchanged	没有确认；没有任何改动
+uninstall.lang_unsupported	uninstall：不支持的语言“%s”，请选择 en 或 zh-CN
+uninstall.need_macos	[LOCAL] 这个卸载程序需要 macOS
+uninstall.no_sudo	请以当前登录的 Mac 用户运行，不要用 sudo
+uninstall.custom_rn_home	不支持自定义 REASON_NETWORK_HOME；卸载前请先检查你的部署
+uninstall.bad_home	HOME 必须是主目录的绝对路径
+uninstall.no_python	缺少 python3；见 README.zh-CN.md「准备」
+uninstall.python_broken	python3 无法启动
+uninstall.python_old	需要 Python 3.9+
+uninstall.help	从这台 Mac 移除 agent-mesh，并引导你从 Bot 的云电脑移除。不带选项时只显示已安装的内容；在你选定级别并确认\n之前不会删除任何东西。\n  ./uninstall.sh --plan [--level L]        已安装的内容，以及某个级别会做什么；不删除任何东西\n  ./uninstall.sh --level program [--yes]   只移除 relay 程序；团队、设置、密钥和云端保留\n  ./uninstall.sh --level identity          还会在两台电脑上退出团队，删除密钥和身份\n  ./uninstall.sh --level all               还会删除日志、引擎和云端数据（可简写为 --all）\n  ./uninstall.sh --residual --level identity|all   这台 Mac 上已没有身份时使用（例如旧版 --all 之后）\n  ./uninstall.sh --cloud-prompt --level identity|all   只重做云端步骤\n  --lang en|zh-CN                          输出和打印的云端提示词所用的语言；默认依次取安装时记录的语言、\n                                           AGENT_MESH_LANG、en\n级别 identity 和 all 只能在你自己的终端里运行，并要求你输入确认词。
+uninstall.bad_option	uninstall：%s（见 ./uninstall.sh --help）

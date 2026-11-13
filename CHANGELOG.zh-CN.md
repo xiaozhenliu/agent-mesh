@@ -4,6 +4,24 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.8.2 — 2026-11-13
+
+更新只需一条命令。`./update.sh` 先列出要更新的内容，只问一次，然后更新 Mac 一侧，并请 Grok Bot 自己更新云端：不用暂停 routine，也不用复制命令块或回复。终端提示跟随所选语言。在终端运行 `./update.sh` 更新；本版 routine 提示词有变化，`update.sh` 提示时把新提示词粘贴进 Grok 一次。
+
+### 新增
+
+- `box/rn-cloud-update.sh <tag> <commit> <request>`：写好的云端更新命令。它核对云端仓库没有本地改动、不会退回旧版本，取回发布 tag，核对 tag 指向发布提交后切换过去，再运行新 checkout 里的同名脚本，由它执行云端引擎步骤并输出 `agent-mesh-result` 行。切换之前发现问题时输出 `STOP: <原因>`，不做改动；引擎步骤失败时保留已核对并切换好的新版本。它不会自行修复任何问题。
+- routine 提示词在"生产变更先问用户"之外增加一个例外：主人（团队名与 `box/person` 相同）发来的单行 `agent-mesh update <tag> <commit> <request>` 消息，直接运行 `box/rn-cloud-update.sh`，不再询问，并回复完整输出。其他类似更新的消息不运行。
+- `install.sh`、`update.sh`、`check.sh`、`uninstall.sh`、dsh 脚本和辅助脚本的终端提示依次按 `--lang en|zh-CN`、安装时记录的语言、`AGENT_MESH_LANG`、英文选择语言。`check.sh` 新增 `--lang`。供程序读取的输出（状态词、`PASS`/`FAIL`/`WARN`/`RESULT`、`agent-mesh-result`、`STOP:`、云端脚本输出、日志）保持英文。文本放在 `scripts/messages/<lang>/*.tsv`。
+
+### 变更
+
+- `./update.sh` 列出计划后只问一次"继续？[Y/n]"（`--yes` 跳过）。不再询问云端是否已为本版本配置好、是否执行云端引擎步骤：云端更新总会执行引擎步骤，以后的云端迁移放进 `rn-cloud-setup.sh --upgrade-engine` 或 `rn-cloud-update.sh`。本机引擎步骤也不再单独询问。
+- 云端需要更新时，`./update.sh` 向 Grok Bot 的地址发送 `agent-mesh update <tag> <commit> <request>`，最多等待 15 分钟（`AGENT_MESH_REPLY_WAIT`），等带同一请求号的回信。只有完整且与发布一致的回信才会被记录；`STOP` 回信会显示出来，不做记录。超时未收到回信时重跑 `./update.sh`，它会先检查已保存请求的回信是否已到。
+- 从没有新脚本的版本第一次更新时，发送的是一个命令块：核对并切换到发布版本，再运行新脚本。`./update.sh --manual` 保留 v0.8.1 的引导流程，提示同样按所选语言输出。
+- 发布核对另外比对 `box/rn-cloud-update.sh` 与已发布版本；只改动这个文件也会触发云端更新。
+- `rn-cloud-setup.sh` 下载引擎时限制连接 20 秒、总时长 3600 秒。
+
 ## v0.8.1 — 2026-11-13
 
 云端安全修复。云端只安装和更新经过核对的已发布版本，云端引擎也不会再被另一个自我更新的引擎守护进程替换。在终端运行 `./update.sh` 更新：云端脚本和云端引擎步骤在同一个引导式云端步骤里完成；routine 提示词不变。

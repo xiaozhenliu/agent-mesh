@@ -1,42 +1,70 @@
 #!/usr/bin/env bash
-# agent-mesh: update an installed Mac to the version in this checkout.
-#   ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--repo-url URL]
-#   --plan     show what differs and what would run, then exit; the deployment is not changed
-#   --no-pull  use this checkout as is; otherwise git pull --ff-only runs first
-#   --yes      skip the confirmation when only the relay or the dsh plugin changes (never the engine upgrade)
-#   --lang     routine prompt language; default: the recorded one, then AGENT_MESH_LANG, then en
-#   --repo-url the repository the cloud installs from (default: the public agent-mesh repository); the cloud scripts
-#              in this checkout must match its release tag v<VERSION>, which is checked online before anything changes
-# Relay and dsh plugin updates run unattended. A Reason Network upgrade on this Mac asks first (terminal), switches
-# the relay before the engine, keeps a backup and rolls back on failure. When the cloud scripts, the cloud engine or
-# the routine prompt changed, it walks you through the [GROK-UI] steps in order (terminal required) and starts the
-# previous relay again if you stop.
-# It also refreshes the filled-in reply convention in ~/.local/lib/agent-mesh/templates.
-# Exit: 0 done or already up to date, 1 not fully done (see the summary), 2 usage, 3 needs a terminal (nothing changed).
 set -euo pipefail
 
-die() { echo "update: $*" >&2; exit 1; }
-ask() { local a=""; read -r -p "$1 [y/N] " a || true; [[ "$a" == [yY]* ]]; }
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/scripts/msg.sh"
+
+die() { printf 'update: %s\n' "$(tq "$@")" >&2; exit 1; }
+fail() { printf 'update: %s\n' "$*" >&2; exit 1; }
+ask() { local a=""; read -r -p "$(tq "$@") [y/N] " a || true; [[ "$a" == [yY]* ]]; }
+ask_go() { local a=""; read -r -p "$(tq update.continue) [Y/n] " a || return 1; [[ -z "$a" || "$a" == [yY]* ]]; }
 state() { "$PYTHON" "$HERE/scripts/deploy_state.py" "$@"; }
+installer() { "$BASH" "$HERE/install.sh" "$@" --lang "$DOC_LANG"; }
 service() { echo "gui/$(id -u)/$LABEL"; }
 relay_loaded() { launchctl print "$(service)" >/dev/null 2>&1; }
-need_has() { case ",$NEED," in *,"$1",*) return 0 ;; *) return 1 ;; esac; }
 engine() { "$PYTHON" "$HERE/box/rn-engine.py" "$@"; }
 relay_pid() { launchctl print "$(service)" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1; }
+word() { tq "st.$1"; }
+
+recorded_lang() {
+  python3 - "$LIB_DIR/deployed.json" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        lang = json.load(stream).get("lang")
+except Exception:
+    lang = None
+print(lang if lang in ("en", "zh-CN") else "")
+PY
+}
+
+pick_lang() {
+  local prev="" a
+  for a in "$@"; do
+    [ "$prev" != --lang ] || LANG_ARG="$a"
+    prev="$a"
+  done
+  case "$LANG_ARG" in
+    ""|en|zh-CN) ;;
+    *) printf "update: unsupported language '%s'; choose en or zh-CN\nupdate：不支持的语言 '%s'，请选择 en 或 zh-CN\n" \
+         "$LANG_ARG" "$LANG_ARG" >&2; exit 2 ;;
+  esac
+  DOC_LANG="$LANG_ARG"
+  if [ -z "$DOC_LANG" ] && command -v python3 >/dev/null; then DOC_LANG="$(recorded_lang)" || DOC_LANG=""; fi
+  [ -n "$DOC_LANG" ] || DOC_LANG="${AGENT_MESH_LANG:-en}"
+  case "$DOC_LANG" in
+    en|zh-CN) ;;
+    *) printf "update: unsupported AGENT_MESH_LANG '%s'; use --lang en or --lang zh-CN\nupdate：不支持的 AGENT_MESH_LANG '%s'，请用 --lang en 或 --lang zh-CN\n" \
+         "$DOC_LANG" "$DOC_LANG" >&2; exit 1 ;;
+  esac
+  export AGENT_MESH_LANG="$DOC_LANG"
+}
+
+usage_error() { printf 'update: %s\n' "$(tq "$@")" >&2; exit 2; }
 
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --lang) [ $# -ge 2 ] || { echo "update: --lang needs en or zh-CN" >&2; exit 2; }; LANG_ARG="$2"; shift 2 ;;
+      --lang) [ $# -ge 2 ] || usage_error update.lang_needs; shift 2 ;;
       --yes|-y) YES=1; shift ;;
       --no-pull) PULL=0; shift ;;
       --plan) PLAN=1; shift ;;
-      --repo-url) [ $# -ge 2 ] && [ -n "$2" ] || { echo "update: --repo-url needs a URL" >&2; exit 2; }; REPO_URL="$2"; shift 2 ;;
-      -h|--help) sed -n '2,15p' "$HERE/update.sh" | sed 's/^# \{0,1\}//'; exit 0 ;;
-      *) echo "update: unknown option: $1 (see ./update.sh --help)" >&2; exit 2 ;;
+      --manual) MANUAL=1; shift ;;
+      --repo-url) [ $# -ge 2 ] && [ -n "$2" ] || usage_error update.url_needs; REPO_URL="$2"; shift 2 ;;
+      -h|--help) t update.help; exit 0 ;;
+      *) usage_error update.unknown_option "$1" ;;
     esac
   done
-  case "${LANG_ARG:-en}" in en|zh-CN) ;; *) echo "update: unsupported language '$LANG_ARG'; choose en or zh-CN" >&2; exit 2 ;; esac
 }
 
 take_lock() {
@@ -46,11 +74,11 @@ take_lock() {
     pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       cmd="$(ps -p "$pid" -o command= 2>/dev/null)" || cmd="update.sh"
-      case "$cmd" in *update.sh*) die "another ./update.sh is running (pid $pid)" ;; esac
+      case "$cmd" in *update.sh*) die update.locked "$pid" ;; esac
     fi
-    echo "note: removing the lock of an earlier ./update.sh that did not finish"
+    t update.stale_lock
     rm -rf "$LOCK"
-    mkdir "$LOCK" || die "cannot create $LOCK"
+    mkdir "$LOCK" || die update.no_lock "$LOCK"
   fi
   echo $$ > "$LOCK/pid"
   LOCKED=1
@@ -62,22 +90,32 @@ release_lock() {
 
 summary() {
   echo
-  echo "== summary"
-  printf '  %-15s %s\n' "relay" "$R_RELAY" "engine" "$R_ENGINE" "dsh plugin" "$R_DSH" "cloud scripts" "$R_CLOUD" \
-    "cloud setup" "$R_SETUP" "cloud engine" "$R_CENGINE" "routine prompt" "$R_PROMPT"
+  t update.summary
+  local label value
+  while read -r label value; do
+    "$PYTHON" "$HERE/scripts/messages.py" row 15 "$(tq "label.$label")" "$value"
+  done <<EOF
+relay $R_RELAY
+engine $R_ENGINE
+dsh $R_DSH
+cloud $R_CLOUD
+setup $R_SETUP
+cengine $R_CENGINE
+prompt $R_PROMPT
+EOF
 }
 
-engine_recover() {   # undo an unfinished engine switch (binary only), then bring the relay back as it was
+engine_recover() {
   local was="$ENGINE_WAS"
   if [ -f "$ETXN" ]; then
     was="$(engine txn-get --txn "$ETXN" relay_was_loaded)" || was=1
     if ! engine rollback --txn "$ETXN"; then
-      echo "!! The engine switch was not undone; follow the steps above, then run ./update.sh again. Record: $ETXN"
+      t update.engine_not_undone "$ETXN"
       return 1
     fi
   fi
   if [ "$was" = 1 ] && ! relay_loaded; then
-    "$BASH" "$HERE/install.sh" --restart-relay || echo "!! The relay could not be started again: run ./install.sh --restart-relay"
+    installer --restart-relay || t update.relay_not_back
   fi
   rm -f "$ETXN"
   ENGINE_TXN=0
@@ -89,7 +127,7 @@ on_exit() {
   [ -z "$ENGINE_TMP" ] || rm -rf "$ENGINE_TMP"
   if [ "$ENGINE_TXN" = 1 ]; then
     echo
-    echo "The engine step did not finish; rolling it back."
+    t update.engine_rolling_back
     engine_recover || true
   fi
   if [ "$TXN_ACTIVE" = 1 ]; then
@@ -97,23 +135,17 @@ on_exit() {
     stage="$(state txn-get stage 2>/dev/null || true)"
     was="$(state txn-get relay_was_loaded 2>/dev/null || true)"
     case "$stage" in
-      routine_paused)
-        if need_has cloud || need_has cloud_engine; then
-          echo "!! [GROK-UI] The routine is still paused. Keep it paused until ./update.sh records the cloud step;"
-          echo "   if Grok Bot's output says 'could not restore', have the clone looked at before anything runs there."
-        else
-          echo "!! [GROK-UI] The routine is still paused: resume it in Grok Bot."
-        fi ;;
-      cloud_done|prompt_done) echo "!! [GROK-UI] The routine is still paused: resume it in Grok Bot." ;;
+      routine_paused) t update.exit_paused_cloud ;;
+      cloud_done|prompt_done) t update.exit_paused ;;
     esac
     if [ "$was" = 1 ] && ! relay_loaded; then
       if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
-        echo "The installed relay is running again."
+        t update.relay_running_again
       else
-        echo "!! The relay could not be started again: run ./install.sh --restart-relay"
+        t update.relay_not_back
       fi
     fi
-    echo "The update stopped at '$stage'. Run ./update.sh again in a terminal to continue from there."
+    t update.stopped_at "$stage"
   fi
   [ "$ACTING" = 0 ] || summary
   release_lock
@@ -121,28 +153,23 @@ on_exit() {
 }
 
 pull_checkout() {
-  git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || die "this directory is not a git clone; get the new version yourself, then run ./update.sh --no-pull"
-  git -C "$HERE" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 \
-    || die "this branch has no upstream; pull it yourself, then run ./update.sh --no-pull"
-  [ -z "$(git -C "$HERE" status --porcelain --untracked-files=no)" ] \
-    || die "tracked files have uncommitted changes; commit or stash them, or run ./update.sh --no-pull"
+  git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die update.not_git
+  git -C "$HERE" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 || die update.no_upstream
+  [ -z "$(git -C "$HERE" status --porcelain --untracked-files=no)" ] || die update.dirty_checkout
   local old new
   old="$(git -C "$HERE" rev-parse HEAD)"
-  git -C "$HERE" pull --ff-only || die "git pull --ff-only failed; nothing was changed"
+  git -C "$HERE" pull --ff-only || die update.pull_failed
   new="$(git -C "$HERE" rev-parse HEAD)"
-  if [ "$old" = "$new" ]; then echo "checkout is already at the latest commit"; return 1; fi
-  echo "pulled ${old:0:12}..${new:0:12}"
+  if [ "$old" = "$new" ]; then t update.at_latest; return 1; fi
+  t update.pulled "${old:0:12}" "${new:0:12}"
 }
 
-checkout_label() { git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo "not a git checkout"; }
+checkout_label() { git -C "$HERE" rev-parse --short HEAD 2>/dev/null || tq update.no_checkout; }
 
-release_needed() {
-  [ "$S_CLOUD" = unchanged ] && [ "$S_CENGINE" = unchanged ] || return 0
-  [ "$S_TXN" != - ] || return 1
-  case ",$(state txn-get need)," in *,cloud,*|*,cloud_engine,*) return 0 ;; esac
-  return 1
-}
+cloud_needed() { [ "$S_CLOUD" != unchanged ] || [ "$S_SETUP" != unchanged ] || [ "$S_CENGINE" != unchanged ]; }
+cloud_pending() { [ "$S_CLOUD" = pending ] || [ "$S_SETUP" = pending ] || [ "$S_CENGINE" = pending ]; }
+stale() { [ "$1" != unchanged ] && [ "$1" != pending ]; }
+cloud_stale() { stale "$S_CLOUD" || stale "$S_SETUP" || stale "$S_CENGINE"; }
 
 release_check() {
   local out k a b
@@ -156,78 +183,71 @@ release_check() {
       tag) REL_TAG="$a" ;; commit) REL_COMMIT="$a" ;; sum) REL_SUMS="$REL_SUMS$a  $b"$'\n' ;;
     esac
   done <<< "$out"
-  REL_STATE="ok"; REL_NOTE="$REL_TAG at ${REL_COMMIT:0:12}; the cloud files in this checkout match it"
+  REL_STATE="ok"; REL_NOTE="$(tq update.release_ok "$REL_TAG" "${REL_COMMIT:0:12}")"
 }
 
 read_status() {
   local out k v
-  out="$(state status --lang "$DOC_LANG" --python "$PYTHON")" || die "could not read the deployment state"
+  out="$(state status --lang "$DOC_LANG" --python "$PYTHON")" || die update.no_status
   while read -r k v; do
     case "$k" in
       relay) S_RELAY="$v" ;; dsh) S_DSH="$v" ;; cloud) S_CLOUD="$v" ;;
       cloud_setup) S_SETUP="$v" ;; prompt) S_PROMPT="$v" ;; txn) S_TXN="$v" ;; name) S_NAME="$v" ;;
       engine) read -r S_ENGINE S_EVER S_EPIN <<< "$v" ;; etxn) S_ETXN="$v" ;; cloud_engine) S_CENGINE="$v" ;;
+      cloud_release) S_CREL="$v" ;;
     esac
   done <<< "$out"
-  [ "$S_ENGINE" != refused ] \
-    || die "Reason Network $S_EVER is not the version this release supports ($S_EPIN) and is never downgraded or replaced; review that installation first"
+  [ "$S_ENGINE" != refused ] || die update.engine_refused "$S_EVER" "$S_EPIN"
   case "$S_NAME" in
     "changed "*)
       local recorded current
       read -r _ recorded current <<< "$S_NAME"
-      die "the Bot address name in ~/.config/agent-relay/env ($current) is not the one this Mac installed with ($recorded); renaming is not supported. Put the old name back, or uninstall with identity removal and install again" ;;
+      die update.renamed "$current" "$recorded" ;;
   esac
 }
 
 plan_line() {
   local what="$3"
   [ "$2" != unchanged ] || what="-"
-  printf '  %-15s %-10s %s\n' "$1" "$2" "$what"
+  "$PYTHON" "$HERE/scripts/messages.py" row 15 "$(tq "label.$1")" 10 "$(word "$2")" "$what"
 }
 
 print_plan() {
-  echo "== plan (checkout $(checkout_label), prompt language $DOC_LANG)"
-  [ "$S_TXN" = - ] || echo "  unfinished update stopped at '$S_TXN': it is continued first (terminal)"
+  t update.plan_head "$(checkout_label)" "$DOC_LANG"
+  [ "$S_TXN" = - ] || t update.plan_txn "$S_TXN"
   local name_state name_value
   read -r name_state name_value <<< "$S_NAME"
-  if [ "$name_state" = ok ]; then plan_line "address name" ok "$name_value"
-  else plan_line "address name" unknown "$name_value (recorded with the next step this script records)"; fi
+  if [ "$name_state" = ok ]; then plan_line name ok "$name_value"
+  else plan_line name unknown "$(tq update.plan_name_unknown "$name_value")"; fi
   case "$REL_STATE" in
-    ok) plan_line "cloud release" ok "$REL_NOTE" ;;
-    failed) plan_line "cloud release" failed "$REL_NOTE (the update stops here before changing anything)" ;;
+    ok) plan_line release ok "$REL_NOTE" ;;
+    failed) plan_line release failed "$(tq update.plan_release_failed "$REL_NOTE")" ;;
   esac
-  plan_line "relay" "$S_RELAY" "install this checkout's relay and restart it"
-  [ "$S_ETXN" = - ] || echo "  an engine upgrade stopped at '$S_ETXN': it is rolled back first (binary only), then offered again"
+  plan_line relay "$S_RELAY" "$(tq update.plan_relay)"
+  [ "$S_ETXN" = - ] || t update.plan_etxn "$S_ETXN"
   case "$S_ENGINE" in
-    older) plan_line "engine" changed "upgrade Reason Network $S_EVER to $S_EPIN: relay first, backup, switch, verify, rollback on failure (asks in a terminal)" ;;
-    stale) plan_line "engine" changed "restart the daemon: it still runs the binary from before the last replacement (asks in a terminal)" ;;
-    *) plan_line "engine" unchanged "-" ;;
+    older) plan_line engine changed "$(tq update.plan_engine_older "$S_EVER" "$S_EPIN")" ;;
+    stale) plan_line engine changed "$(tq update.plan_engine_stale)" ;;
+    *) plan_line engine unchanged "-" ;;
   esac
-  if [ "$S_DSH" = absent ]; then plan_line "dsh plugin" absent "- (not installed)"
-  else plan_line "dsh plugin" "$S_DSH" "replace the plugin file; bridge settings stay"; fi
-  case "$S_CLOUD" in
-    pending) plan_line "cloud scripts" pending "asks whether Grok Bot finished the setup the installer printed" ;;
-    *) plan_line "cloud scripts" "$S_CLOUD" "Grok Bot checks and checks out the release tag on [BOT-CLOUD]; you paste its reply to compare (terminal)" ;;
-  esac
-  case "$S_SETUP" in
-    pending) plan_line "cloud setup" pending "asks whether Grok Bot finished the setup the installer printed" ;;
-    *) plan_line "cloud setup" "$S_SETUP" "asks whether the CHANGELOG migration for box/rn-cloud-setup.sh is done" ;;
-  esac
-  case "$S_CENGINE" in
-    unchanged) plan_line "cloud engine" unchanged "-" ;;
-    pending) plan_line "cloud engine" pending "asks whether Grok Bot finished the setup the installer printed" ;;
-    *) plan_line "cloud engine" "$S_CENGINE" "Grok Bot runs box/rn-cloud-setup.sh --upgrade-engine on [BOT-CLOUD] (checks the engine and keeps it at box/bin/engine); you paste its reply to compare (terminal)" ;;
-  esac
+  if [ "$S_DSH" = absent ]; then plan_line dsh absent "$(tq update.plan_dsh_absent)"
+  else plan_line dsh "$S_DSH" "$(tq update.plan_dsh)"; fi
+  plan_line cloud "$S_CLOUD" ""
+  plan_line setup "$S_SETUP" ""
+  plan_line cengine "$S_CENGINE" ""
+  if cloud_pending; then
+    t update.plan_cloud_pending
+  elif cloud_needed; then
+    if [ "$MANUAL" = 1 ]; then t update.plan_cloud_manual
+    elif [ "$S_CREL" = - ]; then t update.plan_cloud_first "$S_EPIN"
+    else t update.plan_cloud_auto "$S_EPIN"; fi
+  fi
   case "$S_PROMPT" in
-    pending) plan_line "routine prompt" pending "asks whether the prompt the installer printed is saved" ;;
-    *) plan_line "routine prompt" "$S_PROMPT" "you replace the routine's prompt in [GROK-UI] (terminal)" ;;
+    pending) plan_line prompt pending "$(tq update.plan_prompt_pending)" ;;
+    *) plan_line prompt "$S_PROMPT" "$(tq update.plan_prompt)" ;;
   esac
-  if [ "$S_ENGINE" != unchanged ]; then
-    echo "  engine order: switch the relay on the current engine, stop it, switch the engine, start the relay"
-  fi
-  if [ "$S_CLOUD" != unchanged ] || [ "$S_PROMPT" != unchanged ] || [ "$S_CENGINE" != unchanged ]; then
-    echo "  order: stop relay, pause routine, update cloud and/or prompt, resume routine, start relay"
-  fi
+  [ "$S_ENGINE" = unchanged ] || t update.plan_engine_order
+  if [ "$MANUAL" = 1 ] && { cloud_needed || [ "$S_PROMPT" != unchanged ]; }; then t update.plan_manual_order; fi
 }
 
 read_reply() {
@@ -239,28 +259,21 @@ read_reply() {
   done
 }
 
-cloud_step() {   # $1 = 1 when the cloud engine is checked or upgraded in the same message
-  SHOWN="$(state digest cloud)"
-  SHOWN_SETUP="$(state digest cloud_setup)"
-  SHOWN_ENGINE="$(state digest cloud_engine)"
-  local eflag=""
-  [ "$1" != 1 ] || eflag=--engine
-  echo
-  echo "[GROK-UI] Send this to Grok Bot directly in the chat (not through the routine):"
-  echo "----------------------------------------------------------------"
-  echo "On [BOT-CLOUD], run this block exactly as written, as one bash command, and reply with its full output. It"
-  echo "updates /workspace/agent-mesh to the release $REL_TAG after checking it. If its last line is not the DONE line,"
-  echo "stop and send me the output; do not retry, reset, clean, stash or repair anything."
-  echo
+cloud_block() {
   echo "bash -s <<'AGENT_MESH_UPDATE'"
   echo "set -u"
   echo 'stop() { echo "STOP: $*"; exit 1; }'
   echo "export GIT_TERMINAL_PROMPT=0"
-  echo "A=/workspace/agent-mesh; TAG=$REL_TAG; COMMIT=$REL_COMMIT"
+  echo "A=/workspace/agent-mesh; TAG=$REL_TAG; COMMIT=$REL_COMMIT; REQ=$1"
   cat <<'BLOCK'
+echo "agent-mesh-result request $REQ"
 cd "$A" || stop "no clone at $A; nothing was changed"
 st="$(git status --porcelain)" || stop "$A is not a git clone; nothing was changed"
 [ -z "$st" ] || stop "$A has local changes; nothing was changed"
+cur="$(tr -d '[:space:]' < VERSION)" || stop "cannot read $A/VERSION; nothing was changed"
+[[ "$cur" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || stop "$A/VERSION is not a version; nothing was changed"
+[ "$(printf '%s\n%s\n' "$cur" "${TAG#v}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "${TAG#v}" ] \
+  || stop "this clone is at $cur, newer than $TAG; it is never downgraded; nothing was changed"
 echo "origin: $(git remote get-url origin)"
 git fetch -q --no-tags origin "refs/tags/$TAG:refs/tags/$TAG" </dev/null \
   || stop "could not fetch $TAG, or a different tag $TAG is already here; nothing was changed"
@@ -290,55 +303,65 @@ git checkout -q --detach "$COMMIT" || { restore; stop "checking out $TAG failed"
 sha256sum --strict --quiet -c - <<'AGENT_MESH_SUMS' || { restore; stop "the files after checking out $TAG do not match it"; }
 BLOCK
   printf '%s' "$REL_SUMS"
-  echo "AGENT_MESH_SUMS"
-  if [ "$1" = 1 ]; then
-    echo 'bash "$A/box/rn-cloud-setup.sh" --upgrade-engine </dev/null || stop "the engine step failed (see the lines above)"'
-  fi
   cat <<'BLOCK'
-head="$(git rev-parse HEAD)" || stop "cannot read HEAD after checking out $TAG"
-sums="$(sha256sum box/rn-cloud.sh box/rn-fetch.py box/rn-cloud-setup.sh box/rn-engine.py)" \
-  || stop "cannot compute the checksums after checking out $TAG"
-r=agent-mesh-result
-echo "$r commit $head"
-printf '%s\n' "$sums" | sed "s/^/$r sum /"
-echo "$r DONE $TAG"
+AGENT_MESH_SUMS
+[ -f box/rn-cloud-update.sh ] || { restore; stop "$TAG has no box/rn-cloud-update.sh"; }
+exec bash "$A/box/rn-cloud-update.sh" --after-checkout "$TAG" "$COMMIT" "$REQ"
 AGENT_MESH_UPDATE
 BLOCK
-  echo "----------------------------------------------------------------"
-  echo "Grok Bot's reply must end with lines that start with the word agent-mesh-result and show the commit"
-  echo "$REL_COMMIT, these checksums and DONE $REL_TAG:"
-  printf '%s' "$REL_SUMS" | sed 's/^/    /'
-  if [ "$1" = 1 ]; then
-    echo "Before them it must show the engine lines: reason-network $S_EPIN running (daemon pid ...), the pinned build"
-    echo "at box/bin/engine/reason-network and launcher ok."
-  fi
+}
+
+new_req() { "$PYTHON" -c 'import secrets; print(secrets.token_hex(8))'; }
+
+cloud_step() {
+  local req
+  req="$(new_req)" && [ -n "$req" ] || die update.no_request
+  SHOWN="$(state digest cloud)"
+  SHOWN_SETUP="$(state digest cloud_setup)"
+  SHOWN_ENGINE="$(state digest cloud_engine)"
   echo
-  echo "Paste Grok Bot's reply here, then type a line with only a dot (.) and press Enter:" >&2
+  t update.manual_send_this
+  echo "----------------------------------------------------------------"
+  echo "On [BOT-CLOUD], run this block exactly as written, as one bash command, and reply with its full output. It"
+  echo "updates /workspace/agent-mesh to the release $REL_TAG after checking it. If its last line is not the DONE line,"
+  echo "stop and send me the output; do not retry, reset, clean, stash or repair anything."
+  echo
+  cloud_block "$req"
+  echo "----------------------------------------------------------------"
+  t update.manual_reply_lines "$REL_COMMIT" "$REL_TAG"
+  printf '%s' "$REL_SUMS" | sed 's/^/    /'
+  t update.manual_reply_engine "$S_EPIN"
+  echo
+  tq update.paste_reply >&2
+  echo >&2
   read_reply
-  if ! printf '%s' "$REPLY_TEXT" | state cloud-reply --commit "$REL_COMMIT" --tag "$REL_TAG" ${eflag:+"$eflag"}; then
-    die "the cloud side was not recorded as updated. Sort it out with Grok Bot (the routine stays paused), then run ./update.sh again to paste the new reply"
+  if ! printf '%s' "$REPLY_TEXT" | state cloud-reply --commit "$REL_COMMIT" --tag "$REL_TAG" --engine; then
+    die update.manual_reply_rejected
   fi
 }
 
-prompt_step() {
-  SHOWN="$(state digest prompt --lang "$DOC_LANG")"
+prompt_text() {
   echo
-  echo "[GROK-UI] Replace the prompt saved in the routine with this one ($DOC_LANG):"
+  t update.prompt_replace "$DOC_LANG"
   echo "----------------------------------------------------------------"
   state show-prompt --lang "$DOC_LANG"
   echo
   echo "----------------------------------------------------------------"
-  ask "Is the new prompt saved in the routine?" || die "the routine prompt was not recorded as updated"
+}
+
+prompt_step() {
+  SHOWN="$(state digest prompt --lang "$DOC_LANG")"
+  prompt_text
+  ask update.ask_prompt_saved_now || die update.prompt_not_recorded
 }
 
 guided() {
   local stage paused=0 was
   NEED=""
-  [ "$S_CLOUD" = unchanged ] || NEED="cloud"
+  cloud_needed && NEED="cloud"
   [ "$S_PROMPT" = unchanged ] || NEED="${NEED:+$NEED,}prompt"
-  [ "$DO_CENGINE" != 1 ] || NEED="${NEED:+$NEED,}cloud_engine"
-  if { need_has cloud || need_has cloud_engine; } && [ "$REL_STATE" != ok ]; then
-    release_check || die "$REL_NOTE"
+  if [ -n "$NEED" ] && cloud_needed && [ "$REL_STATE" != ok ]; then
+    release_check || fail "$REL_NOTE"
   fi
   if [ "$S_TXN" = - ]; then
     if relay_loaded; then was=1; else was=0; fi
@@ -348,60 +371,54 @@ guided() {
   else
     TXN_ACTIVE=1
     stage="$S_TXN"
-    echo "== continuing the update that stopped at '$stage'"
+    t update.continuing "$stage"
     state txn-set need "$NEED"
   fi
 
-  echo "== 1. stop the relay (mail waits in the local engine meanwhile)"
+  t update.g_stop_relay
   if relay_loaded; then launchctl bootout "$(service)" 2>/dev/null || true; fi
-  ! relay_loaded || die "could not stop the relay service"
+  ! relay_loaded || die update.relay_no_stop
   if [ "$stage" = stopping ]; then state txn-set stage relay_stopped; stage=relay_stopped; fi
   case "$stage" in routine_paused|cloud_done|prompt_done) paused=1 ;; esac
 
   if [ -n "$NEED" ]; then
     if [ "$paused" = 1 ]; then
-      ask "== 2. [GROK-UI] Is the routine still paused, with no run in progress?" || die "stopped"
+      ask update.g_still_paused || die update.stopped
     else
-      ask "== 2. [GROK-UI] Pause the routine in Grok Bot and wait until no run is in progress. Done?" || die "stopped"
-      state txn-set stage routine_paused
+      ask update.g_pause || die update.stopped
     fi
-    if need_has cloud || need_has cloud_engine; then
-      state txn-set stage routine_paused
-      if need_has cloud_engine; then
-        echo "== 3. update the cloud scripts and the cloud engine"
-        cloud_step 1
-        state mark cloud_engine confirmed --expect "$SHOWN_ENGINE"
-        state mark cloud_setup confirmed --expect "$SHOWN_SETUP"
-        R_CENGINE="Reason Network $S_EPIN confirmed"
-        [ "$S_SETUP" = unchanged ] || R_SETUP="confirmed"
-      else
-        echo "== 3. update the cloud scripts"
-        cloud_step 0
-      fi
+    state txn-set stage routine_paused
+    if cloud_needed; then
+      t update.g_cloud
+      cloud_step
+      state mark cloud_engine confirmed --expect "$SHOWN_ENGINE"
+      state mark cloud_setup confirmed --expect "$SHOWN_SETUP"
       state mark cloud confirmed --expect "$SHOWN"
       state txn-set stage cloud_done
-      R_CLOUD="updated"
+      S_CLOUD=unchanged; S_SETUP=unchanged; S_CENGINE=unchanged
+      R_CLOUD="$(tq r.updated)"; R_SETUP="$(tq r.confirmed)"; R_CENGINE="$(tq r.engine_confirmed "$S_EPIN")"
     fi
-    if need_has prompt; then
-      echo "== 4. replace the routine prompt"
+    if [ "$S_PROMPT" != unchanged ]; then
+      t update.g_prompt
       prompt_step
       state mark prompt confirmed --lang "$DOC_LANG" --expect "$SHOWN"
       state txn-set stage prompt_done
-      R_PROMPT="updated"
+      S_PROMPT=unchanged; R_PROMPT="$(tq r.updated)"
     fi
-    ask "== 5. [GROK-UI] Resume the routine in Grok Bot. Done?" || die "stopped"
+    ask update.g_resume || die update.stopped
     state txn-set stage routine_resumed
   elif [ "$paused" = 1 ]; then
-    ask "== 5. [GROK-UI] Resume the routine in Grok Bot. Done?" || die "stopped"
+    ask update.g_resume || die update.stopped
     state txn-set stage routine_resumed
   fi
 
-  echo "== 6. start the relay"
-  if ! "$BASH" "$HERE/install.sh" --restart-relay; then
-    R_RELAY="failed; see the messages above"
-    die "the relay did not start; fix the problem shown above, then run ./update.sh again"
+  t update.g_start_relay
+  if ! installer --restart-relay; then
+    R_RELAY="$(tq r.failed)"
+    die update.relay_no_start
   fi
-  if [ "$S_RELAY" = unchanged ]; then R_RELAY="restarted"; else R_RELAY="updated"; fi
+  if [ "$S_RELAY" = unchanged ]; then R_RELAY="$(tq r.restarted)"; else R_RELAY="$(tq r.updated)"; fi
+  S_RELAY=unchanged
   state txn-clear
   TXN_ACTIVE=0
 }
@@ -409,46 +426,42 @@ guided() {
 engine_step() {
   local tmp rc=0 was backup base n others pid
   echo
-  echo "== engine 1. switch the relay to this checkout's version on the current engine ($S_EVER)"
-  if ! "$BASH" "$HERE/install.sh" --restart-relay; then
-    R_RELAY="failed; see the messages above"
-    die "the relay did not switch, so the engine was not changed; fix the problem above, then run ./update.sh again"
+  t update.e_switch_relay "$S_EVER"
+  if ! installer --restart-relay; then
+    R_RELAY="$(tq r.failed)"
+    die update.e_relay_no_switch
   fi
-  R_RELAY="updated"
+  R_RELAY="$(tq r.updated)"
   S_RELAY=unchanged
   pid="$(relay_pid)"
   others="$(engine others --bin "$RN" ${pid:+--skip-parent "$pid"})" || others=""
   if [ -n "$others" ]; then
-    echo "These processes also use Reason Network. They reconnect to the restarted daemon by themselves; restart those agent sessions after the update:"
+    t update.e_others
     printf '%s\n' "$others" | sed 's/^/  /'
   fi
   if [ "$S_ENGINE" = stale ]; then
-    ask "== engine 2. Reason Network $S_EVER is installed, but its daemon started before the binary was replaced. Restart the daemon now?" \
-      || die "stopped; the engine was not restarted"
+    t update.e_restart "$S_EVER"
     if relay_loaded; then ENGINE_WAS=1; else ENGINE_WAS=0; fi
     ENGINE_TXN=1
     launchctl bootout "$(service)" 2>/dev/null || true
     if ! engine restart --home "$RN_HOME" --bin "$RN"; then
       ENGINE_TXN=0
-      "$BASH" "$HERE/install.sh" --restart-relay || true
-      R_ENGINE="restart failed; see the messages above"
-      die "the daemon did not come back on the new binary; run reason-network stop, then ./check.sh"
+      installer --restart-relay || true
+      R_ENGINE="$(tq r.restart_failed)"
+      die update.e_restart_failed
     fi
-    "$BASH" "$HERE/install.sh" --restart-relay || { ENGINE_TXN=0; R_ENGINE="daemon restarted"; die "the relay did not start on the restarted engine; see the messages above"; }
+    installer --restart-relay || { ENGINE_TXN=0; R_ENGINE="$(tq r.daemon_restarted)"; die update.e_relay_after_restart; }
     ENGINE_TXN=0
-    R_ENGINE="daemon restarted on $S_EVER"
+    R_ENGINE="$(tq r.daemon_restarted_on "$S_EVER")"
     return 0
   fi
-  echo "== engine 2. upgrade Reason Network $S_EVER to $S_EPIN"
-  echo "It downloads $S_EPIN and checks its pinned sha256, stops the relay, backs up the binary and ~/.reason/network,"
-  echo "replaces the binary, restarts the daemon and checks the new one runs, then starts the relay. On failure only"
-  echo "the old binary is put back; mail received meanwhile stays."
-  ask "Upgrade Reason Network now?" || die "stopped; the engine was not changed"
-  tmp="$(mktemp -d "$LIB_DIR/.engine-new.XXXXXX")" || die "cannot create a temporary directory in $LIB_DIR"
+  t update.e_upgrade "$S_EVER" "$S_EPIN"
+  t update.e_upgrade_explain "$S_EPIN"
+  tmp="$(mktemp -d "$LIB_DIR/.engine-new.XXXXXX")" || die update.e_no_tmp "$LIB_DIR"
   ENGINE_TMP="$tmp"
-  if ! "$BASH" "$HERE/install.sh" --fetch-engine "$tmp" >/dev/null; then
-    R_ENGINE="not changed (download failed)"
-    die "the new engine could not be downloaded or verified; the engine was not changed"
+  if ! installer --fetch-engine "$tmp" >/dev/null; then
+    R_ENGINE="$(tq r.download_failed)"
+    die update.e_download_failed
   fi
   if relay_loaded; then was=1; else was=0; fi
   ENGINE_WAS="$was"
@@ -456,7 +469,7 @@ engine_step() {
   launchctl bootout "$(service)" 2>/dev/null || true
   if relay_loaded; then
     ENGINE_TXN=0
-    die "could not stop the relay service; the engine was not changed"
+    die update.e_relay_no_stop
   fi
   backup="$LIB_DIR/engine-backup-$(date -u +%Y%m%dT%H%M%SZ)"
   base="$backup"; n=1
@@ -465,47 +478,129 @@ engine_step() {
     --backup "$backup" --txn "$ETXN" --keep "relay_was_loaded=$was" || rc=$?
   rm -rf "$tmp"; ENGINE_TMP=""
   if [ "$rc" != 0 ]; then
-    R_ENGINE="failed; see the messages above"
-    engine_recover || { ENGINE_TXN=0; die "the engine upgrade failed and was not fully undone; see the steps above"; }
-    R_ENGINE="failed and rolled back to $S_EVER (backup: $backup)"
-    die "the engine upgrade failed; Reason Network $S_EVER is back"
+    R_ENGINE="$(tq r.failed)"
+    engine_recover || { ENGINE_TXN=0; die update.e_not_undone; }
+    R_ENGINE="$(tq r.rolled_back "$S_EVER" "$backup")"
+    die update.e_failed_back "$S_EVER"
   fi
-  echo "== engine 3. start the relay on Reason Network $S_EPIN"
-  if ! "$BASH" "$HERE/install.sh" --restart-relay; then
-    R_ENGINE="failed; see the messages above"
-    engine_recover || { ENGINE_TXN=0; die "the relay did not register on the new engine and the engine was not fully rolled back; see the steps above"; }
-    R_ENGINE="relay failed on $S_EPIN; rolled back to $S_EVER (backup: $backup)"
-    die "the relay did not register on the new engine; Reason Network $S_EVER is back"
+  t update.e_start_relay "$S_EPIN"
+  if ! installer --restart-relay; then
+    R_ENGINE="$(tq r.failed)"
+    engine_recover || { ENGINE_TXN=0; die update.e_relay_not_undone; }
+    R_ENGINE="$(tq r.relay_rolled_back "$S_EPIN" "$S_EVER" "$backup")"
+    die update.e_relay_failed_back "$S_EVER"
   fi
   rm -f "$ETXN"
   ENGINE_TXN=0
-  state set-engine "$S_EPIN" || echo "note: could not record the engine version in $LIB_DIR/deployed.json"
-  R_ENGINE="upgraded $S_EVER -> $S_EPIN (backup: $backup; remove it once ./check.sh passes)"
+  state set-engine "$S_EPIN" || t update.e_not_recorded "$LIB_DIR/deployed.json"
+  R_ENGINE="$(tq r.upgraded "$S_EVER" "$S_EPIN" "$backup")"
 }
 
 update_dsh() {
   if "$BASH" "$HERE/dsh/mac-install.sh" --plugin-only; then
-    R_DSH="updated (quit DeepSeek Harness with ⌘Q and reopen it)"
+    R_DSH="$(tq r.dsh_updated)"
   else
-    R_DSH="failed; the previous plugin is kept"
+    R_DSH="$(tq r.dsh_failed)"
     FAILED=1
   fi
 }
 
+pending_step() {
+  if cloud_pending; then
+    ask update.ask_setup_done "$S_EPIN" || die update.setup_first
+    [ "$S_CLOUD" != pending ] || state mark cloud confirmed --if-pending
+    [ "$S_SETUP" != pending ] || state mark cloud_setup confirmed --if-pending
+    [ "$S_CENGINE" != pending ] || state mark cloud_engine confirmed --if-pending
+    read_status
+    cloud_needed || { R_CLOUD="$(tq r.confirmed)"; R_SETUP="$(tq r.confirmed)"; R_CENGINE="$(tq r.confirmed)"; }
+  fi
+  if [ "$S_PROMPT" = pending ]; then
+    if ask update.ask_prompt_saved "$DOC_LANG"; then
+      state mark prompt confirmed --lang "$DOC_LANG" --if-pending; S_PROMPT=unchanged; R_PROMPT="$(tq r.confirmed)"
+    else
+      S_PROMPT=changed
+    fi
+  fi
+}
+
+cloud_recorded() {
+  S_CLOUD=unchanged; S_SETUP=unchanged; S_CENGINE=unchanged
+  R_CLOUD="$(tq r.cloud_updated "$REL_TAG")"; R_SETUP="$(tq r.confirmed)"; R_CENGINE="$(tq r.engine_confirmed "$S_EPIN")"
+}
+
+request_check() {
+  local rc=0 out
+  out="$(state request-check --tag "$REL_TAG" --commit "$REL_COMMIT" 2>&1)" || rc=$?
+  LAST_CHECK="$out"
+  case "$rc" in
+    0) printf '%s\n' "$out"; cloud_recorded ;;
+    1) printf '%s\n' "$out"
+       R_CLOUD="$(tq r.cloud_stopped)"
+       die update.cloud_stopped ;;
+    3) [ -z "$out" ] || printf '%s\n' "$out" ;;
+  esac
+  return "$rc"
+}
+
+bootstrap_message() {
+  echo "This is my update request from my Mac (sent by ./update.sh). On [BOT-CLOUD], run this block exactly as"
+  echo "written, as one bash command, and reply to this message with its full output. It updates"
+  echo "/workspace/agent-mesh to the release $REL_TAG after checking it. If its last line is not the DONE line, stop"
+  echo "and reply with the output; do not retry, reset, clean, stash or repair anything."
+  echo
+  cloud_block "$1"
+}
+
+cloud_auto() {
+  local mode=line addr req i=0 rounds rc
+  [ "$S_CREL" != - ] || mode=block
+  [ "$REL_STATE" = ok ] || release_check || fail "$REL_NOTE"
+  addr="$(state bot-address)" || die update.no_address
+  echo
+  t update.cloud_heading "$REL_TAG"
+  rc=0; request_check || rc=$?
+  [ "$rc" != 0 ] || { t update.cloud_earlier_reply; return 0; }
+  relay_loaded || die update.relay_down
+  req="$(state request-new --tag "$REL_TAG" --commit "$REL_COMMIT" --mode "$mode")" || die update.no_request
+  if [ "$mode" = line ]; then
+    "$RN" send "$addr" - < <(printf '%s' "agent-mesh update $REL_TAG $REL_COMMIT $req") >/dev/null || die update.send_failed "$addr"
+    t update.sent "$addr"
+  else
+    "$RN" send "$addr" - < <(bootstrap_message "$req") >/dev/null || die update.send_failed "$addr"
+    t update.sent_first "$addr"
+  fi
+  t update.waiting
+  rounds=$(( ${AGENT_MESH_REPLY_WAIT:-900} / 5 ))
+  while :; do
+    rc=0; request_check || rc=$?
+    [ "$rc" != 0 ] || return 0
+    if [ "$i" -ge "$rounds" ]; then
+      [ "$rc" != 4 ] || printf '%s\n' "$LAST_CHECK"
+      R_CLOUD="$(tq r.cloud_waiting)"
+      t update.timeout
+      FAILED=1
+      return 0
+    fi
+    i=$((i + 1))
+    [ $((i % 12)) != 0 ] || t update.still_waiting "$((i * 5 / 60))"
+    sleep 5
+  done
+}
+
 main() {
-  HERE="$(cd "$(dirname "$0")" && pwd)"
   LIB_DIR="$HOME/.local/lib/agent-mesh"; LOCK="$LIB_DIR/update.lock"
   LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
   RN="$HOME/.local/bin/reason-network"; RN_HOME="$HOME/.reason/network"; ETXN="$LIB_DIR/engine-upgrade.json"
-  LANG_ARG=""; YES=0; PULL=1; PLAN=0; REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
-  REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""
-  FAILED=0; NEED=""; SHOWN=""; SHOWN_SETUP=""; SHOWN_ENGINE=""; S_NAME=""; REPLY_TEXT=""; DO_CENGINE=0
+  LANG_ARG=""; YES=0; PULL=1; PLAN=0; MANUAL=0; REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
+  REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""; LAST_CHECK=""
+  FAILED=0; NEED=""; SHOWN=""; SHOWN_SETUP=""; SHOWN_ENGINE=""; S_NAME=""; REPLY_TEXT=""; S_CREL=-
   S_ENGINE=unchanged; S_EVER=""; S_EPIN=""; S_ETXN=-; S_CENGINE=unchanged
-  R_RELAY="unchanged"; R_DSH="unchanged"; R_CLOUD="unchanged"; R_SETUP="unchanged"; R_PROMPT="unchanged"
-  R_ENGINE="unchanged"; R_CENGINE="unchanged"
+  pick_lang "$@"
   parse_args "$@"
+  R_RELAY="$(tq r.unchanged)"; R_DSH="$R_RELAY"; R_CLOUD="$R_RELAY"; R_SETUP="$R_RELAY"; R_PROMPT="$R_RELAY"
+  R_ENGINE="$R_RELAY"; R_CENGINE="$R_RELAY"
 
-  "$BASH" "$HERE/install.sh" --preflight || die "fix the problem above, then run ./update.sh again; nothing was changed"
+  installer --preflight || die update.preflight_failed
   PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
   take_lock
 
@@ -515,127 +610,80 @@ main() {
     exec "$BASH" "$HERE/update.sh" --no-pull "$@"
   fi
 
-  DOC_LANG="$LANG_ARG"
-  [ -n "$DOC_LANG" ] || DOC_LANG="$(state lang)"
-  [ -n "$DOC_LANG" ] || DOC_LANG="${AGENT_MESH_LANG:-en}"
-  case "$DOC_LANG" in en|zh-CN) ;; *) die "unsupported AGENT_MESH_LANG '$DOC_LANG'; use --lang en or --lang zh-CN" ;; esac
-
   read_status
-  local interactive=0
-  if [ "$S_TXN" != - ] || [ "$S_SETUP" != unchanged ] || [ "$S_CLOUD" != unchanged ] || [ "$S_PROMPT" != unchanged ] \
-      || [ "$S_ENGINE" != unchanged ] || [ "$S_ETXN" != - ] || [ "$S_CENGINE" != unchanged ]; then
-    interactive=1
+  local terminal=0 confirm=0
+  if [ "$S_TXN" != - ] || [ "$S_PROMPT" != unchanged ] || cloud_pending || { [ "$MANUAL" = 1 ] && cloud_needed; }; then
+    terminal=1
   fi
-  if release_needed; then
-    release_check || [ "$PLAN" = 1 ] || die "$REL_NOTE"
+  if cloud_needed || [ "$S_ENGINE" != unchanged ] || [ "$S_ETXN" != - ]; then
+    confirm=1
+  fi
+  if cloud_stale; then
+    release_check || [ "$PLAN" = 1 ] || fail "$REL_NOTE"
   fi
   print_plan
   [ "$PLAN" = 0 ] || exit 0
-  if [ "$interactive" = 1 ] && [ ! -t 0 ]; then
-    echo "This needs answers in a terminal and this is not one: nothing was changed."
-    echo "[LOCAL] User: run   ./update.sh --lang $DOC_LANG   in this repository in Terminal."
+  if { [ "$terminal" = 1 ] || { [ "$confirm" = 1 ] && [ "$YES" != 1 ]; }; } && [ ! -t 0 ]; then
+    t update.needs_terminal "$DOC_LANG"
     exit 3
   fi
-  "$PYTHON" "$HERE/scripts/reply_convention.py" install \
-    || echo "note: could not refresh the reply convention with this Bot's address in $LIB_DIR/templates"
-  if [ "$interactive" = 0 ] && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ]; then
-    echo "already up to date"
+  "$PYTHON" "$HERE/scripts/reply_convention.py" install || t update.convention_failed "$LIB_DIR/templates"
+  if [ "$terminal" = 0 ] && [ "$confirm" = 0 ] && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ]; then
+    t update.up_to_date
     exit 0
+  fi
+  pending_step
+  if [ "$S_TXN" = - ] && [ "$S_ETXN" = - ] && [ "$S_ENGINE" = unchanged ] && [ "$S_PROMPT" = unchanged ] \
+    && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ] && ! cloud_needed; then
+    summary
+    exit 0
+  fi
+  if [ "$YES" != 1 ] && [ -t 0 ]; then
+    if [ "$S_PROMPT" != unchanged ] && [ "$MANUAL" = 0 ]; then t update.will_paste; fi
+    ask_go || die update.stopped_nothing
   fi
   ACTING=1
 
   local changed=0
   if [ "$S_ETXN" != - ]; then
-    echo "== an engine upgrade did not finish ('$S_ETXN'); rolling it back first"
+    t update.etxn_first "$S_ETXN"
     ENGINE_TXN=1
-    engine_recover || die "the unfinished engine upgrade could not be rolled back; see the steps above"
+    engine_recover || die update.etxn_failed
     changed=1
     read_status
   fi
   if [ "$S_TXN" != - ]; then
-    case "$(state txn-get need)" in *cloud_engine*) [ "$S_CENGINE" = unchanged ] || DO_CENGINE=1 ;; esac
     guided
     changed=1
-    DO_CENGINE=0
     read_status
-  fi
-
-  if [ "$S_SETUP" = changed ] && [ "$S_CENGINE" != unchanged ] && [ "$S_CENGINE" != pending ]; then
-    echo "box/rn-cloud-setup.sh changed; the cloud engine step below runs it and records it."
-  elif [ "$S_SETUP" != unchanged ]; then
-    if [ "$S_SETUP" = pending ]; then
-      ask "Did Grok Bot finish the cloud setup the installer printed (it reported that the cloud joined)?" \
-        || die "finish the cloud setup first (./install.sh --cloud-prompt), then run ./update.sh again; nothing was changed"
-      if [ "$S_CLOUD" = pending ]; then state mark cloud confirmed --if-pending; S_CLOUD=unchanged; R_CLOUD="confirmed"; fi
-      if [ "$S_CENGINE" = pending ]; then
-        state mark cloud_engine confirmed --if-pending; S_CENGINE=unchanged; R_CENGINE="confirmed"
-      fi
-      state mark cloud_setup confirmed --if-pending
-    else
-      echo "box/rn-cloud-setup.sh differs from the version this Mac last recorded, or nothing was recorded."
-      echo "If CHANGELOG.md lists a cloud setup migration for the versions since your last update, do it first."
-      SHOWN="$(state digest cloud_setup)"
-      ask "Is the cloud side set up for this version?" || die "do the cloud setup migration first; nothing was changed"
-      state mark cloud_setup confirmed --expect "$SHOWN"
-    fi
-    S_SETUP=unchanged; R_SETUP="confirmed"
-  fi
-  if [ "$S_CLOUD" = pending ]; then
-    if ask "Did Grok Bot finish the cloud setup the installer printed?"; then
-      state mark cloud confirmed --if-pending; S_CLOUD=unchanged; R_CLOUD="confirmed"
-    else
-      S_CLOUD=changed
-    fi
-  fi
-  if [ "$S_CENGINE" = pending ]; then
-    if ask "Did Grok Bot finish the cloud setup the installer printed (Reason Network $S_EPIN on [BOT-CLOUD])?"; then
-      state mark cloud_engine confirmed --if-pending; S_CENGINE=unchanged; R_CENGINE="confirmed"
-    else
-      S_CENGINE=changed
-    fi
-  fi
-  if [ "$S_CENGINE" != unchanged ]; then
-    echo
-    echo "The engine on [BOT-CLOUD] has not been confirmed at Reason Network $S_EPIN (Grok Bot checks or upgrades it with"
-    echo "box/rn-cloud-setup.sh --upgrade-engine while the routine is paused). The same step keeps the cloud engine at"
-    echo "box/bin/engine, where another engine daemon cannot replace it, and checks its bytes against the pinned build."
-    if ask "Do the cloud engine step in this run?"; then
-      DO_CENGINE=1
-    else
-      R_CENGINE="not done; run ./update.sh again to do it"
-      FAILED=1
-    fi
   fi
   if [ "$S_ENGINE" != unchanged ]; then
     engine_step
     changed=1
   fi
-  if [ "$S_PROMPT" = pending ]; then
-    if ask "Is the routine prompt the installer printed ($DOC_LANG) saved in the routine?"; then
-      state mark prompt confirmed --lang "$DOC_LANG" --if-pending; S_PROMPT=unchanged; R_PROMPT="confirmed"
-    else
-      S_PROMPT=changed
-    fi
-  fi
-
-  if [ "$S_CLOUD" != unchanged ] || [ "$S_PROMPT" != unchanged ] || [ "$DO_CENGINE" = 1 ]; then
+  if [ "$MANUAL" = 1 ] && { cloud_needed || [ "$S_PROMPT" != unchanged ]; }; then
     guided
     changed=1
-  elif [ "$S_RELAY" = changed ] || [ "$S_DSH" = changed ]; then
-    if [ "$YES" != 1 ] && [ -t 0 ]; then
-      ask "Update the parts marked changed now?" || die "stopped; nothing was changed"
-    fi
-    if [ "$S_RELAY" = changed ]; then
-      if "$BASH" "$HERE/install.sh" --restart-relay; then R_RELAY="updated"; else R_RELAY="failed; see the messages above"; FAILED=1; fi
-    fi
+  elif [ "$S_RELAY" = changed ]; then
+    if installer --restart-relay; then R_RELAY="$(tq r.updated)"; else R_RELAY="$(tq r.failed)"; FAILED=1; fi
     changed=1
   fi
   if [ "$S_DSH" = changed ]; then update_dsh; changed=1; fi
+  if [ "$S_PROMPT" != unchanged ]; then
+    prompt_step
+    state mark prompt confirmed --lang "$DOC_LANG" --expect "$SHOWN"
+    S_PROMPT=unchanged; R_PROMPT="$(tq r.updated)"
+    changed=1
+  fi
+  if cloud_needed; then
+    cloud_auto
+    changed=1
+  fi
 
   if [ "$changed" = 1 ]; then
     echo
-    echo "== check"
-    "$BASH" "$HERE/check.sh" || { echo "check.sh reported FAIL lines; the update steps above are kept"; FAILED=1; }
+    t update.check
+    "$BASH" "$HERE/check.sh" --lang "$DOC_LANG" || { t update.check_failed; FAILED=1; }
   fi
   [ "$FAILED" = 0 ] || exit 1
 }

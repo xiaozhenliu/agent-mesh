@@ -25,6 +25,8 @@ import sys
 import unicodedata
 from pathlib import Path
 
+from messages import t
+
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 RESERVED = re.compile(r"terminal(?:-[0-9]+)?")
 MAX_LEN = 34
@@ -37,26 +39,25 @@ GROK_MAX_LEN = 64
 
 def problem(name):
     if not isinstance(name, str) or not name:
-        return "the Bot address name is empty"
+        return t("names.empty")
     if len(name) > MAX_LEN:
-        return f"the Bot address name {name[:60]!r} is longer than {MAX_LEN} characters"
+        return t("names.too_long", repr(name[:60]), MAX_LEN)
     if not NAME.fullmatch(name):
-        return (f"the Bot address name {name[:60]!r} must be lowercase letters and digits, in groups joined by a "
-                "single '-' (no '-' at the start or end, none repeated)")
+        return t("names.bad_chars", repr(name[:60]))
     if RESERVED.fullmatch(name):
-        return f"the Bot address name {name!r} is reserved: Reason Network uses terminal and terminal-<number>"
+        return t("names.reserved", repr(name))
     return None
 
 
 def grok_problem(name):
     if not isinstance(name, str) or not name.strip():
-        return "the Bot's name in Grok is empty"
+        return t("names.grok_empty")
     if len(name) > GROK_MAX_LEN:
-        return f"the Bot's name in Grok is longer than {GROK_MAX_LEN} characters"
+        return t("names.grok_too_long", GROK_MAX_LEN)
     if name != name.strip():
-        return "the Bot's name in Grok starts or ends with a space"
+        return t("names.grok_spaces")
     if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in name):
-        return "the Bot's name in Grok contains a line break or another control character"
+        return t("names.grok_control")
     return None
 
 
@@ -89,18 +90,16 @@ def from_env(path):
     except FileNotFoundError:
         return None
     except OSError as error:
-        raise ValueError(f"cannot read {path}: {error.strerror or error}")
+        raise ValueError(t("names.cannot_read", path, error.strerror or error))
     cfg = parse_env(text)
     if not cfg.get("RN_BIN"):
-        raise ValueError(f"{path} is incomplete (it has no RN_BIN line); remove it and run ./install.sh --webhook "
-                         "again, or restore it from a backup")
+        raise ValueError(t("names.env_incomplete", path))
     listen, cloud, inbox = (cfg.get(k, RELAY_DEFAULTS[k]) for k in KEYS)
     why = problem(listen)
     if why:
-        raise ValueError(f"{path}: LISTEN_NAME: {why}")
+        raise ValueError(t("names.env_listen", path, why))
     if (cloud, inbox) != derived(listen)[1:]:
-        raise ValueError(f"{path}: the relay names are not derived from one Bot address name: "
-                         f"{listen}, {cloud}, {inbox}")
+        raise ValueError(t("names.env_not_derived", path, listen, cloud, inbox))
     return listen
 
 
@@ -139,11 +138,11 @@ def marker(path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        raise ValueError(f"{path} is not valid: {error}")
+        raise ValueError(t("names.marker_invalid", path, error))
     name, pid = (data.get("name"), data.get("pid")) if isinstance(data, dict) else (None, None)
     if (not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*", name)
             or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0):
-        raise ValueError(f"{path} has no valid name and pid")
+        raise ValueError(t("names.marker_fields", path))
     return name, pid, int(st.st_mtime)
 
 
@@ -151,7 +150,7 @@ def conflicts(directory, name, db):
     """Reasons why NAME cannot be used, from `who --all --json` and the local session table. Raises ValueError if
     the listing has an unexpected shape."""
     if not isinstance(directory, dict) or not isinstance(directory.get("sessions"), list):
-        raise ValueError("the session list has no sessions array")
+        raise ValueError(t("names.no_sessions"))
     me_person, me_machine = directory.get("person"), directory.get("machine")
     wanted = derived(name)
     local = None
@@ -160,7 +159,7 @@ def conflicts(directory, name, db):
     found = []
     for s in directory["sessions"]:
         if not isinstance(s, dict) or not isinstance(s.get("name"), str):
-            raise ValueError("a session in the list has no name")
+            raise ValueError(t("names.session_unnamed"))
         if s["name"] not in wanted:
             continue
         person, machine = s.get("person"), s.get("machine")
@@ -169,11 +168,9 @@ def conflicts(directory, name, db):
         if (person == me_person and machine == CLOUD_MACHINE and machine != me_machine
                 and s["name"] in wanted[1:]):
             continue
-        found.append(f"the session {person}/{s['name']} (machine {machine}, {s.get('status') or 'unknown'}) "
-                     "already exists in this team; choose another --relay-name")
+        found.append(t("names.taken", f"{person}/{s['name']}", machine, s.get("status") or t("names.unknown")))
     if local is not None and local != name:
-        found.append(f"this Mac's engine already registered the relay key for {name} as {local}; "
-                     "choose another --relay-name")
+        found.append(t("names.key_taken", name, local))
     return found
 
 
@@ -182,7 +179,7 @@ def option(args, flag):
         return None
     i = args.index(flag)
     if i + 1 >= len(args):
-        raise SystemExit(f"relay_names: {flag} needs a value")
+        raise SystemExit(t("names.option_value", flag))
     value = args[i + 1]
     del args[i:i + 2]
     return value
@@ -238,16 +235,16 @@ def main(argv):
             try:
                 print(registered(db, name) or "")
             except FileNotFoundError:
-                print(f"no engine database at {db}", file=sys.stderr)
+                print(t("names.no_db", db), file=sys.stderr)
                 return 3
             except sqlite3.Error as error:
-                print(f"cannot read {db}: {error}", file=sys.stderr)
+                print(t("names.cannot_read", db, error), file=sys.stderr)
                 return 2
             return 0
         try:
             found = conflicts(json.loads(sys.stdin.read()), name, db)
         except (ValueError, sqlite3.Error) as error:
-            print(f"could not check the session names in this team ({error}); nothing was changed", file=sys.stderr)
+            print(t("names.check_failed", error), file=sys.stderr)
             return 2
         if found:
             print("\n".join(found), file=sys.stderr)

@@ -18,33 +18,43 @@
 
 | 组件 | 比较方式 | 不一致时 |
 |---|---|---|
-| relay | 已安装的 `agent_relay.py` 和登录服务文件与当前仓库比较 | 确认一次后安装并重启（加 `--yes` 或不在终端运行时不确认）；新 relay 起不来时换回原来的版本 |
-| 引擎 | `~/.local/bin/reason-network` 与本版本固定的版本比较，并看正在运行的守护进程是否在二进制最后一次替换之后启动 | 引擎较旧时，在终端询问后升级，加 `--yes` 也会问（[Reason Network 引擎](#reason-network-引擎)）；守护进程还在跑被替换前的二进制时，询问后重启；引擎更新或认不出版本时停止更新 |
+| relay | 已安装的 `agent_relay.py` 和登录服务文件与当前仓库比较 | 安装并重启；新 relay 起不来时换回原来的版本 |
+| 引擎 | `~/.local/bin/reason-network` 与本版本固定的版本比较，并看正在运行的守护进程是否在二进制最后一次替换之后启动 | 引擎较旧时升级（[Reason Network 引擎](#reason-network-引擎)）；守护进程还在跑被替换前的二进制时重启；引擎更新或认不出版本时停止更新 |
 | dsh 插件 | 已安装 bridge 时，比较已安装的插件文件 | 只替换插件文件，`~/.dsh/cordis.patch.yml` 和你的 bridge 设置保持不变；之后退出并重开 dsh |
-| 云端脚本 | `box/rn-cloud.sh`、`box/rn-fetch.py` 与上次确认的版本比较 | 引导步骤，见下文；Grok Bot 核对发布 tag 后切换到它 |
-| 云端初始化 | `box/rn-cloud-setup.sh` 与上次确认的版本比较 | 询问云端是否已按本版本完成初始化；需要迁移时，更新日志会写明 |
-| 云端引擎 | 本机上次确认的 `[BOT-CLOUD]` Reason Network 版本与固定版本比较 | 询问这次是否做云端引擎这一步；它在引导步骤里进行，见下文 |
-| routine 提示词 | 所选语言渲染出的提示词与上次确认的版本比较 | 引导步骤，见下文 |
+| 云端脚本 | `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-update.sh` 与上次确认的版本比较 | 云端更新，见下文 |
+| 云端初始化 | `box/rn-cloud-setup.sh` 与上次确认的版本比较 | 云端更新，见下文；它运行 `box/rn-cloud-setup.sh --upgrade-engine`，云端迁移都放在这里 |
+| 云端引擎 | 本机上次确认的 `[BOT-CLOUD]` Reason Network 版本与固定版本比较 | 云端更新，见下文；每次都检查云端引擎 |
+| routine 提示词 | 所选语言渲染出的提示词与上次确认的版本比较 | 打印出来，请你在 `[GROK-UI]` 粘贴进 routine，在云端更新之前完成 |
 
-上次确认的版本记录在 `~/.local/lib/agent-mesh/deployed.json`。只有 relay 或 dsh 插件变化时，更新可以无人值守：在终端运行时确认一次，`--yes` 可跳过；不在终端运行时不提问。云端脚本或 routine 提示词变化时需要在终端运行，脚本按"旧组件不会被唤醒"的顺序引导：停止 relay；请你在 `[GROK-UI]` 暂停 routine；打印一段话，内含让 Grok Bot 在 `[BOT-CLOUD]` 运行的命令块，以及 Bot 回复中应出现的提交号和校验值；请你粘贴 Grok Bot 的回复并自动比对；打印新的 routine 提示词供你粘贴；请你恢复 routine；最后启动 relay。
+上次确认的版本记录在 `~/.local/lib/agent-mesh/deployed.json`。计划列出有变化的部分，只问一次 `继续？[Y/n]`；`--yes` 跳过这一问。不在终端运行时，只有不需要回答的情况才会执行：只有 relay 或 dsh 插件变化，或加了 `--yes` 且 routine 提示词没有变化。
 
-云端只安装已发布的版本。改动任何东西之前，`./update.sh` 先在线核对：云端安装来源仓库（公开仓库，或 `--repo-url` 指定的仓库）里存在发布 tag `v<VERSION>`，且本地仓库中的 `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py` 与它一致；本地仓库的其他文件可以不同，也不要求已提交或等于上游。tag 取不到或有文件不同时，更新在停止 relay、动引擎之前就停下，什么都不改。`--plan` 会显示核对结果。只有更新涉及云端脚本或云端引擎时才需要联网核对。发给 Grok Bot 的命令块在 `[BOT-CLOUD]` 取回该 tag，核对它指向发布提交、四个文件的校验值符合预期，之后才切换到该 tag（分离 HEAD）并再次核对文件；不符时停止且不改动仓库，或者恢复到原来的提交，并打印 `STOP:` 行，不打印结尾的结果行。
+顺序是：先更新这台 Mac（回滚未完成的引擎升级、升级引擎、替换 relay 和 dsh 插件），然后在提示词有变化时请你粘贴新提示词（粘贴进 routine 后回答已保存），最后更新云端。
+
+**云端更新。**`./update.sh` 经 relay 从这台 Mac 给 Grok Bot 发一条普通消息：`agent-mesh update <tag> <commit> <请求号>`。routine 提示词里有专门针对这条消息的规则：发件人与云端属于同一个人（也就是用户自己的 Mac），且正文恰好是这一行时，Grok Bot 不用先问，运行 `bash /workspace/agent-mesh/box/rn-cloud-update.sh '<tag>' '<commit>' '<请求号>'`，并把完整输出回复过来。别人发来的同样消息不会被执行。`./update.sh` 最多等 15 分钟，按请求号在这台 Mac 的 Reason Network 数据库里找到回信，核对后记录云端已更新。云端更新期间 routine 照常运行，relay 也不停止。
+
+`[BOT-CLOUD]` 上的 `box/rn-cloud-update.sh` 核对 tag、提交和请求号的格式，拒绝比云端仓库版本更旧的 tag（从不降级），云端仓库有本地改动时停止并列出改动的文件，然后取回该 tag，核对它指向发布提交，切换到它（分离 HEAD），再运行新 checkout 里的同名脚本；后者运行 `box/rn-cloud-setup.sh --upgrade-engine` 并打印结尾的结果行。脚本第一行是 `agent-mesh-result request <请求号>`；任何一步失败都打印 `STOP:` 行，不打印结尾的结果行。引擎步骤失败时保留新 checkout。
+
+回信中有脚本自己打印的结尾几行，每行以 `agent-mesh-result` 开头，分别是发布提交号、四个云端文件各自的校验值和 `DONE <tag>`，并有固定版本、固定构建和 `launcher ok` 三行 `engine:`，才记录云端已更新。有 `STOP:` 行、提交号不同或校验值不同时不记录；`./update.sh` 显示原因，下次运行会发新的请求。15 分钟内没有回信时，Grok Bot 可能还在执行（结果也会出现在 Grok 里）：下次运行 `./update.sh` 先按保存的请求号查找回信，找到就记录，找不到才重新发送。针对其他版本的请求，或在这个 checkout 变化之前发出的请求，它们的回信不会被记录。
+
+**用这个版本第一次更新云端。**上次以 v0.8.1 或更早版本确认的云端还没有 `box/rn-cloud-update.sh`，旧的 routine 提示词也没有更新请求的规则。这时先粘贴新的 routine 提示词，然后 `./update.sh` 发一条带命令块的消息，Grok Bot 会在 Grok 里请你批准一次。命令块先打印请求号，在改动任何内容之前拒绝比云端仓库版本更旧的 tag，取回该 tag，核对它指向发布提交、四个云端文件的校验值符合预期，切换到该 tag 并再次核对文件（不符时恢复到原来的提交），然后运行新 checkout 里的 `box/rn-cloud-update.sh`。以后的更新只发那一行请求。
+
+云端只安装已发布的版本。改动任何东西之前，`./update.sh` 先在线核对：云端安装来源仓库（公开仓库，或 `--repo-url` 指定的仓库）里存在发布 tag `v<VERSION>`，且本地仓库中的 `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`、`box/rn-cloud-update.sh` 与它一致；本地仓库的其他文件可以不同，也不要求已提交或等于上游。tag 取不到或有文件不同时，更新在停止 relay、动引擎之前就停下，什么都不改。`--plan` 会显示核对结果。只有更新涉及云端时才需要联网核对。
 
 - `./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署；不加 `--no-pull` 时仍可能先快进本地仓库。
-- 退出码 3 表示需要在终端作答，部署未改动。
-- 回答"否"、按 Ctrl-C 或某一步失败时，原先运行的 relay 会被重新启动；routine 仍处于暂停状态时会提醒你恢复。再次运行 `./update.sh` 从停下的步骤继续；已完成的步骤不会重做，除非期间版本又有变化。
-- 更新还没有 Bot 地址名的旧安装：名字保持 `bot`，routine 提示词不变。云端设置脚本有改动，`update.sh` 会问一次云端是否已按这个版本设置；不需要迁移云端，直接回答"是"。用了其他 Bot 地址名的安装不能回退到没有 Bot 地址名的版本。
+- 退出码 3 表示需要在终端作答，部署未改动。退出码 1 表示没有全部完成，例如还没收到 Grok Bot 的回信；汇总里写明是哪一部分。
+- `./update.sh --manual` 改为手动更新云端：停止 relay；请你在 `[GROK-UI]` 暂停 routine；打印一段话，内含上面的命令块（在对话里直接发给 Grok Bot，不经过 routine），以及 Bot 回复中应出现的提交号和校验值；请你粘贴 Grok Bot 的完整回复，再输入只有一个点（`.`）的一行，并自动比对；打印新的 routine 提示词供你粘贴；请你恢复 routine；最后启动 relay。回答"否"、按 Ctrl-C 或某一步失败时，原先运行的 relay 会被重新启动；routine 仍处于暂停状态时会提醒你恢复。再次运行 `./update.sh` 从停下的步骤继续；已完成的步骤不会重做，除非期间版本又有变化。
+- Grok Bot 不得做 reset、clean 或 stash；云端仓库有本地改动时更新会停止。和 Grok Bot 一起处理它列出的文件，然后重新运行 `./update.sh`。
+- 更新还没有 Bot 地址名的旧安装：名字保持 `bot`。用了其他 Bot 地址名的安装不能回退到没有 Bot 地址名的版本。
 - 更新到 v0.8.0：已有安装的地址不变，叫 `bot` 的也一样。用 `./install.sh --grok-name '<它在 Grok 里的名字>'` 记录 Bot 在 Grok 里的名字；它只改变地址旁显示的标签。
-- 从 v0.3.0 或更早版本第一次更新：先自己运行一次 `git pull`，因为旧仓库里还没有 `update.sh`。没有部署记录时，云端脚本和提示词按"未知"处理，引导步骤会走一遍。
-- 云端步骤：把 Grok Bot 的回复整段粘贴进来，再输入只有一个点（`.`）的一行。回复中有命令块自己打印的结尾几行，每行以 `agent-mesh-result` 开头，分别是发布提交号、这段话列出的每个校验值和 `DONE <tag>`（这段话本身不含这些行，只是复述它的回复不会被记录），云端引擎这一步还要有固定版本、固定构建和 `launcher ok` 三行 `engine:`，才记录云端已更新；只回答"是"、什么都不贴、有 `STOP:` 行、提交号不同或校验值不同，都不会记录，routine 保持暂停，下次运行 `./update.sh` 会再次请你粘贴回复。Grok Bot 不得做 reset、clean 或 stash；云端仓库有本地改动时命令块会停止。
-- 更新到 v0.8.1：云端脚本和云端引擎都有变化，引导式云端步骤会走一次，并询问是否做云端引擎这一步，回答"是"。这一步把云端引擎移到 `box/bin/engine` 并核对它（[Reason Network 引擎](#reason-network-引擎)）。routine 提示词不变。回答"否"时，云端运行新脚本，引擎仍在 `box/bin/reason-network`，下次运行 `./update.sh` 会再问。
-- 脚本看不到 routine 和云电脑，只能依据你的回答，以及 Grok Bot 报告的提交号和校验值。
+- 从 v0.8.0 或更早版本更新：云端更新同时把云端引擎移到 `box/bin/engine` 并核对它（[Reason Network 引擎](#reason-network-引擎)）。
+- 从 v0.3.0 或更早版本第一次更新：先自己运行一次 `git pull`，因为旧仓库里还没有 `update.sh`。没有部署记录时，云端各部分和提示词按"未知"处理，云端更新和提示词步骤会走一遍。
+- 脚本看不到 routine 和云电脑，只能依据你的回答，以及 Grok Bot 回信里报告的内容。
 
 ## Reason Network 引擎
 
 agent-mesh 0.7.0 把固定的引擎从 Reason Network 0.10.7 换成 0.12.17（0.10.7 在上游安全公告 GHSA-84r9-56w3-xqp9 的影响范围内）。`./update.sh` 会升级两台电脑上的引擎。从任何更早的 agent-mesh 版本都能一次升级完成：它先在旧引擎上装好新 relay，所以不需要先装 0.6.0。
 
-`[LOCAL]` 上的引擎升级需要在终端运行，切换前一定会询问，`--yes` 不会跳过这个问题。顺序如下：
+`[LOCAL]` 上的引擎切换包含在 `./update.sh` 列出计划后唯一那次"继续？"里；`--yes` 代为回答，所以没有终端时也能切换。顺序如下：
 
 1. 在现有引擎上安装当前仓库的 relay，确认 relay 以自己的名字注册。失败时换回原来的 relay，引擎不动。
 2. 列出其他正在使用引擎的进程，例如开着的 Claude Code、Codex 会话。它们不阻止升级，守护进程重启后会继续工作；升级完成后重开这些会话，让它们用上新版本。
@@ -58,9 +68,9 @@ agent-mesh 0.7.0 把固定的引擎从 Reason Network 0.10.7 换成 0.12.17（0.
 
 `./update.sh` 从不降级：引擎比固定版本新或认不出版本时，它停止运行；`./install.sh` 遇到旧引擎会停止，并提示运行 `./update.sh`。二进制已经是 0.12.17、但正在运行的守护进程早于二进制替换启动时，`./update.sh` 会询问是否重启守护进程。
 
-`[BOT-CLOUD]` 上的引擎升级是引导式云端更新的一步，在 routine 暂停期间进行。发给 Grok Bot 的命令块里多一步 `bash /workspace/agent-mesh/box/rn-cloud-setup.sh --upgrade-engine`，它检查云端引擎并按同样的方式升级：按固定校验值校验、备份到 `box/engine-backup-<UTC 时间>/`、切换、核对正在运行的守护进程，失败时，旧二进制属于固定构建才换回。云端引擎已经是 0.12.17 时只做检查，需要时启动或重启守护进程。
+`[BOT-CLOUD]` 上，每次云端更新都从新 checkout 运行 `bash /workspace/agent-mesh/box/rn-cloud-setup.sh --upgrade-engine`，它检查云端引擎并按同样的方式升级：按固定校验值校验、备份到 `box/engine-backup-<UTC 时间>/`、切换、核对正在运行的守护进程，失败时，旧二进制属于固定构建才换回。云端引擎已经是 0.12.17 时只做检查，需要时启动或重启守护进程。
 
-云端引擎放在 `box/bin/engine/reason-network`；`box/bin/reason-network` 是手动运行命令用的启动器，没有 `REASON_NETWORK_HOME` 时拒绝运行，并始终关闭自动更新。这一步把仍在 `box/bin/reason-network` 的引擎（v0.8.0 及更早）移到 `box/bin/engine`，并写入启动器。现有引擎是否可信只看字节、不运行它：不属于 `box/rn-engine.py` 固定构建的二进制（例如被自动更新替换过的，或早先固定的 0.10.7，它没有固定构建值）不运行就直接换成固定版本，原二进制留在备份里，永不放回。固定版本已经放好之后才失败时，打印只使用新二进制的手动步骤；固定版本没能放好时，启动引擎的文件都不改动，这一步提示排除原因后重新运行。Grok Bot 的回复必须包含 `engine: reason-network 0.12.17 running (daemon pid …)`、属于固定构建的 `engine: pinned build <sha256> at box/bin/engine/reason-network` 和 `engine: launcher ok` 三行；`./update.sh` 自动比对，一致才记录云端引擎已确认。`engine: note: other engine daemons run from box/bin` 一行列出此前从旧路径启动的守护进程；它们已无法替换引擎，这一步也不会停止它们（[故障排除](README.zh-CN.md#常见问题)）。云端引擎这一步回答"否"时，汇总里会写明未完成，下次运行 `./update.sh` 会再问。云端引擎是比 0.12.17 新的固定构建时保持不动，这一步失败。
+云端引擎放在 `box/bin/engine/reason-network`；`box/bin/reason-network` 是手动运行命令用的启动器，没有 `REASON_NETWORK_HOME` 时拒绝运行，并始终关闭自动更新。这一步把仍在 `box/bin/reason-network` 的引擎（v0.8.0 及更早）移到 `box/bin/engine`，并写入启动器。现有引擎是否可信只看字节、不运行它：不属于 `box/rn-engine.py` 固定构建的二进制（例如被自动更新替换过的，或早先固定的 0.10.7，它没有固定构建值）不运行就直接换成固定版本，原二进制留在备份里，永不放回。固定版本已经放好之后才失败时，打印只使用新二进制的手动步骤；固定版本没能放好时，启动引擎的文件都不改动，这一步提示排除原因后重新运行。Grok Bot 的回复必须包含 `engine: reason-network 0.12.17 running (daemon pid …)`、属于固定构建的 `engine: pinned build <sha256> at box/bin/engine/reason-network` 和 `engine: launcher ok` 三行；`./update.sh` 自动比对，一致才记录云端引擎已确认。`engine: note: other engine daemons run from box/bin` 一行列出此前从旧路径启动的守护进程；它们已无法替换引擎，这一步也不会停止它们（[故障排除](README.zh-CN.md#常见问题)）。云端引擎是比 0.12.17 新的固定构建时保持不动，这一步失败。
 
 一边是 0.10.7、另一边是 0.12.17 时（哪边先升级都一样），收发、回执和重投都正常：agent-mesh 0.6.0 起能读懂两个引擎的输出。能在同一次运行里升级 Mac 和云端最好。升级之后适用 Reason Network 0.12 的规则：默认中继在 `compute.reasonmachines.com` 下（[网络](README.zh-CN.md#网络)），离线超过一天的普通会话会连同未读信一起被遗忘（[网络与用量](README.zh-CN.md#网络与用量)）。
 

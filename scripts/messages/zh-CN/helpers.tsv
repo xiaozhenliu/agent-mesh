@@ -1,0 +1,42 @@
+names.empty	Bot 地址名为空
+names.too_long	Bot 地址名 %s 超过 %s 个字符
+names.bad_chars	Bot 地址名 %s 只能由小写字母和数字组成，各段之间用单个 '-' 连接（开头和结尾不能是 '-'，也不能连续出现）
+names.reserved	Bot 地址名 %s 是保留名：Reason Network 自己使用 terminal 和 terminal-<数字>
+names.grok_empty	Bot 在 Grok 里的名字为空
+names.grok_too_long	Bot 在 Grok 里的名字超过 %s 个字符
+names.grok_spaces	Bot 在 Grok 里的名字开头或结尾有空格
+names.grok_control	Bot 在 Grok 里的名字含有换行或其他控制字符
+names.cannot_read	无法读取 %s：%s
+names.env_incomplete	%s 不完整（缺少 RN_BIN 行）；删除它后重新运行 ./install.sh --webhook，或从备份恢复
+names.env_listen	%s：LISTEN_NAME：%s
+names.env_not_derived	%s：这几个 relay 名称不是由同一个 Bot 地址名派生的：%s、%s、%s
+names.marker_invalid	%s 无效：%s
+names.marker_fields	%s 缺少有效的 name 和 pid
+names.no_sessions	会话列表缺少 sessions 数组
+names.session_unnamed	会话列表里有一个会话没有名字
+names.taken	会话 %s（机器 %s，%s）已在这个团队中；请换一个 --relay-name
+names.unknown	未知
+names.key_taken	这台 Mac 的引擎已把 %s 的 relay 密钥登记为 %s；请换一个 --relay-name
+names.option_value	relay_names：%s 需要一个值
+names.no_db	%s 处没有引擎数据库
+names.check_failed	无法检查这个团队里的会话名（%s）；没有做任何改动
+targets.no_defaults	未安装引擎，也没有 %s 的已知默认 relay
+targets.defaults	Reason Network %s 的默认 relay（尚未安装）
+targets.team	团队的 relay
+targets.n0	n0 公共 relay（Reason Network %s）
+targets.daemon_log	daemon.log 记录的主 relay（Reason Network %s）
+targets.relays_json	relays.json 中 Reason 的 relay 列表（Reason Network %s）
+targets.not_logged	Reason Network %s 还没有记录 relay，也没有 relays.json
+targets.version	Reason Network 版本 %s
+targets.unreadable	无法读取
+reply.no_address	这台 Mac 还没有 Bot 地址（没有团队或地址名）；请先运行 ./install.sh
+reply.no_block	没有找到唯一且完整的 agent-mesh 区块（从 '<!-- agent-mesh:bot-address lang=... -->' 到 '%s'）
+reply.write_lost	无法写入 %s（%s），也无法放回原文件；原文件在 %s
+reply.write_restored	无法写入 %s（%s）；已放回原文件
+reply.installed	含本 Bot 地址的回复约定：%s
+reply.not_regular	%s 不是普通文件；没有做任何改动
+reply.backup_left	%s 是上次中断的刷新留下的；请与 %s 对比，把正确内容留在文件里并删除这个备份，然后重新运行；没有做任何改动
+reply.not_utf8	%s 不是 UTF-8 文本；没有做任何改动
+reply.refresh_failed	%s：%s；没有做任何改动。如果其中是旧版回复约定，请用 %s（或 zh-CN 版文件）替换那一段
+reply.up_to_date	%s 已显示本 Bot 的地址
+reply.updated	已更新 %s 中的 Bot 地址

@@ -1,0 +1,37 @@
+state.unreadable_unknown	update: %s is unreadable (%s); treating cloud and prompt as unknown
+state.format_unknown	update: %s has an unknown format; treating cloud and prompt as unknown
+state.txn_damaged	update: the record of an unfinished update is damaged and was ignored; if the routine is still paused in Grok Bot, resume it
+state.renamed_not_recorded	update: the Bot address name changed from %s (recorded when this Mac was installed) to %s; renaming is not supported, nothing was recorded
+state.checkout_moved	update: this checkout changed after %s was shown; nothing was recorded, run ./update.sh again
+state.record_moved	update: the %s record changed after it was shown; nothing was recorded, run ./update.sh again
+state.env_name_differs	%s uses the Bot address name %s, not %s
+state.unreadable_strict	%s is unreadable (%s); nothing was recorded. Run ./update.sh --plan to see what it reports, or restore the file from a backup
+state.unreadable_plain	%s is unreadable (%s). Run ./update.sh --plan to see what it reports, or restore the file from a backup
+state.format_strict	%s has an unknown format; nothing was recorded
+state.format_plain	%s has an unknown format
+state.renamed	the Bot address name changed from %s to %s; renaming is not supported, nothing was recorded
+state.no_txn	update: no unfinished update to change
+release.fetch_failed	the release %s could not be fetched from %s (not published yet, or a network problem): %s; nothing was changed
+release.not_commit	the release %s at %s does not point to a commit; nothing was changed
+release.missing_file	the release %s has no %s; nothing was changed
+release.differs	%s in this checkout differs from the release %s; the cloud installs only the release, so update this checkout to it first. Nothing was changed
+release.check_failed	could not check the release %s at %s: %s; nothing was changed
+reply.stop	the reply has a STOP line
+reply.no_done	no line 'agent-mesh-result DONE %s' in the reply
+reply.no_commit	no line 'agent-mesh-result commit <40 hex characters>' in the reply
+reply.other_commit	the reply shows commit %s, not %s
+reply.no_sum	no line 'agent-mesh-result sum <sha256>  %s' in the reply
+reply.sum_differs	the checksum of %s differs from this checkout
+reply.no_engine	no line 'engine: reason-network <version> running (daemon pid ...' in the reply
+reply.other_engine	the cloud engine runs %s, not %s
+reply.no_build	no line 'engine: pinned build <sha256> at box/bin/engine/reason-network' in the reply
+reply.unpinned_build	the cloud engine is not a pinned Reason Network %s build
+reply.no_launcher	no line 'engine: launcher ok' in the reply
+reply.mismatch	  mismatch: %s
+reply.match	  match: commit, checksums
+reply.match_engine	  match: commit, checksums and engine %s
+request.no_env	cannot read %s (%s); run ./install.sh first
+request.no_person	%s has no PERSON line; run ./install.sh --webhook again
+request.no_db	%s does not exist; is Reason Network installed on this Mac?
+request.db_error	could not read %s: %s
+request.checkout_moved	this checkout changed after the update request was sent; the request is sent again

@@ -1,0 +1,101 @@
+check.lang_value	check: --lang needs en or zh-CN
+check.lang_unsupported	check: unsupported language '%s'; choose en or zh-CN
+check.unknown_option	check: unknown option: %s (only --lang en|zh-CN)
+check.skip_reason	%s (%s)
+check.not_macos	not macOS
+check.not_macos_fix	run this check on [LOCAL], the user's Mac
+check.custom_rn_home	custom REASON_NETWORK_HOME
+check.custom_rn_home_fix	this installer supports the default user profile only
+check.python_ok	Python 3.9+ with ssl and sqlite3
+check.python_bad	Python 3.9+ missing or incomplete
+check.python_fix	install Python 3.9+ and ensure python3 is on PATH; see README prerequisites
+check.path_ok	PATH includes ~/.local/bin
+check.path_bad	PATH lacks ~/.local/bin
+check.path_fix	add ~/.local/bin to PATH using your shell's startup file; see README prerequisites
+check.relay_hint	allow direct connections (no HTTPS decryption) to the whole iroh.link and reasonmachines.com domains; see README.md: Troubleshooting (Chinese: README.zh-CN.md)
+check.relay_ok	relay reachable: %s
+check.relay_bad	relay not reachable (%s):%s
+check.relay_unknown	relay reachability unknown
+check.relay_unknown_why	%s; %s
+check.targets_failed	relay_targets.py failed
+check.engine_same	reason-network %s (the version this release pins)
+check.engine_older	reason-network %s is older than %s, the version this release pins
+check.engine_older_fix	run ./update.sh: it upgrades the engine with a backup and rolls back on failure (UPGRADE.md)
+check.engine_other	reason-network %s is not supported by this release (it pins %s)
+check.engine_other_fix	agent-mesh never downgrades the engine; use the agent-mesh release made for this engine version, or reinstall %s
+check.unknown_version	of an unknown version
+check.upgrade_unfinished	an engine upgrade did not finish
+check.upgrade_unfinished_fix	run ./update.sh in a terminal: it rolls the switch back first (backup: %s)
+check.unknown	unknown
+check.team_name	team name: %s
+check.no_person	no person in %s
+check.run_install	run ./install.sh
+check.cloud_joined	cloud machine joined
+check.cloud_machine	cloud machine
+check.cloud_not_joined	not joined yet: send the text from ./install.sh --cloud-prompt to Grok Bot
+check.team_only	team holds only this machine and cloud
+check.team_extra	unexpected team members: %s
+check.team_extra_fix	if you did not add them: reason-network remove <person>/<machine> for each, then ./install.sh --rotate-key (README: Security and privacy)
+check.no_team	not in a team
+check.daemon_fresh	engine daemon runs the installed binary (%s)
+check.daemon_stale	the engine daemon (%s) started before the binary was replaced, so it still runs the old version
+check.daemon_stale_fix	reason-network stop, then ./check.sh again (the next command starts it on the installed binary)
+check.daemon	engine daemon
+check.daemon_none	not running
+check.daemon_unknown	could not check: %s
+check.auto_update_ok	auto_update off
+check.auto_update_bad	auto_update not off
+check.auto_update_fix	set  auto_update = false  in %s
+check.lan_ok	lan broadcast off
+check.lan_bad	lan not off
+check.lan_fix	set  lan = false  in %s
+check.no_engine	reason-network not installed
+check.env_names	relay names in env are not derived from one name
+check.env_names_fix	%s; make LISTEN_NAME/CLOUD_NAME/INBOX_NAME <name>, <name>-cloud, <name>-inbox (README: Install)
+check.bot_address	Bot address
+check.no_address	no address name chosen yet: run ./install.sh (AGENT-INSTALL.md)
+check.bot_address_is	Bot address: %s
+check.bot_address_no_grok	Bot address: %s (no Grok name recorded; ./install.sh --grok-name '<its name in Grok>' adds it)
+check.bot_address_grok_unreadable	Bot address: %s (could not read the Grok name: %s)
+check.env_mode_ok	env file mode 600
+check.env_mode_bad	env file not mode 600
+check.webhook_ok	webhook configured
+check.webhook_bad	webhook not configured
+check.run_webhook	run ./install.sh --webhook
+check.relay_unconfigured	relay not configured
+check.key_ok	signing key present
+check.key_bad	signing key missing
+check.relay_missing	relay file missing
+check.relay_current	relay installed (this checkout's version)
+check.relay_old	the installed relay predates Reason Network 0.12 terminal addresses
+check.relay_old_fix	run ./update.sh (it installs this checkout's relay)
+check.relay_version	relay version
+check.relay_differs	the installed relay differs from this checkout; ./update.sh installs this one
+check.service_ok	relay service loaded
+check.service_bad	relay service not loaded
+check.log_up	relay log shows 'agent-relay up'
+check.log_never_up	relay never came up
+check.post_ok	latest webhook POST succeeded (code=%s)
+check.post_recovered	latest webhook POST succeeded (code=%s; recovered after an earlier failure)
+check.post_failed	latest webhook POST failed (code=%s)
+check.post_fix	check the Webhook URL and key: ./install.sh --webhook
+check.post_failures	recent webhook POST failures
+check.registration	relay registration
+check.name_unknown	the Bot address name is not known
+check.no_process	the relay service has no running process
+check.registered_other	relay registered under another name: %s
+check.registered_other_fix	another session took %s; the relay gets no mail for %s (README: Troubleshooting)
+check.listening	relay listening as %s (registered on the running engine daemon)
+check.not_registered	relay not registered on the running engine: %s
+check.not_registered_fix	if ./update.sh has not run for this checkout, run it; otherwise see tail -n 30 ~/Library/Logs/agent-relay.log and ./install.sh --restart-relay (README: Troubleshooting)
+check.sessions_ok	%s agent session(s) on the roster
+check.sessions	agent sessions
+check.sessions_none	open a Claude Code / Codex session, then rerun
+check.cloud_engine_ok	cloud engine last confirmed at %s
+check.cloud_engine_old	cloud engine last confirmed at %s, not %s
+check.cloud_engine_old_fix	run ./update.sh: its cloud engine step has Grok Bot run box/rn-cloud-setup.sh --upgrade-engine
+check.cloud_engine	cloud engine
+check.cloud_engine_pending	the cloud setup the installer printed is not confirmed yet; ./update.sh asks about it
+check.cloud_engine_none	no confirmed cloud engine version recorded; ./update.sh's cloud engine step records it
+check.cloud_engine_unreadable	could not read %s: %s
+check.result_fail	fix the FAIL lines above

@@ -1,0 +1,125 @@
+install.grok_name_value	install: --grok-name needs the Bot's name in Grok
+install.lang_value	install: --lang needs en or zh-CN
+install.unknown_option	unknown option: %s
+install.lang_unsupported	install: unsupported language '%s'; choose en or zh-CN
+install.grok_name_mode	install: --grok-name works with a full install, --webhook or --cloud-prompt, or on its own
+install.cpu	unsupported CPU %s
+install.no_pin	no pinned sha256 for Reason Network %s on %s
+install.download_failed	could not download Reason Network %s; nothing was installed
+install.checksum	checksum mismatch for reason-network-%s.tar.gz (expected %s, got %s); nothing was installed. Run again to download it again; if it keeps failing, do not install it
+install.no_binary	the downloaded archive has no reason-network binary; nothing was installed
+install.binary_version	the downloaded binary does not report Reason Network %s; nothing was installed
+install.rename_refused	this installation uses the Bot address name '%s'. Renaming is not supported, also not for an unfinished\ninstallation: queued mail, the routine prompt and the cloud setup all use the current name. Run again without\n--relay-name to keep '%s', or remove the installation including its identity (README: Uninstall) and install again.
+install.tmp_failed	cannot create a temporary file in %s; %s is unchanged
+install.env_write_failed	could not write %s; it is unchanged
+install.env_read_failed	cannot read %s; nothing changed
+install.reply_failed	note: could not write the reply convention with this Bot's address to %s
+install.hint_suggested	From --grok-name, the suggested address is: --relay-name %s
+install.hint_no_latin	The Grok name has no Latin letters or digits to build an address from: give this Bot a letter address yourself (for example its name in pinyin or English).
+install.need_relay_name	a new installation needs the Bot's address name. What is your Grok Bot called? Run again with\n--relay-name <address> --grok-name '<its name in Grok>'. The address is lowercase letters and digits joined by\nsingle '-', at most 34 characters (for example nova for Nova); it is how your agents find this Bot and cannot be\nchanged later.%s
+install.record_failed	note: could not update %s; ./update.sh will ask about this step
+install.bootstrap_failed	launchctl bootstrap failed
+install.up_then_died	the relay reported 'agent-relay up' but is no longer running
+install.no_up	relay did not report 'agent-relay up' within 10 s
+install.rollback_bad	the saved copy in %s failed verification; nothing was restored, restore it by hand
+install.unload_failed	could not unload the relay service; the previous files stay in %s
+install.restore_files_failed	could not put the previous files back from %s
+install.previous_not_up	the previous relay did not come back up; see %s
+install.interrupted	interrupted; restoring the previous relay
+install.not_fully_restored	the previous relay was not fully restored; see the lines above
+install.unfinished_switch	an earlier relay switch did not finish; restoring the previous relay first
+install.backup_failed	could not save a copy of the current relay; nothing changed
+install.prepare_failed	could not prepare the new relay; nothing changed
+install.relay_up	relay up (log: %s)
+install.last_log	Last log lines:
+install.restoring	restoring the previous relay
+install.restored	previous relay restored
+install.reg_no_process	nothing (the relay service has no running process)
+install.registered	relay registered as %s
+install.reg_nothing	nothing (%s)
+install.reg_timeout	nothing (the new relay reported no registration within %s s)
+install.registered_other	the relay registered as %s instead of %s; another session in the team may use this name (reason-network who --all). The relay keeps running but gets no mail for %s; see README: Troubleshooting
+install.new_registered_other	the new relay registered as %s instead of %s; another session in the team may use this name (reason-network who --all)
+install.need_team_key	team or signing key missing; run ./install.sh --name <team-name> first
+install.no_engine	Reason Network is not installed; run the full install first
+install.no_team	not in a team yet; run the full install first
+install.routine_intro	[GROK-UI] User: create a webhook-triggered routine in Grok Bot and paste this prompt. The Bot executes it on [BOT-CLOUD], its cloud computer:
+install.routine_panel	The routine panel then shows a Webhook URL and a key.
+install.webhook_no_tty	This is not a terminal, so the values cannot be entered here.
+install.webhook_run_later	[LOCAL] User: run   %s   in this repository on your Mac and paste them there (never into a chat).
+install.ask_url	Webhook URL: 
+install.ask_key	Webhook key (not echoed): 
+install.url_https	the Webhook URL must start with https:// (the key travels in a request header)
+install.both_required	both values are required
+install.release_failed	%s. The cloud setup prompt was not printed; once this checkout matches the published release, run ./install.sh --cloud-prompt
+install.cloud_intro	[GROK-UI] User: send this to Grok Bot as one message. The Bot executes it on [BOT-CLOUD], its cloud computer. The first line is the invite, valid 24 hours while [LOCAL], your Mac, is online:
+install.copy_key	[GROK-UI] User: approve CopyToBox from [LOCAL] %s to [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key. Afterwards the installing agent runs ./check.sh on [LOCAL].
+install.bot_address_cloud	Bot address: %s (cloud sessions %s, %s)
+install.bot_address	Bot address: %s
+install.refresh_copies	Copies of the reply convention in your repositories' AGENTS.md keep the old text until you run
+install.rotate_unconfigured	the relay is not configured yet; finish ./install.sh first (a first install creates a fresh key)
+install.rotate_read_failed	cannot read %s; the key is unchanged
+install.rotate_inline	%s sets OUTBOUND_KEY inline, which the relay prefers over %s; remove that line, then rotate again
+install.rotate_other_file	%s does not load the key from %s (OUTBOUND_KEY_FILE); fix that line, then rotate again
+install.rotate_warning	This replaces %s and restarts the relay. Until [BOT-CLOUD] has the new key,\nthe relay refuses the Bot's replies and the cloud's fetch reports bad signatures.
+install.ask_rotate	Rotate the signing key now? [y/N] 
+install.rotate_stopped	stopped; the key is unchanged
+install.rotate_no_tty	This is not a terminal: nothing changed. Run again with --yes to rotate.
+install.keygen_failed	could not generate a new key; the old key is unchanged
+install.key_written	new signing key written to %s (mode 600)
+install.rotate_copy	[GROK-UI] User: ask Grok Bot to copy the new key with CopyToBox, and approve the copy:\n  source [LOCAL] %s\n  destination [BOT-CLOUD] /workspace/agent-mesh/box/outbound.key (replace the old file), then chmod 600 it there.\n  The key must not appear in the chat.
+install.rotate_after	Then run ./check.sh on [LOCAL] and send a test message (README: Verify).\nMail forwarded before now that [BOT-CLOUD] has not fetched keeps the old signature: fetch reports it as\nmismatch and it is not redelivered; ask the senders to resend (README: Replacing keys).
+install.rotate_leak	If the Webhook URL or key may also have leaked: regenerate the key in [GROK-UI] (or recreate the routine),\nthen run   %s   on [LOCAL].
+install.rotate_restart_failed	the relay did not restart; see the log lines above, then run ./install.sh --webhook
+install.purge_symlink	refusing to delete through a symlink: %s; nothing was removed
+install.purge_racing	copies kept appearing while deleting (mail is arriving); run --purge-copies again
+install.purged	removed %s kept message copies from %s
+install.purge_after	Re-forward requests for those messages now answer no-copy; the sender has to send again.\nBodies also stay in the engine database (~/.reason/network/network.db) and on [BOT-CLOUD]; see README: Security and privacy.
+install.need_name	need --name <team-name> (run with --help)
+install.need_macos	[LOCAL] this installer requires macOS (Apple Silicon or Intel)
+install.no_sudo	run as the logged-in Mac user, without sudo
+install.bad_home	HOME must be an absolute, writable user home directory
+install.missing_tool	missing %s; see README prerequisites before retrying
+install.python_broken	python3 cannot start; finish or repair its installation before retrying
+install.python_old	Python 3.9+ with ssl and sqlite3 is required; install it and put python3 on PATH
+install.fetch_dir	%s needs an existing empty directory
+install.no_gui	no macOS GUI login session; sign in to the Mac desktop as this user first
+install.custom_rn_home	custom REASON_NETWORK_HOME is not supported; use the default user profile or stop to review your existing deployment
+install.repo_url	%s must be a public HTTPS clone URL accessible without cloud credentials
+install.env_names	%s. The installer manages only <name>, <name>-cloud, <name>-inbox; make LISTEN_NAME/CLOUD_NAME/INBOX_NAME match or remove all three, then run again
+install.recorded_other	this Mac was installed with the Bot address name '%s' (recorded in %s), not '%s'. Renaming is not supported: run again with --relay-name %s or without --relay-name, or remove the installation including its identity (README: Uninstall) and install again.
+install.env_other	this Mac was installed with the Bot address name '%s', but %s now gives '%s'. Renaming is not supported: put LISTEN_NAME/CLOUD_NAME/INBOX_NAME back to '%s', or remove the installation including its identity (README: Uninstall) and install again.
+install.other_engine	reason-network already exists at %s; review that installation before using %s
+install.engine_older	existing Reason Network is %s; this release requires %s. Run ./update.sh to upgrade it (it keeps a backup and rolls back on failure); it has not been overwritten
+install.engine_unsupported	existing Reason Network is %s; this release supports %s and never downgrades or replaces a newer or unrecognised engine. Review that installation first; it has not been changed
+install.unknown_version	of an unknown version
+install.label_nothing	no installation to label yet: install with ./install.sh --name <team-name> --relay-name <address> --grok-name '<its name in Grok>' first; nothing was recorded
+install.not_configured	the relay is not configured yet; run ./install.sh --webhook
+install.no_plist	the relay login service is missing; run ./install.sh --webhook
+install.not_switched	the relay was not switched; see the lines above
+install.name_rule	the name must be 1-40 chars of lowercase letters and digits, joined by single '-' (no '-' at the start or end, none repeated: Reason Network would merge them)
+install.step_network	1/6 network
+install.relay_unreachable	cannot reach the relay %s (HTTP '%s'; %s). Allow direct connections to the whole iroh.link and reasonmachines.com domains and exclude them from HTTPS decryption. Confirm the curl check prints 200, then run this again. See README.md: Troubleshooting (Chinese: README.zh-CN.md).
+install.relay_ok	ok (%s)
+install.relay_unchecked	relay not checked: %s. If the engine cannot connect, allow direct connections to the whole iroh.link and reasonmachines.com domains; see README.md: Troubleshooting (Chinese: README.zh-CN.md).
+install.targets_failed	relay_targets.py failed
+install.step_engine	2/6 Reason Network %s
+install.engine_present	already installed: %s
+install.engine_installed	installed %s at %s
+install.path_note	note: add %s to PATH using your shell startup file; see README prerequisites
+install.step_team	3/6 team
+install.team_other	existing team person is '%s', requested '%s'; review the existing deployment before changing it. Nothing can be renamed in place
+install.team_present	already in a team
+install.cfg_failed	could not write %s
+install.who_failed	could not list the team's sessions (reason-network who --all --json failed), so the Bot address name '%s' was not checked; nothing else was changed, run again
+install.step_wiring	4/6 wiring your local agents
+install.ask_apply	Apply these changes? [y/N] 
+install.apply_stopped	stopped before applying. Run again with --yes to apply.
+install.apply_no_tty	This is not a terminal: nothing applied. Review the plan above and run again with --yes.
+install.reopen_sessions	Sessions of Claude Code / Codex that were already open must be reopened.
+install.step_key	5/6 signing key and routine webhook
+install.grok_not_recorded	note: the Grok name was not recorded (%s); run ./install.sh --grok-name '<name>' later
+install.step_cloud	6/6 cloud side
+install.help	agent-mesh: install the Mac side in one run.\n  ./install.sh --name <team-name> --relay-name <address> --grok-name <name> [--machine mac] [--yes] [--lang en|zh-CN]\n  ./install.sh --grok-name <name>  record or change the Bot's name in Grok (a label; the address stays)\n  ./install.sh --webhook        enter (or change) the routine's Webhook URL and key, then (re)start the relay\n  ./install.sh --cloud-prompt   print the invite and the text to send to Grok Bot again\n  ./install.sh --rotate-key     replace the signing key, restart the relay, print how to copy it to the cloud\n  ./install.sh --purge-copies   delete the relay's kept copies of forwarded messages (re-forward then says no-copy)\n  --repo-url https://...       public distribution URL accessible from the Bot's cloud computer\n  ./install.sh --version      print agent-mesh and pinned Reason Network versions; no installation\n  ./install.sh --restart-relay  (used by update.sh) install this checkout's relay and restart it; rolls back if it\n                                does not come up or does not register under its name\n  ./install.sh --preflight      (used by update.sh) check this Mac and the existing installation; changes nothing\n  ./install.sh --fetch-engine DIR  (used by update.sh) download the pinned Reason Network for this Mac, verify its\n                                sha256 and version, and unpack it into DIR; changes nothing else\n--lang selects the language of the prompts and of the terminal text in every mode. Default: the language recorded\nat install, then AGENT_MESH_LANG, otherwise en.\nThe team name is also your name inside the team: 1-40 chars, lowercase letters and digits joined by single '-',\nnot your real name. It is fixed once the team exists.\n--relay-name picks the Bot's address <team-name>/<name> (the cloud uses <name>-cloud and <name>-inbox): 1-34\nchars, the same character rules, not terminal. Use the Bot's own name so agents can tell Bots apart. A new\ninstallation needs it; an existing one keeps its name (including bot). It cannot be changed once chosen.\n--grok-name is the Bot's name as Grok shows it, in any language; it is stored as given and not used for routing.\ncheck.sh and the reply convention show <team-name>/<address> → Grok: <name>.\nWhat it does: installs Reason Network, creates your private team, wires your local agents (after showing the\nplan), generates the signing key, asks for the routine's webhook, installs the relay as a login service, then\nprints what to send to Grok Bot. Re-running is safe.
+install.option_value	install: %s needs a value
+install.see_help	run ./install.sh --help for the options

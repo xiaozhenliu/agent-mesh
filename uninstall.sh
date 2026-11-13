@@ -1,25 +1,35 @@
 #!/usr/bin/env bash
-# Remove agent-mesh from this Mac and, guided, from the Bot's cloud computer. Without options it only shows
-# what is installed; nothing is removed until you choose a level and confirm it.
-#   ./uninstall.sh --plan [--level L]        what is installed and what a level would do; removes nothing
-#   ./uninstall.sh --level program [--yes]   the relay program only; team, settings, key and cloud stay
-#   ./uninstall.sh --level identity          also leave the team on both computers, remove keys and identity
-#   ./uninstall.sh --level all               also remove logs, the engine and the cloud's data (--all for short)
-#   ./uninstall.sh --residual --level identity|all   no identity left on this Mac (e.g. after an older --all)
-#   ./uninstall.sh --cloud-prompt --level identity|all   only the cloud step again
-#   --lang en|zh-CN                          language of the printed cloud prompt
-# Levels identity and all run only in your own terminal and ask you to type a confirmation.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/scripts/msg.sh"
 die() { echo "uninstall: $*" >&2; exit 1; }
-case "${1:-}" in -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
-[ "$(uname -s)" = Darwin ] || die "[LOCAL] this uninstaller requires macOS"
-[ "$(id -u)" != 0 ] || die "run as the logged-in Mac user, without sudo"
+UNINSTALL_LANG=""; prev=""
+for arg in "$@"; do
+  [ "$prev" != --lang ] || UNINSTALL_LANG="$arg"
+  case "$arg" in --lang=*) UNINSTALL_LANG="${arg#--lang=}" ;; esac
+  prev="$arg"
+done
+if [ -n "$UNINSTALL_LANG" ]; then
+  case "$UNINSTALL_LANG" in
+    en|zh-CN) ;;
+    *) printf '%s / %s\n' "$(AGENT_MESH_LANG=en tq uninstall.lang_unsupported "$UNINSTALL_LANG")" \
+         "$(AGENT_MESH_LANG=zh-CN tq uninstall.lang_unsupported "$UNINSTALL_LANG")" >&2; exit 2 ;;
+  esac
+elif command -v python3 >/dev/null; then
+  UNINSTALL_LANG="$(python3 "$HERE/scripts/deploy_state.py" lang 2>/dev/null)" || UNINSTALL_LANG=""
+fi
+if [ -z "$UNINSTALL_LANG" ]; then
+  case "${AGENT_MESH_LANG:-}" in zh-CN) UNINSTALL_LANG=zh-CN ;; *) UNINSTALL_LANG=en ;; esac
+fi
+export AGENT_MESH_LANG="$UNINSTALL_LANG"
+for arg in "$@"; do case "$arg" in -h|--help) t uninstall.help; exit 0 ;; esac; done
+[ "$(uname -s)" = Darwin ] || die "$(tq uninstall.need_macos)"
+[ "$(id -u)" != 0 ] || die "$(tq uninstall.no_sudo)"
 [ "${REASON_NETWORK_HOME:-$HOME/.reason/network}" = "$HOME/.reason/network" ] \
-  || die "custom REASON_NETWORK_HOME is not supported; review your deployment before uninstalling"
-[[ "$HOME" = /* ]] && [ -d "$HOME" ] || die "HOME must be an absolute home directory"
-command -v python3 >/dev/null || die "python3 is missing; see README prerequisites"
-PYTHON="$(python3 -c 'import sys; print(sys.executable)')" || die "python3 cannot start"
-"$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 9))' || die "Python 3.9+ is required"
+  || die "$(tq uninstall.custom_rn_home)"
+[[ "$HOME" = /* ]] && [ -d "$HOME" ] || die "$(tq uninstall.bad_home)"
+command -v python3 >/dev/null || die "$(tq uninstall.no_python)"
+PYTHON="$(python3 -c 'import sys; print(sys.executable)')" || die "$(tq uninstall.python_broken)"
+"$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 9))' || die "$(tq uninstall.python_old)"
 export REASON_NETWORK_HOME="$HOME/.reason/network"
 exec "$PYTHON" "$HERE/scripts/uninstall.py" "$@"

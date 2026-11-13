@@ -1,0 +1,42 @@
+names.empty	the Bot address name is empty
+names.too_long	the Bot address name %s is longer than %s characters
+names.bad_chars	the Bot address name %s must be lowercase letters and digits, in groups joined by a single '-' (no '-' at the start or end, none repeated)
+names.reserved	the Bot address name %s is reserved: Reason Network uses terminal and terminal-<number>
+names.grok_empty	the Bot's name in Grok is empty
+names.grok_too_long	the Bot's name in Grok is longer than %s characters
+names.grok_spaces	the Bot's name in Grok starts or ends with a space
+names.grok_control	the Bot's name in Grok contains a line break or another control character
+names.cannot_read	cannot read %s: %s
+names.env_incomplete	%s is incomplete (it has no RN_BIN line); remove it and run ./install.sh --webhook again, or restore it from a backup
+names.env_listen	%s: LISTEN_NAME: %s
+names.env_not_derived	%s: the relay names are not derived from one Bot address name: %s, %s, %s
+names.marker_invalid	%s is not valid: %s
+names.marker_fields	%s has no valid name and pid
+names.no_sessions	the session list has no sessions array
+names.session_unnamed	a session in the list has no name
+names.taken	the session %s (machine %s, %s) already exists in this team; choose another --relay-name
+names.unknown	unknown
+names.key_taken	this Mac's engine already registered the relay key for %s as %s; choose another --relay-name
+names.option_value	relay_names: %s needs a value
+names.no_db	no engine database at %s
+names.check_failed	could not check the session names in this team (%s); nothing was changed
+targets.no_defaults	no engine installed and no known default relays for %s
+targets.defaults	default relays of Reason Network %s (not installed yet)
+targets.team	the team's relay
+targets.n0	n0 public relays (Reason Network %s)
+targets.daemon_log	home relay from daemon.log (Reason Network %s)
+targets.relays_json	Reason's relay list in relays.json (Reason Network %s)
+targets.not_logged	Reason Network %s has not logged a relay yet and has no relays.json
+targets.version	Reason Network version %s
+targets.unreadable	unreadable
+reply.no_address	this Mac has no Bot address yet (no team or no address name); run ./install.sh first
+reply.no_block	no single, complete agent-mesh block (from '<!-- agent-mesh:bot-address lang=... -->' to '%s')
+reply.write_lost	could not write %s (%s) and could not put the original back; the original is in %s
+reply.write_restored	could not write %s (%s); the original was put back
+reply.installed	reply convention with this Bot's address: %s
+reply.not_regular	%s is not a regular file; nothing was changed
+reply.backup_left	%s is left from an interrupted refresh; compare it with %s, keep the right text in the file and remove the backup, then run again; nothing was changed
+reply.not_utf8	%s is not UTF-8 text; nothing was changed
+reply.refresh_failed	%s: %s; nothing was changed. If it holds an older copy of the reply convention, replace that section with %s (or the zh-CN file)
+reply.up_to_date	%s already shows this Bot's address
+reply.updated	updated the Bot address in %s

@@ -85,5 +85,18 @@ class OverwriteInPlace(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), self.old)
 
 
+    def test_refresh_messages_follow_the_language(self):
+        self.backup.write_bytes(self.old)
+        with mock.patch.dict(os.environ, {"AGENT_MESH_LANG": "zh-CN"}):
+            with self.assertRaises(SystemExit) as caught:
+                reply_convention.main(["refresh", str(self.path)])
+        self.assertIn("是上次中断的刷新留下的", str(caught.exception))
+        self.assertIn("没有做任何改动", str(caught.exception))
+        with mock.patch.dict(os.environ, {"AGENT_MESH_LANG": "zh-CN"}):
+            with self.assertRaises(SystemExit) as caught:
+                reply_convention.main(["refresh", str(self.path.parent)])
+        self.assertIn("不是普通文件；没有做任何改动", str(caught.exception))
+        self.assertEqual(self.path.read_bytes(), self.old)
+
 if __name__ == "__main__":
     unittest.main()

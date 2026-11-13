@@ -1,11 +1,32 @@
 #!/usr/bin/env bash
 # Read-only self-check for agent-mesh on the Mac. Changes nothing.
 #   ./check.sh      exit 0 = all PASS, 1 = at least one FAIL (each FAIL line says what to do)
+#   --lang en|zh-CN  language of the text after PASS/FAIL/SKIP; default: the language recorded at install, then
+#                    AGENT_MESH_LANG, then en
 # Agents: run it after install.sh and after the cloud side joins; paste the output to the user as is.
 # It changes no deployment, configuration or state file and stops nothing. Engine commands it runs (team, who) may
 # start a stopped engine daemon, as any Reason Network command does.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/scripts/msg.sh"
+both_langs() { printf '%s / %s\n' "$(AGENT_MESH_LANG=en tq "$@")" "$(AGENT_MESH_LANG=zh-CN tq "$@")"; }
+CHECK_LANG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --lang) [ $# -ge 2 ] || { both_langs check.lang_value >&2; exit 2; }; CHECK_LANG="$2"; shift 2
+      case "$CHECK_LANG" in en|zh-CN) ;; *) both_langs check.lang_unsupported "$CHECK_LANG" >&2; exit 2 ;; esac ;;
+    --lang=*) CHECK_LANG="${1#--lang=}"; shift
+      case "$CHECK_LANG" in en|zh-CN) ;; *) both_langs check.lang_unsupported "$CHECK_LANG" >&2; exit 2 ;; esac ;;
+    *) both_langs check.unknown_option "$1" >&2; exit 2 ;;
+  esac
+done
+if [ -z "$CHECK_LANG" ] && command -v python3 >/dev/null; then
+  CHECK_LANG="$(python3 "$HERE/scripts/deploy_state.py" lang 2>/dev/null)" || CHECK_LANG=""
+fi
+if [ -z "$CHECK_LANG" ]; then
+  case "${AGENT_MESH_LANG:-}" in zh-CN) CHECK_LANG=zh-CN ;; *) CHECK_LANG=en ;; esac
+fi
+export AGENT_MESH_LANG="$CHECK_LANG"
 ENGINE="$HERE/box/rn-engine.py"
 LIB="$HOME/.local/lib/agent-mesh"
 RN="${RN_BIN:-$HOME/.local/bin/reason-network}"
@@ -15,21 +36,21 @@ PERSON="$(sed -n 's/^person = "\(.*\)"/\1/p' "$CFG" 2>/dev/null | head -n 1)"
 fail=0
 ok()   { printf 'PASS  %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n      -> %s\n' "$1" "$2"; fail=1; }
-skip() { printf 'SKIP  %s (%s)\n' "$1" "$2"; }
+skip() { printf 'SKIP  %s\n' "$(tq check.skip_reason "$1" "$2")"; }
 
 # prerequisites
-[ "$(uname -s)" = Darwin ] || { bad "not macOS" "run this check on [LOCAL], the user's Mac"; exit 1; }
+[ "$(uname -s)" = Darwin ] || { bad "$(tq check.not_macos)" "$(tq check.not_macos_fix)"; exit 1; }
 ok "macOS"
 [ "${REASON_NETWORK_HOME:-$HOME/.reason/network}" = "$HOME/.reason/network" ] \
-  || { bad "custom REASON_NETWORK_HOME" "this installer supports the default user profile only"; exit 1; }
+  || { bad "$(tq check.custom_rn_home)" "$(tq check.custom_rn_home_fix)"; exit 1; }
 export REASON_NETWORK_HOME="$HOME/.reason/network"
 if command -v python3 >/dev/null && python3 -c 'import sys, ssl, sqlite3; sys.exit(sys.version_info < (3, 9))'; then
-  ok "Python 3.9+ with ssl and sqlite3"
+  ok "$(tq check.python_ok)"
 else
-  bad "Python 3.9+ missing or incomplete" "install Python 3.9+ and ensure python3 is on PATH; see README prerequisites"
+  bad "$(tq check.python_bad)" "$(tq check.python_fix)"
 fi
-case ":$PATH:" in *":$HOME/.local/bin:"*) ok "PATH includes ~/.local/bin";; *) bad "PATH lacks ~/.local/bin" "add ~/.local/bin to PATH using your shell's startup file; see README prerequisites";; esac
-relay_hint="allow direct connections (no HTTPS decryption) to the whole iroh.link and reasonmachines.com domains; see README.md: Troubleshooting (Chinese: README.zh-CN.md)"
+case ":$PATH:" in *":$HOME/.local/bin:"*) ok "$(tq check.path_ok)";; *) bad "$(tq check.path_bad)" "$(tq check.path_fix)";; esac
+relay_hint="$(tq check.relay_hint)"
 pinned="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$(dirname "$0")/install.sh" | head -n 1)"
 if relays="$(python3 "$(dirname "$0")/scripts/relay_targets.py" --rn "$RN" --home "$HOME/.reason/network" --pinned "${pinned:-unknown}" 2>/dev/null)"; then
   source="$(printf '%s\n' "$relays" | head -n 1)"
@@ -37,27 +58,27 @@ if relays="$(python3 "$(dirname "$0")/scripts/relay_targets.py" --rn "$RN" --hom
   for url in $(printf '%s\n' "$relays" | tail -n +2); do
     curl -sS -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null | grep -q '^200$' || down="$down $url"
   done
-  [ -z "$down" ] && ok "relay reachable: $source" || bad "relay not reachable ($source):$down" "$relay_hint"
+  [ -z "$down" ] && ok "$(tq check.relay_ok "$source")" || bad "$(tq check.relay_bad "$source" "$down")" "$relay_hint"
 else
-  skip "relay reachability unknown" "${relays:-relay_targets.py failed}; $relay_hint"
+  skip "$(tq check.relay_unknown)" "$(tq check.relay_unknown_why "${relays:-$(tq check.targets_failed)}" "$relay_hint")"
 fi
 
 # engine and team
 if [ -x "$RN" ]; then
   have="$("$RN" --version 2>/dev/null | awk '{print $2}')"
   case "$(python3 "$ENGINE" compare "$have" "${pinned#v}")" in
-    same) ok "reason-network $have (the version this release pins)" ;;
-    older) bad "reason-network $have is older than ${pinned#v}, the version this release pins" "run ./update.sh: it upgrades the engine with a backup and rolls back on failure (UPGRADE.md)" ;;
-    *) bad "reason-network ${have:-of an unknown version} is not supported by this release (it pins ${pinned#v})" "agent-mesh never downgrades the engine; use the agent-mesh release made for this engine version, or reinstall ${pinned#v}" ;;
+    same) ok "$(tq check.engine_same "$have")" ;;
+    older) bad "$(tq check.engine_older "$have" "${pinned#v}")" "$(tq check.engine_older_fix)" ;;
+    *) bad "$(tq check.engine_other "${have:-$(tq check.unknown_version)}" "${pinned#v}")" "$(tq check.engine_other_fix "${pinned#v}")" ;;
   esac
   if [ -f "$LIB/engine-upgrade.json" ]; then
     backup="$(python3 "$ENGINE" txn-get --txn "$LIB/engine-upgrade.json" backup 2>&1)"
-    bad "an engine upgrade did not finish" "run ./update.sh in a terminal: it rolls the switch back first (backup: ${backup:-unknown})"
+    bad "$(tq check.upgrade_unfinished)" "$(tq check.upgrade_unfinished_fix "${backup:-$(tq check.unknown)}")"
   fi
   if team="$("$RN" team 2>/dev/null)"; then
     team="$(printf '%s\n' "$team" | sed -E 's/^([[:space:]]+[^[:space:]]+) \(verified\)([[:space:]])/\1\2/')"
-    [ -n "$PERSON" ] && ok "team name: $PERSON" || bad "no person in $CFG" "run ./install.sh"
-    echo "$team" | grep -Eq "^\s+$PERSON\s+cloud\s" && ok "cloud machine joined" || skip "cloud machine" "not joined yet: send the text from ./install.sh --cloud-prompt to Grok Bot"
+    [ -n "$PERSON" ] && ok "$(tq check.team_name "$PERSON")" || bad "$(tq check.no_person "$CFG")" "$(tq check.run_install)"
+    echo "$team" | grep -Eq "^\s+$PERSON\s+cloud\s" && ok "$(tq check.cloud_joined)" || skip "$(tq check.cloud_machine)" "$(tq check.cloud_not_joined)"
     # Rows are "  <person>  <machine>  <link>"; only this machine and the person's cloud belong here.
     # Members are endpoints, so a second machine may reuse the label <person> cloud: count those rows as well.
     extra="$(echo "$team" | awk -v p="$PERSON" '
@@ -65,22 +86,22 @@ if [ -x "$RN" ]; then
         if ($1 == p && $2 == "cloud" && !clouds++) next
         printf "%s%s/%s", sep, $1, $2; sep = ", "
       }')"
-    [ -z "$extra" ] && ok "team holds only this machine and cloud" \
-      || bad "unexpected team members: $extra" "if you did not add them: reason-network remove <person>/<machine> for each, then ./install.sh --rotate-key (README: Security and privacy)"
+    [ -z "$extra" ] && ok "$(tq check.team_only)" \
+      || bad "$(tq check.team_extra "$extra")" "$(tq check.team_extra_fix)"
   else
-    bad "not in a team" "run ./install.sh"
+    bad "$(tq check.no_team)" "$(tq check.run_install)"
   fi
   daemon="$(python3 "$ENGINE" info --home "$HOME/.reason/network" --bin "$RN" 2>&1)"
   case "$daemon" in
-    *state=fresh) ok "engine daemon runs the installed binary (${daemon%% *})" ;;
-    *state=stale) bad "the engine daemon (${daemon%% *}) started before the binary was replaced, so it still runs the old version" "reason-network stop, then ./check.sh again (the next command starts it on the installed binary)" ;;
-    *state=none) skip "engine daemon" "not running" ;;
-    *) skip "engine daemon" "could not check: $daemon" ;;
+    *state=fresh) ok "$(tq check.daemon_fresh "${daemon%% *}")" ;;
+    *state=stale) bad "$(tq check.daemon_stale "${daemon%% *}")" "$(tq check.daemon_stale_fix)" ;;
+    *state=none) skip "$(tq check.daemon)" "$(tq check.daemon_none)" ;;
+    *) skip "$(tq check.daemon)" "$(tq check.daemon_unknown "$daemon")" ;;
   esac
-  [ -f "$CFG" ] && grep -q '^auto_update = false' "$CFG" && ok "auto_update off" || bad "auto_update not off" "set  auto_update = false  in $CFG"
-  [ -f "$CFG" ] && grep -q '^lan = false' "$CFG" && ok "lan broadcast off" || bad "lan not off" "set  lan = false  in $CFG"
+  [ -f "$CFG" ] && grep -q '^auto_update = false' "$CFG" && ok "$(tq check.auto_update_ok)" || bad "$(tq check.auto_update_bad)" "$(tq check.auto_update_fix "$CFG")"
+  [ -f "$CFG" ] && grep -q '^lan = false' "$CFG" && ok "$(tq check.lan_ok)" || bad "$(tq check.lan_bad)" "$(tq check.lan_fix "$CFG")"
 else
-  bad "reason-network not installed" "run ./install.sh"
+  bad "$(tq check.no_engine)" "$(tq check.run_install)"
 fi
 
 # relay
@@ -88,45 +109,45 @@ env="$HOME/.config/agent-relay/env"; key="$HOME/.config/agent-relay/outbound.key
 names="$HERE/scripts/relay_names.py"; state="$HERE/scripts/deploy_state.py"
 NAME=""
 if [ -f "$env" ] && ! name="$(python3 "$names" env "$env" 2>&1)"; then
-  bad "relay names in env are not derived from one name" "$name; make LISTEN_NAME/CLOUD_NAME/INBOX_NAME <name>, <name>-cloud, <name>-inbox (README: Install)"
+  bad "$(tq check.env_names)" "$(tq check.env_names_fix "$name")"
 else
   rc=0
   if [ -f "$env" ]; then NAME="$name"; else NAME="$(python3 "$state" recorded-name 2>&1)" || rc=$?; fi
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
-    bad "Bot address" "$NAME"; NAME=""
+    bad "$(tq check.bot_address)" "$NAME"; NAME=""
   elif [ -z "$NAME" ] || [ "$rc" = 3 ]; then
     NAME=""
-    skip "Bot address" "no address name chosen yet: run ./install.sh (AGENT-INSTALL.md)"
+    skip "$(tq check.bot_address)" "$(tq check.no_address)"
   elif label="$(python3 "$state" label --person "$PERSON" --relay-name "$NAME" 2>&1)"; then
     case "$label" in
-      *" → Grok: "*) ok "Bot address: $label" ;;
-      *) ok "Bot address: $label (no Grok name recorded; ./install.sh --grok-name '<its name in Grok>' adds it)" ;;
+      *" → Grok: "*) ok "$(tq check.bot_address_is "$label")" ;;
+      *) ok "$(tq check.bot_address_no_grok "$label")" ;;
     esac
   else
-    ok "Bot address: $PERSON/$NAME (could not read the Grok name: $label)"
+    ok "$(tq check.bot_address_grok_unreadable "$PERSON/$NAME" "$label")"
   fi
 fi
 if [ -f "$env" ]; then
-  [ "$(stat -f %Lp "$env" 2>/dev/null)" = "600" ] && ok "env file mode 600" || bad "env file not mode 600" "chmod 600 $env"
-  grep -Eq '^WEBHOOK_URL=https://' "$env" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$env" && ok "webhook configured" || bad "webhook not configured" "run ./install.sh --webhook"
+  [ "$(stat -f %Lp "$env" 2>/dev/null)" = "600" ] && ok "$(tq check.env_mode_ok)" || bad "$(tq check.env_mode_bad)" "chmod 600 $env"
+  grep -Eq '^WEBHOOK_URL=https://' "$env" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$env" && ok "$(tq check.webhook_ok)" || bad "$(tq check.webhook_bad)" "$(tq check.run_webhook)"
 else
-  bad "relay not configured" "run ./install.sh --webhook"
+  bad "$(tq check.relay_unconfigured)" "$(tq check.run_webhook)"
 fi
-[ -s "$key" ] && ok "signing key present" || bad "signing key missing" "run ./install.sh"
+[ -s "$key" ] && ok "$(tq check.key_ok)" || bad "$(tq check.key_bad)" "$(tq check.run_install)"
 installed="$LIB/agent_relay.py"
 if [ ! -f "$installed" ]; then
-  bad "relay file missing" "run ./install.sh --webhook"
+  bad "$(tq check.relay_missing)" "$(tq check.run_webhook)"
 elif cmp -s "$installed" "$HERE/agent_relay.py"; then
-  ok "relay installed (this checkout's version)"
+  ok "$(tq check.relay_current)"
 elif ! grep -qF '/terminal(-[0-9]+|@' "$installed"; then
-  bad "the installed relay predates Reason Network 0.12 terminal addresses" "run ./update.sh (it installs this checkout's relay)"
+  bad "$(tq check.relay_old)" "$(tq check.relay_old_fix)"
 else
-  skip "relay version" "the installed relay differs from this checkout; ./update.sh installs this one"
+  skip "$(tq check.relay_version)" "$(tq check.relay_differs)"
 fi
-launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && ok "relay service loaded" || bad "relay service not loaded" "run ./install.sh --webhook"
+launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && ok "$(tq check.service_ok)" || bad "$(tq check.service_bad)" "$(tq check.run_webhook)"
 log="$HOME/Library/Logs/agent-relay.log"
 if [ -f "$log" ]; then
-  grep -q "agent-relay up" "$log" && ok "relay log shows 'agent-relay up'" || bad "relay never came up" "tail $log"
+  grep -q "agent-relay up" "$log" && ok "$(tq check.log_up)" || bad "$(tq check.log_never_up)" "tail $log"
   codes="$(grep -E ' POST [0-9]+ chars [0-9]+ bytes sha256=[0-9a-f]+ code=.* items=' "$log" | tail -n 2 \
     | sed -E 's/.* code=(.*) items=.*/\1/')"
   if [ -n "$codes" ]; then
@@ -136,40 +157,40 @@ if [ -f "$log" ]; then
     case "$code" in
       2[0-9][0-9])
         case "$before" in
-          ""|2[0-9][0-9]) ok "latest webhook POST succeeded (code=$code)" ;;
-          *) ok "latest webhook POST succeeded (code=$code; recovered after an earlier failure)" ;;
+          ""|2[0-9][0-9]) ok "$(tq check.post_ok "$code")" ;;
+          *) ok "$(tq check.post_recovered "$code")" ;;
         esac ;;
-      *) bad "latest webhook POST failed (code=$code)" "check the Webhook URL and key: ./install.sh --webhook" ;;
+      *) bad "$(tq check.post_failed "$code")" "$(tq check.post_fix)" ;;
     esac
   elif tail -n 50 "$log" | grep -q "webhook POST failed"; then
-    bad "recent webhook POST failures" "check the Webhook URL and key: ./install.sh --webhook"
+    bad "$(tq check.post_failures)" "$(tq check.post_fix)"
   fi
 fi
 
 # sessions
 if [ -z "$NAME" ]; then
-  skip "relay registration" "the Bot address name is not known"
+  skip "$(tq check.registration)" "$(tq check.name_unknown)"
 elif [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then
   registered="$(python3 "$names" registered "$NAME" 2>&1)"; rc=$?
   relay_pid="$(launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1)"
   if [ -z "$relay_pid" ]; then
-    reg="fail the relay service has no running process"
+    reg="fail $(tq check.no_process)"
   else
     reg="$(python3 "$ENGINE" registered --home "$HOME/.reason/network" \
       --marker "$HOME/Library/Application Support/agent-relay/registered" --name "$PERSON/$NAME" \
       --relay-pid "$relay_pid" 2>&1)" || reg="fail $reg"
   fi
   if [ "$rc" = 0 ] && [ -n "$registered" ] && [ "$registered" != "$NAME" ]; then
-    bad "relay registered under another name: $PERSON/$registered" "another session took $NAME; the relay gets no mail for $PERSON/$NAME (README: Troubleshooting)"
+    bad "$(tq check.registered_other "$PERSON/$registered")" "$(tq check.registered_other_fix "$NAME" "$PERSON/$NAME")"
   else
     case "$reg" in
-      ok\ *) ok "relay listening as $PERSON/$NAME (registered on the running engine daemon)" ;;
-      wait\ *) skip "relay registration" "${reg#wait }" ;;
-      *) bad "relay not registered on the running engine: ${reg#fail }" "if ./update.sh has not run for this checkout, run it; otherwise see tail -n 30 ~/Library/Logs/agent-relay.log and ./install.sh --restart-relay (README: Troubleshooting)" ;;
+      ok\ *) ok "$(tq check.listening "$PERSON/$NAME")" ;;
+      wait\ *) skip "$(tq check.registration)" "${reg#wait }" ;;
+      *) bad "$(tq check.not_registered "${reg#fail }")" "$(tq check.not_registered_fix)" ;;
     esac
   fi
   n=$(echo "$who" | grep -Ec 'claude-code|codex|pi |dsh')
-  [ "$n" -gt 0 ] && ok "$n agent session(s) on the roster" || skip "agent sessions" "open a Claude Code / Codex session, then rerun"
+  [ "$n" -gt 0 ] && ok "$(tq check.sessions_ok "$n")" || skip "$(tq check.sessions)" "$(tq check.sessions_none)"
 fi
 
 # deployment record
@@ -191,13 +212,13 @@ else:
 PY
 )"
 case "$cengine" in
-  "confirmed ${pinned#v}") ok "cloud engine last confirmed at ${pinned#v}" ;;
-  confirmed\ *) bad "cloud engine last confirmed at ${cengine#confirmed }, not ${pinned#v}" "run ./update.sh: its cloud engine step has Grok Bot run box/rn-cloud-setup.sh --upgrade-engine" ;;
-  pending\ *) skip "cloud engine" "the cloud setup the installer printed is not confirmed yet; ./update.sh asks about it" ;;
-  none) skip "cloud engine" "no confirmed cloud engine version recorded; ./update.sh's cloud engine step records it" ;;
-  *) skip "cloud engine" "could not read $LIB/deployed.json: $cengine" ;;
+  "confirmed ${pinned#v}") ok "$(tq check.cloud_engine_ok "${pinned#v}")" ;;
+  confirmed\ *) bad "$(tq check.cloud_engine_old "${cengine#confirmed }" "${pinned#v}")" "$(tq check.cloud_engine_old_fix)" ;;
+  pending\ *) skip "$(tq check.cloud_engine)" "$(tq check.cloud_engine_pending)" ;;
+  none) skip "$(tq check.cloud_engine)" "$(tq check.cloud_engine_none)" ;;
+  *) skip "$(tq check.cloud_engine)" "$(tq check.cloud_engine_unreadable "$LIB/deployed.json" "$cengine")" ;;
 esac
 
 echo
-[ "$fail" = 0 ] && echo "RESULT ok" || echo "RESULT fix the FAIL lines above"
+[ "$fail" = 0 ] && echo "RESULT ok" || echo "RESULT $(tq check.result_fail)"
 exit "$fail"

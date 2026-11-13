@@ -1,0 +1,31 @@
+dsh.need_macos_install	[LOCAL] this plugin installer requires macOS
+dsh.need_macos_uninstall	[LOCAL] this plugin uninstaller requires macOS
+dsh.bad_person	invalid team/person name
+dsh.person_mismatch	team/person must match the current Mac deployment: %s
+dsh.no_app	Install and open DeepSeek Harness first; or set DSH_APP to the absolute path of DeepSeek Harness.app
+dsh.no_python	python3 missing; see the main guide prerequisites
+dsh.no_engine	reason-network not installed; run ./install.sh first
+dsh.no_patch	%s not found; run 'reason-network setup' first so dsh has the reason-network block
+dsh.not_installed	the bridge is not installed; run dsh/mac-install.sh first
+dsh.not_one_block	%s does not hold exactly one bridge block; run dsh/mac-install.sh instead
+dsh.step_tests	== 1. unit tests with the app's own runtime
+dsh.tests_failed	unit tests failed; nothing changed
+dsh.step_backup	== 2. backup
+dsh.restored	restored %s from %s
+dsh.step_plugin	== 3. install plugin
+dsh.plugin_updated	== done. Plugin updated; %s was not changed, so your bridge settings are kept.
+dsh.reopen_note	   Quit DeepSeek Harness completely (⌘Q) and reopen it.
+dsh.step_patch	== 4. rewrite patch (allowPeople: %s)
+dsh.block_missing	reason-network MCP block not found in the patch
+dsh.block_repeated	the reason-network block markers appear more than once in the patch
+dsh.old_block	old block still present
+dsh.done_install	== done. Quit DeepSeek Harness completely (⌘Q) and reopen it. Log: ~/.dsh/logs/reason-network-bridge.log
+dsh.remove_later	   To remove the bridge later: dsh/mac-uninstall.sh
+dsh.ambiguous	%s: the bridge is not exactly one BEGIN/END block; edit the file by hand
+dsh.tmp_bad	%s: is a symlink or not a regular file; remove it by hand
+dsh.nothing	no bridge in %s; nothing to change
+dsh.removed	== bridge removed; backup: %s
+dsh.own_back	   Reason Network's own MCP block is back: dsh sessions share one address and check their inbox themselves.
+dsh.own_missing	   Reason Network's own block was not found in %s.
+dsh.run_setup	   Run 'reason-network setup' to wire dsh again (it also re-checks the other agents).
+dsh.reopen	== Quit DeepSeek Harness completely (⌘Q) and reopen it.

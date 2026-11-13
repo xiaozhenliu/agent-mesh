@@ -11,12 +11,13 @@ APP_NODE=""
 RN="$HOME/.local/bin/reason-network"
 PATCH="$HOME/.dsh/cordis.patch.yml"
 SRC="$(cd "$(dirname "$0")" && pwd)"
+. "$SRC/../scripts/msg.sh"
 BK="$HOME/.dsh/backup-reason-network-bridge"
 PLUG="$HOME/.dsh/plugins/reason-network-bridge.mjs"
 BRIDGE_BEGIN="# === reason-network-bridge BEGIN (replaces reason-network's MCP block) ==="
 BRIDGE_END="# === reason-network-bridge END ==="
 PERSON="${1:-$(sed -n 's/^person = "\(.*\)"/\1/p' "$HOME/.reason/network/config.toml" 2>/dev/null | head -n 1)}"
-[ "$(uname -s)" = Darwin ] || { echo "[LOCAL] this plugin installer requires macOS"; exit 1; }
+[ "$(uname -s)" = Darwin ] || { t dsh.need_macos_install; exit 1; }
 if [ -n "${DSH_APP:-}" ]; then
   APP_NODE="$DSH_APP/Contents/MacOS/DeepSeek Harness"
 else
@@ -25,28 +26,28 @@ else
   done
 fi
 [ -n "$PERSON" ] || { echo "usage: $0 [--plugin-only] [<team-name>]"; exit 2; }
-[[ "$PERSON" =~ ^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$ ]] || { echo "invalid team/person name"; exit 2; }
+[[ "$PERSON" =~ ^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$ ]] || { t dsh.bad_person; exit 2; }
 current_person="$(sed -n 's/^person = "\(.*\)"/\1/p' "$HOME/.reason/network/config.toml" 2>/dev/null | head -n 1)"
-[ "$PERSON" = "$current_person" ] || { echo "team/person must match the current Mac deployment: $current_person"; exit 1; }
-[ -x "$APP_NODE" ] || { echo "Install and open DeepSeek Harness first; or set DSH_APP to the absolute path of DeepSeek Harness.app"; exit 1; }
-command -v python3 >/dev/null || { echo "python3 missing; see the main guide prerequisites"; exit 1; }
-[ -x "$RN" ] || { echo "reason-network not installed; run ./install.sh first"; exit 1; }
-[ -f "$PATCH" ] || { echo "$PATCH not found; run 'reason-network setup' first so dsh has the reason-network block"; exit 1; }
+[ "$PERSON" = "$current_person" ] || { t dsh.person_mismatch "$current_person"; exit 1; }
+[ -x "$APP_NODE" ] || { t dsh.no_app; exit 1; }
+command -v python3 >/dev/null || { t dsh.no_python; exit 1; }
+[ -x "$RN" ] || { t dsh.no_engine; exit 1; }
+[ -f "$PATCH" ] || { t dsh.no_patch "$PATCH"; exit 1; }
 if [ "$PLUGIN_ONLY" = 1 ]; then
-  [ -f "$PLUG" ] || { echo "the bridge is not installed; run dsh/mac-install.sh first"; exit 1; }
+  [ -f "$PLUG" ] || { t dsh.not_installed; exit 1; }
   if [ "$(grep -cF "$BRIDGE_BEGIN" "$PATCH")" != 1 ] || [ "$(grep -cF "$BRIDGE_END" "$PATCH")" != 1 ] \
     || grep -qF 'reason-network MCP BEGIN' "$PATCH"; then
-    echo "$PATCH does not hold exactly one bridge block; run dsh/mac-install.sh instead"
+    t dsh.not_one_block "$PATCH"
     exit 1
   fi
 fi
 run() { ELECTRON_RUN_AS_NODE=1 "$APP_NODE" "$@"; }
 
-echo "== 1. unit tests with the app's own runtime"
-out=$(run "$SRC/reason-network-bridge.test.mjs" 2>&1) || { echo "$out"; echo "unit tests failed; nothing changed"; exit 1; }
+t dsh.step_tests
+out=$(run "$SRC/reason-network-bridge.test.mjs" 2>&1) || { echo "$out"; t dsh.tests_failed; exit 1; }
 echo "$out" | grep -E 'ℹ (pass|fail)' || true
 
-echo "== 2. backup"
+t dsh.step_backup
 mkdir -p "$BK" "$HOME/.dsh/plugins"
 stamp="$(date +%Y%m%d%H%M%S)"
 OLD_PLUG=""; LAST=""; NEW_PLUG=""
@@ -61,41 +62,43 @@ fi
 restore() {
   [ -z "$NEW_PLUG" ] || rm -f "$NEW_PLUG"
   if [ -n "$OLD_PLUG" ]; then
-    cp -p "$OLD_PLUG" "$PLUG.restore.$$" && mv -f "$PLUG.restore.$$" "$PLUG" && echo "restored $PLUG from $OLD_PLUG"
+    cp -p "$OLD_PLUG" "$PLUG.restore.$$" && mv -f "$PLUG.restore.$$" "$PLUG" && t dsh.restored "$PLUG" "$OLD_PLUG"
   else
     rm -f "$PLUG"
   fi
-  if [ -n "$LAST" ]; then cp -p "$LAST" "$PATCH" && echo "restored $PATCH from $LAST"; fi
+  if [ -n "$LAST" ]; then cp -p "$LAST" "$PATCH" && t dsh.restored "$PATCH" "$LAST"; fi
 }
 trap restore EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-echo "== 3. install plugin"
+t dsh.step_plugin
 NEW_PLUG="$(mktemp "$HOME/.dsh/plugins/.reason-network-bridge.mjs.XXXXXX")"
 cp "$SRC/reason-network-bridge.mjs" "$NEW_PLUG"; cmp -s "$SRC/reason-network-bridge.mjs" "$NEW_PLUG"
 chmod 644 "$NEW_PLUG"; mv -f "$NEW_PLUG" "$PLUG"; NEW_PLUG=""
 if [ "$PLUGIN_ONLY" = 1 ]; then
   trap - EXIT
-  echo "== done. Plugin updated; $PATCH was not changed, so your bridge settings are kept."
-  echo "   Quit DeepSeek Harness completely (⌘Q) and reopen it."
+  t dsh.plugin_updated "$PATCH"
+  t dsh.reopen_note
   exit 0
 fi
 
-echo "== 4. rewrite patch (allowPeople: $PERSON)"
+t dsh.step_patch "$PERSON"
 mkdir -p "$HOME/.dsh/logs"; chmod 700 "$HOME/.dsh/logs"
-python3 - "$PATCH" "$PLUG" "$RN" "$PERSON" "$BK/reason-network-block.yml" <<'PY'
+python3 - "$PATCH" "$PLUG" "$RN" "$PERSON" "$BK/reason-network-block.yml" "$(tq dsh.block_missing)" "$(tq dsh.block_repeated)" <<'PY'
 import os, sys, tempfile
-p, plug, rn, person, saved = sys.argv[1:]
+p, plug, rn, person, saved, missing, repeated = sys.argv[1:]
 t = open(p).read()
 B, E = "# === reason-network MCP BEGIN ===", "# === reason-network MCP END ==="
 own = B in t
 if not own:
  B, E = "# === reason-network-bridge BEGIN (replaces reason-network's MCP block) ===", "# === reason-network-bridge END ==="
 b = t.find(B); e = t.find(E, b)
-assert b >= 0 and e > b, "reason-network MCP block not found in the patch"
-assert t.count(B) == 1 and t.count(E) == 1, "the reason-network block markers appear more than once in the patch"
+if not (b >= 0 and e > b):
+ sys.exit(missing)
+if not (t.count(B) == 1 and t.count(E) == 1):
+ sys.exit(repeated)
 e += len(E)
 if t[e:e + 1] == "\n": e += 1
 if own:
@@ -122,9 +125,9 @@ except BaseException:
  os.path.exists(tmp) and os.unlink(tmp)
  raise
 PY
-grep -q 'reason-network MCP BEGIN' "$PATCH" && { echo "old block still present"; exit 1; }
+grep -q 'reason-network MCP BEGIN' "$PATCH" && { t dsh.old_block; exit 1; }
 "$RN" setup --dry-run 2>&1 | grep -i -E 'dsh|deepseek' || true
 
 trap - EXIT
-echo "== done. Quit DeepSeek Harness completely (⌘Q) and reopen it. Log: ~/.dsh/logs/reason-network-bridge.log"
-echo "   To remove the bridge later: dsh/mac-uninstall.sh"
+t dsh.done_install
+t dsh.remove_later

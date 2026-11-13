@@ -1,0 +1,264 @@
+uninstall.known_v011	3c810b5 to v0.1.1
+uninstall.known_v041	v0.2.0 to v0.4.1
+uninstall.known_untagged	an untagged commit
+uninstall.source_team_list	team list
+uninstall.source_person	this machine's person
+uninstall.source_config	config.toml
+uninstall.source_env	relay env
+uninstall.with_note	%s (%s)
+uninstall.list_separator	, 
+uninstall.outside_home	%s is outside the home folder
+uninstall.cannot_check	cannot check %s: %s
+uninstall.is_symlink	%s is a symlink
+uninstall.other_owner	%s belongs to another user
+uninstall.resolves_outside	%s resolves outside the home folder
+uninstall.cmd_not_found	%s: not found
+uninstall.cmd_timeout	%s: no answer within %s s
+uninstall.unexpected_output	unexpected output: %s
+uninstall.no_this_machine	the team list has no 'this machine' row
+uninstall.rn_not_run	not run: the Reason Network folders are unsafe (see the STOP lines)
+uninstall.rn_unsafe	%s; levels identity and all stop, and Reason Network is not queried
+uninstall.plist_unreadable	cannot be read (%s)
+uninstall.plist_label	has another label
+uninstall.plist_program	does not start the relay installed in ~/.local/lib/agent-mesh
+uninstall.plist_env	has unexpected environment settings
+uninstall.plist_overrides	overrides AGENT_RELAY_* settings
+uninstall.plist_rn_home	uses another REASON_NETWORK_HOME
+uninstall.plist_foreign	%s %s: it is not the login service install.sh writes; review it by hand, nothing is removed
+uninstall.service_foreign	the loaded %s service comes from %s, not from %s; it belongs to another home or was loaded by hand, so it is not stopped
+uninstall.unknown_plist	an unknown plist
+uninstall.launchd_unknown	cannot check whether %s is loaded: %s
+uninstall.agents_unlisted	cannot list %s to look for other relays: %s
+uninstall.foreign_service	login service %s
+uninstall.ps_failed	cannot list processes to look for other relays: %s
+uninstall.foreign_process	process %s running %s (arguments not shown)
+uninstall.cannot_read	cannot read %s: %s
+uninstall.name_unclear	%s; the Bot address name is unclear, so levels identity and all stop
+uninstall.cloud_machine_invalid	CLOUD_MACHINE in the relay env is not a valid machine name
+uninstall.other_rn_bin	the relay env names another engine (RN_BIN); only %s is used here
+uninstall.record_unreadable	%s cannot be read
+uninstall.name_mismatch	the relay env gives the Bot address name %s, but this Mac was installed with %s (deployed.json); levels identity and all stop
+uninstall.no_identity	no Reason Network identity on this Mac
+uninstall.engine_unusable	the engine is missing or its folders are unsafe
+uninstall.team_differs	the team name differs between sources (%s); levels identity and all stop
+uninstall.team_invalid	the team name %s is not a valid name
+uninstall.update_running	./update.sh is running (pid %s, %s); let it finish first
+uninstall.stale_lock	an earlier ./update.sh left %s; levels identity and all remove it
+uninstall.not_regular	%s is not a regular file
+uninstall.dsh_unsafe	%s; dsh/mac-uninstall.sh would write through it, so levels identity and all stop; remove it by hand
+uninstall.no_relay_program	no relay program
+uninstall.same_as_checkout	same as this checkout
+uninstall.unknown_layout	unknown version, same layout
+uninstall.relay_sha	relay sha %s (%s)
+uninstall.with_record	%s; deployed.json present (v0.4.0 or newer)
+uninstall.engine_upgrade_unfinished	an engine upgrade did not finish (engine-upgrade.json); ~/.local/bin/reason-network may be the new version. Run ./update.sh first to roll it back if you keep the engine
+uninstall.rollback_left	an earlier relay switch did not finish (rollback/ exists); it is removed, not restored
+uninstall.names	%s, %s, %s; cloud machine "%s"
+uninstall.names_default	%s, %s, %s (default); cloud machine "%s"
+uninstall.inventory_title	agent-mesh uninstall: what is on this Mac (nothing removed yet)
+uninstall.field_version	version
+uninstall.field_team_person	team/person
+uninstall.field_this_machine	this machine
+uninstall.field_cloud	cloud
+uninstall.field_team	team
+uninstall.field_relay_names	relay names
+uninstall.field_relay	relay
+uninstall.field_queue	queue
+uninstall.field_dsh_bridge	dsh bridge
+uninstall.field_other_members	other members
+uninstall.field_foreign	foreign
+uninstall.field_custom_key	custom key
+uninstall.field_note	note
+uninstall.field_skipped	skipped
+uninstall.none	none
+uninstall.unknown	unknown
+uninstall.unreadable	cannot be read
+uninstall.present	present
+uninstall.team_from	%s  (from %s)
+uninstall.cloud_members	%s  (%s member(s): %s)
+uninstall.cloud_absent	not in the team
+uninstall.team_left	this Mac already left its team
+uninstall.team_unlisted	could not be listed: %s
+uninstall.service_unknown	unknown (%s)
+uninstall.service_running	loaded, running
+uninstall.service_stopped	loaded, not running
+uninstall.service_unloaded	not loaded
+uninstall.key_present	signing key present
+uninstall.key_absent	no signing key
+uninstall.webhook_set	configured
+uninstall.webhook_unset	not configured
+uninstall.relay_status	%s; webhook %s; %s
+uninstall.custom_key	%s (reported only, never removed)
+uninstall.result_line	%s: %s
+uninstall.state_done	done
+uninstall.state_skipped	skipped
+uninstall.state_absent	absent
+uninstall.state_failed	failed
+uninstall.state_user_confirmed	user-confirmed
+uninstall.state_user_pending	user-pending
+uninstall.plan_service	relay login service and plist
+uninstall.plan_program	relay program, temporary files, rollback/
+uninstall.plan_record	deployment record, update lock, engine backups (~/.local/lib/agent-mesh)
+uninstall.plan_settings	relay settings and signing key (~/.config/agent-relay)
+uninstall.plan_state	relay state: queue, replay protection, kept copies
+uninstall.plan_logs	relay logs
+uninstall.plan_dsh	dsh bridge
+uninstall.plan_dsh_backups	dsh bridge backups and log
+uninstall.plan_cloud_identity	cloud: team membership, identity, key, names
+uninstall.plan_cloud_data	cloud: inbox/, threads/, /workspace/agent-mesh
+uninstall.plan_team	this Mac's team membership
+uninstall.plan_wiring	agent wiring and engine service
+uninstall.plan_identity	Reason Network identity and history (~/.reason/network)
+uninstall.plan_engine	Reason Network engine (~/.local/bin/reason-network)
+uninstall.plan_routine	Grok routine (webhook URL and key)
+uninstall.now_present	present
+uninstall.now_absent	absent
+uninstall.now_bot	Bot
+uninstall.now_grok_ui	Grok UI
+uninstall.now_roster_in	in
+uninstall.now_roster_left	left
+uninstall.now_roster_none	none
+uninstall.now_roster_unknown	unknown
+uninstall.action_keep	keep
+uninstall.action_remove	remove
+uninstall.action_stop_remove	stop and remove
+uninstall.action_remove_dsh	remove (dsh/mac-uninstall.sh --no-restore)
+uninstall.action_bot_leaves	Bot leaves and removes them
+uninstall.action_bot_removes	Bot removes them (after listing your files)
+uninstall.action_leave	leave
+uninstall.action_setup_remove	setup --remove
+uninstall.action_you_delete	you delete it
+uninstall.action_you_pause	you pause it
+uninstall.level_program	program: remove the relay, keep identity, settings and key
+uninstall.level_identity	identity: also leave the team on both computers and remove keys and identity
+uninstall.level_all	all: also remove logs, the engine and the cloud's data
+uninstall.plan_header	== plan for level %s
+uninstall.plan_header_residual	== plan for level %s (residual)
+uninstall.plan_listed_only	Only listed, never removed: this folder, PATH lines, reply convention templates, an external inbox folder, the Bot's long-term memory.
+uninstall.plan_foreign	STOP unless you type I accept %s: another deployment (%s) shares this Mac; it is never changed, but removing the shared identity breaks it
+uninstall.ask_program	Remove the relay program now? Type y: 
+uninstall.ask_phrase	Type %s to go on (anything else stops): 
+uninstall.foreign_warning	Another deployment uses this Mac: %s (%s). It is never changed, but it may share ~/.reason/network, which level %s removes.
+uninstall.ask_accept	Type %s to go on anyway (anything else stops): 
+uninstall.queue_kept	queue %s: kept for a reinstall; 'sending' entries become 'unknown' and are not sent again.
+uninstall.ask_queue_grew	The queue grew while the relay stopped. Go on? Type y: 
+uninstall.queue_lost	queue %s: these are lost with level %s.
+uninstall.ask_lose	Type yes to lose them: 
+uninstall.label_service	relay login service
+uninstall.service_not_ours	the loaded service is not this home's
+uninstall.service_not_stopped	the loaded %s service does not come from %s; it was not stopped
+uninstall.bootout_failed	launchctl bootout did not unload it
+uninstall.still_loaded	the relay is still loaded; nothing else was changed
+uninstall.plist_kept	unloaded, but the plist was kept: %s
+uninstall.cloud_pause	[GROK-UI] User: first pause the routine in Grok Bot and make sure no run is in progress.
+uninstall.cloud_send	[GROK-UI] User: then send this to Grok Bot as one message. The Bot runs it on [BOT-CLOUD], its cloud computer, and answers with a check result and a PROOF line:
+uninstall.ask_proof	[LOCAL] Type the PROOF value from the Bot, 'none' if it printed none, 'prompt' to show the prompt again, or 'skip': 
+uninstall.skipped_by_user	skipped by the user
+uninstall.no_proof	No proof: the Bot may run apply-no-proof only after you confirm in the chat that this is your own deployment and may be removed.
+uninstall.no_key_for_proof	This Mac has no signing key to check the PROOF with; answer none to go on without proof, or skip.
+uninstall.proof_mismatch	The PROOF does not match this Mac's signing key: that cloud belongs to another deployment, or the key was replaced without copying it to the cloud. The cloud step stops here.
+uninstall.proof_mismatch_note	PROOF did not match
+uninstall.proof_ok	PROOF matches. [GROK-UI] User: send the Bot this confirmation code and say you agree: %s
+uninstall.not_understood	Not understood.
+uninstall.ask_done	[LOCAL] Type done if the Bot reported DONE or KEPT, incomplete if it reported INCOMPLETE, or skip if it could not finish: 
+uninstall.reported_by_bot	reported by the Bot
+uninstall.bot_incomplete	the Bot reported INCOMPLETE: its files are gone, but it did not leave the team
+uninstall.bot_unfinished	the Bot did not finish
+uninstall.label_cloud_member	cloud team membership
+uninstall.residual_reported	reported by the Bot; this Mac has no team identity to check it
+uninstall.residual_incomplete	the Bot reported INCOMPLETE; a member still in the team must run reason-network remove %s
+uninstall.team_list_unknown	the team list is unknown: %s
+uninstall.cloud_gone	the cloud is no longer in the team
+uninstall.same_name	this Mac is also named %s, so it cannot remove the cloud; only the cloud itself can leave
+uninstall.all_offline	the other members are all offline, so a removal could not be passed on
+uninstall.cloud_still_in	The cloud %s is still in the team (%s row(s): %s). This Mac can remove it: the team link changes and that cloud's engine is cut off.
+uninstall.ask_all_rows	Are all %s rows your own cloud? Type y: 
+uninstall.not_confirmed	not confirmed
+uninstall.ask_remove_cloud	Remove %s from the team now? Type y: 
+uninstall.remove_failed	remove failed: %s
+uninstall.removed_with	removed with %s
+uninstall.cloud_still_listed	the cloud still shows in the team after remove
+uninstall.dsh_skipped	dsh: %s; Reason Network was left in place
+uninstall.label_dsh	dsh bridge
+uninstall.dsh_failed	dsh/mac-uninstall.sh --no-restore failed
+uninstall.dsh_not_removed	the dsh bridge was not removed, so Reason Network was left in place; fix %s and run %s again
+uninstall.label_mac_member	this Mac's team membership
+uninstall.already_left	already left
+uninstall.leave_refused	leave was refused: the other members are all offline, so none of them can hear that this Mac left. They need to remove it on their side (%s).
+uninstall.ask_force	Type force to leave anyway: 
+uninstall.left_forced	with --force; nobody confirmed hearing it
+uninstall.leave_failed	this Mac did not leave the team, so its identity was kept; run this level again when the other members are online
+uninstall.label_wiring	agent wiring and engine service
+uninstall.no_engine	no engine
+uninstall.setup_failed	run %s by hand; the engine is kept for it
+uninstall.stop_said	reason-network stop said: %s
+uninstall.routine_delete	[GROK-UI] User: delete the routine in Grok Bot. Pausing is not enough: a paused routine keeps its webhook URL and key valid.
+uninstall.ask_deleted	Type deleted when it is gone, or later: 
+uninstall.label_routine	Grok routine
+uninstall.routine_deleted	deleted, as you said
+uninstall.routine_pending	its webhook key stays valid until you delete it
+uninstall.manual_title	Left for you to handle (nothing below is changed):
+uninstall.manual_folder	this code folder: %s
+uninstall.manual_path	PATH line with ~/.local/bin: %s
+uninstall.manual_convention	reply convention: look for 'Reason Network reply convention' in the AGENTS.md / CLAUDE.md of your repositories
+uninstall.manual_inbox	an external inbox folder on [BOT-CLOUD] (RN_INBOX_DIR), if you set one
+uninstall.manual_memory	anything the Bot keeps in its long-term memory about this setup
+uninstall.stopped_unchanged	stopped; nothing was changed
+uninstall.stopped_after_relay_restart	stopped after the relay was stopped; run ./install.sh --restart-relay to start it again
+uninstall.label_program	relay program, temporary files, rollback/
+uninstall.routine_pause	[GROK-UI] User: pause the routine in Grok Bot.
+uninstall.reinstall_hint	To reinstall later: git pull, then ./install.sh --restart-relay in this folder, then resume the routine. Do not run the full install again.
+uninstall.queue_grew	The queue grew while the relay stopped.
+uninstall.stopped_after_relay	stopped after the relay was stopped; nothing else was changed
+uninstall.label_cloud_files	cloud identity files
+uninstall.label_cloud_data	cloud inbox, threads and clone
+uninstall.label_record	deployment record, update lock and engine backups
+uninstall.label_settings	relay settings and signing key
+uninstall.label_custom_key	signing key outside ~/.config/agent-relay
+uninstall.custom_key_kept	%s is never removed automatically; delete it yourself
+uninstall.label_state	relay state (queue, replay protection, kept copies)
+uninstall.label_identity	Reason Network identity and history
+uninstall.label_logs	relay logs
+uninstall.label_engine	Reason Network engine
+uninstall.engine_kept	kept for setup --remove
+uninstall.label_dsh_backups	dsh bridge backups and log
+uninstall.result_header	== result (level %s)
+uninstall.stopped_early	Stopped before the end; run %s again to go on.
+uninstall.program_complete	level program complete
+uninstall.program_incomplete	level program not complete; see the lines above
+uninstall.level_open	This Mac is cleaned up, but level %s is not complete yet. Still open:
+uninstall.level_open_hint	Run %s for the cloud step again, or delete the routine in Grok Bot, as listed.
+uninstall.level_complete	level %s complete
+uninstall.not_needed	Not done, but not needed for completion: %s
+uninstall.reopen_sessions	Reopen your agent sessions.
+uninstall.ask_team	[LOCAL] This Mac has no team identity left. Type the team name you installed with: 
+uninstall.team_name_invalid	not a valid team name (lowercase letters and digits joined by single '-', at most 40)
+uninstall.choose_level	Choose a level:\n  1  program   remove the relay; keep the team, settings, key and the cloud\n  2  identity  also leave the team on both computers, remove keys and identity\n  3  all       also remove logs, the engine and the cloud's data\n  q  quit
+uninstall.ask_level	Level [1/2/3/q]: 
+uninstall.error_all	--all is the same as --level all
+uninstall.error_yes	--yes works only with --level program; levels identity and all need your own terminal
+uninstall.error_residual	--residual and --cloud-prompt need --level identity or --level all
+uninstall.no_tty	This is not a terminal, so nothing was removed. Level %s asks for your confirmation: run %s in your own terminal.
+uninstall.no_tty_program	This is not a terminal, so nothing was removed. Level %s asks for your confirmation: run %s in your own terminal (or add --yes).
+uninstall.plan_nothing_removed	Nothing was removed (--plan).
+uninstall.choose_hint	Nothing was removed. Choose a level: ./uninstall.sh --plan shows what each level does.
+uninstall.nothing_removed	Nothing was removed.
+uninstall.residual_has_identity	this Mac still has a Reason Network identity; run without --residual
+uninstall.no_identity_use_residual	this Mac has no Reason Network identity, so the team name cannot be checked here; run %s
+uninstall.team_not_found	the team name could not be found on this Mac; nothing was removed
+uninstall.nothing_done	nothing was done; resolve the STOP lines above first
+uninstall.cloud_result_header	== result (cloud step only, level %s)
+uninstall.cloud_only_incomplete	Only the cloud step ran; nothing on this Mac was removed. The cloud step is not complete.
+uninstall.cloud_only_complete	Only the cloud step ran; nothing on this Mac was removed. The cloud step is complete.
+uninstall.nothing_removed_stops	nothing was removed; resolve the STOP lines above first
+uninstall.not_confirmed_unchanged	not confirmed; nothing was changed
+uninstall.lang_unsupported	uninstall: unsupported language '%s'; choose en or zh-CN
+uninstall.need_macos	[LOCAL] this uninstaller requires macOS
+uninstall.no_sudo	run as the logged-in Mac user, without sudo
+uninstall.custom_rn_home	custom REASON_NETWORK_HOME is not supported; review your deployment before uninstalling
+uninstall.bad_home	HOME must be an absolute home directory
+uninstall.no_python	python3 is missing; see README prerequisites
+uninstall.python_broken	python3 cannot start
+uninstall.python_old	Python 3.9+ is required
+uninstall.help	Remove agent-mesh from this Mac and, guided, from the Bot's cloud computer. Without options it only shows\nwhat is installed; nothing is removed until you choose a level and confirm it.\n  ./uninstall.sh --plan [--level L]        what is installed and what a level would do; removes nothing\n  ./uninstall.sh --level program [--yes]   the relay program only; team, settings, key and cloud stay\n  ./uninstall.sh --level identity          also leave the team on both computers, remove keys and identity\n  ./uninstall.sh --level all               also remove logs, the engine and the cloud's data (--all for short)\n  ./uninstall.sh --residual --level identity|all   no identity left on this Mac (e.g. after an older --all)\n  ./uninstall.sh --cloud-prompt --level identity|all   only the cloud step again\n  --lang en|zh-CN                          language of the output and the printed cloud prompt; default: the\n                                           language recorded at install, then AGENT_MESH_LANG, then en\nLevels identity and all run only in your own terminal and ask you to type a confirmation.
+uninstall.bad_option	uninstall: %s (see ./uninstall.sh --help)

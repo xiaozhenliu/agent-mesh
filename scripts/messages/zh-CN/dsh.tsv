@@ -1,0 +1,31 @@
+dsh.need_macos_install	[LOCAL] 这个插件安装器需要 macOS
+dsh.need_macos_uninstall	[LOCAL] 这个插件卸载器需要 macOS
+dsh.bad_person	团队名无效
+dsh.person_mismatch	团队名必须与这台 Mac 当前的部署一致：%s
+dsh.no_app	请先安装并打开 DeepSeek Harness；或把 DSH_APP 设为 DeepSeek Harness.app 的绝对路径
+dsh.no_python	缺少 python3；请看主指南的「准备」一节
+dsh.no_engine	reason-network 未安装；请先运行 ./install.sh
+dsh.no_patch	找不到 %s；请先运行 'reason-network setup'，让 dsh 有 reason-network 区块
+dsh.not_installed	bridge 尚未安装；请先运行 dsh/mac-install.sh
+dsh.not_one_block	%s 中的 bridge 区块不是恰好一个；请改为运行 dsh/mac-install.sh
+dsh.step_tests	== 1. 用应用自带的运行时跑单元测试
+dsh.tests_failed	单元测试失败；没有做任何改动
+dsh.step_backup	== 2. 备份
+dsh.restored	已恢复 %s（来自 %s）
+dsh.step_plugin	== 3. 安装插件
+dsh.plugin_updated	== 完成。插件已更新；%s 没有改动，bridge 设置保持不变。
+dsh.reopen_note	   请彻底退出 DeepSeek Harness（⌘Q）后重新打开。
+dsh.step_patch	== 4. 改写 patch（allowPeople：%s）
+dsh.block_missing	patch 中找不到 reason-network MCP 区块
+dsh.block_repeated	patch 中的 reason-network 区块标记出现了不止一次
+dsh.old_block	旧区块仍然存在
+dsh.done_install	== 完成。请彻底退出 DeepSeek Harness（⌘Q）后重新打开。日志：~/.dsh/logs/reason-network-bridge.log
+dsh.remove_later	   以后要移除 bridge：dsh/mac-uninstall.sh
+dsh.ambiguous	%s：bridge 不是恰好一个 BEGIN/END 区块；请手动编辑这个文件
+dsh.tmp_bad	%s：是符号链接或不是普通文件；请手动删除
+dsh.nothing	%s 中没有 bridge；无需改动
+dsh.removed	== 已移除 bridge；备份：%s
+dsh.own_back	   已放回 Reason Network 自己的 MCP 区块：dsh 会话共用一个地址，各自查看收件箱。
+dsh.own_missing	   在 %s 中没有找到 Reason Network 自己的区块。
+dsh.run_setup	   运行 'reason-network setup' 重新接入 dsh（它也会重新检查其他 agent）。
+dsh.reopen	== 请彻底退出 DeepSeek Harness（⌘Q）后重新打开。
