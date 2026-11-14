@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from render_prompt import ROOT, render_prompt
+from test_render_prompt import FIRST_UPDATE_PREFIX
 
 CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py")
 TAG = "v" + (ROOT / "VERSION").read_text().strip()
@@ -342,7 +343,9 @@ new_req() {{ echo {REQ}; }}
 
     def test_first_update_message_explains_and_carries_the_block(self):
         text = self.update_block(message=True, call=f"bootstrap_message {REQ}")
-        self.assertTrue(text.startswith("This is my update request from my Mac (sent by ./update.sh)."))
+        self.assertTrue(text.startswith(FIRST_UPDATE_PREFIX))
+        for lang in ("en", "zh-CN"):
+            self.assertIn(FIRST_UPDATE_PREFIX, render_prompt("routine", lang))
         self.assertIn(f"REQ={REQ}", text)
         self.assertTrue(text.rstrip("\n").endswith("AGENT_MESH_UPDATE"))
 

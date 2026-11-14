@@ -4,6 +4,16 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.8.3 — 2026-11-13
+
+从 v0.8.1 或更早版本第一次更新云端，不再停在拒绝上。用 `./update.sh` 更新；本版 routine 提示词有变化，`update.sh` 提示时把新提示词粘贴进 Grok 一次。
+
+### 修复
+
+- routine 提示词新增首次更新命令块的规则：云端上次以 v0.8.1 或更早版本确认时，`./update.sh` 发的是命令块；Grok Bot 不在 routine 运行里执行它，而是告诉你消息 id 和一句确认用的话，你在 Grok 对话里说了之后它才运行并回信。v0.8.2 的提示词会拒绝命令块，`./update.sh` 却说 Grok Bot 会问你，更新要等你自己弄清该怎么做（#37）。
+- `./update.sh` 发出首次命令块时、以及停止等待回信时，说明要在 Grok 里做什么。
+- `llms.txt` 写明当前版本。
+
 ## v0.8.2 — 2026-11-13
 
 更新只需一条命令。`./update.sh` 先列出要更新的内容，只问一次，然后更新 Mac 一侧，并请 Grok Bot 自己更新云端：不用暂停 routine，也不用复制命令块或回复。终端提示跟随所选语言。在终端运行 `./update.sh` 更新；本版 routine 提示词有变化，`update.sh` 提示时把新提示词粘贴进 Grok 一次。

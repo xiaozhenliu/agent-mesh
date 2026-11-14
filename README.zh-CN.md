@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| **版本** | agent-mesh **v0.8.2** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
+| **版本** | agent-mesh **v0.8.3** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
 | **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证，但 Linux 本地安装尚不支持（见[准备](#准备)）· Bot 云端：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
@@ -319,7 +319,7 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 ./update.sh --lang <en|zh-CN>
 ```
 
-它先拉取更新，再逐项与本机已部署的版本比较，改动之前只问一次。relay、dsh 插件和本机引擎由它自己更新；routine 提示词有变化时显示新提示词，请你粘贴；云端有变化时从这台 Mac 给 Grok Bot 发一条更新请求，并核对 Grok Bot 的回信。从 v0.8.1 或更早版本第一次更新云端时，会在 Grok 里问你一次；`./update.sh --manual` 可以手动完成云端步骤。`./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署。细节、手动升级顺序和回退顺序见[升级指南](UPGRADE.zh-CN.md)。agent-mesh 0.7.0 还会把两台电脑上的 Reason Network 升级到 0.12.17，先备份，失败时回滚，见 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)。
+它先拉取更新，再逐项与本机已部署的版本比较，改动之前只问一次。relay、dsh 插件和本机引擎由它自己更新；routine 提示词有变化时显示新提示词，请你粘贴；云端有变化时从这台 Mac 给 Grok Bot 发一条更新请求，并核对 Grok Bot 的回信。从 v0.8.1 或更早版本第一次更新云端时，要你在 Grok 对话里确认一次（Grok Bot 会告诉你怎么说）；`./update.sh --manual` 可以手动完成云端步骤。`./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署。细节、手动升级顺序和回退顺序见[升级指南](UPGRADE.zh-CN.md)。agent-mesh 0.7.0 还会把两台电脑上的 Reason Network 升级到 0.12.17，先备份，失败时回滚，见 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)。
 
 ## 文档与语言
 

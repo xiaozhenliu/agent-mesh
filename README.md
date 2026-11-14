@@ -6,7 +6,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 
 | | |
 |---|---|
-| **Version** | agent-mesh **v0.8.2** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
+| **Version** | agent-mesh **v0.8.3** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
 | **Platform** | Local: macOS (Apple Silicon or Intel) with a one-click installer · relay messaging verified on Debian Linux, but local installation on Linux is not supported yet (see [Prerequisites](#prerequisites)) · Bot cloud: Linux x86_64 or ARM64 · Python 3.9+ on both sides |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
@@ -314,7 +314,7 @@ In the repository on `[LOCAL]`, run:
 ./update.sh --lang <en|zh-CN>
 ```
 
-It pulls, compares each part with what this computer deployed and asks once before changing anything. It updates the relay, the dsh plugin and the local engine itself; when the routine prompt changed it shows the new one for you to paste; when the cloud changed it sends Grok Bot an update request from this Mac and checks Grok Bot's reply. The first cloud update after v0.8.1 or earlier asks you once in Grok; `./update.sh --manual` does the cloud step by hand. `./update.sh --plan` only shows the comparison and the steps and changes nothing in the deployment. The [upgrade guide](UPGRADE.md) has the details, the manual upgrade order and the rollback order. agent-mesh 0.7.0 also upgrades Reason Network to 0.12.17 on both computers, with a backup and a rollback on failure: see [Reason Network engine](UPGRADE.md#reason-network-engine).
+It pulls, compares each part with what this computer deployed and asks once before changing anything. It updates the relay, the dsh plugin and the local engine itself; when the routine prompt changed it shows the new one for you to paste; when the cloud changed it sends Grok Bot an update request from this Mac and checks Grok Bot's reply. The first cloud update after v0.8.1 or earlier waits for you to confirm once in a Grok conversation (Grok Bot tells you what to say); `./update.sh --manual` does the cloud step by hand. `./update.sh --plan` only shows the comparison and the steps and changes nothing in the deployment. The [upgrade guide](UPGRADE.md) has the details, the manual upgrade order and the rollback order. agent-mesh 0.7.0 also upgrades Reason Network to 0.12.17 on both computers, with a backup and a rollback on failure: see [Reason Network engine](UPGRADE.md#reason-network-engine).
 
 ## Documentation and language
 

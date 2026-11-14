@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 
 from render_prompt import ROOT, render_prompt
-from test_render_prompt import ROUTINE_V082
+from test_render_prompt import ROUTINE_V083
 from write_launch_agent import write_launch_agent
 
 
@@ -1542,6 +1542,7 @@ exit 0""")
                 result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("No reply from Grok Bot within 15 minutes", result.stdout)
+                self.assertNotIn("this first update request", result.stdout)
                 self.assertEqual(len(self.sent()), n)
                 data = self.record()
                 self.assertNotEqual(data["cloud"]["hash"], self.digest(repo, "cloud"))
@@ -1592,6 +1593,67 @@ exit 0""")
         self.assertNotIn(old, self.sent()[-1]["body"])
         self.assertEqual(self.record()["cloud"]["hash"], self.digest(repo, "cloud"))
 
+    def first_update_pending(self, repo, lang="en"):
+        import messages
+        self.mark(repo, "prompt", "confirmed", lang)
+        data = self.record()
+        del data["cloud"]["release"]
+        self.write_record(data)
+        self.cloud_changed(repo)
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(messages.t("update.sent_first", "demo/bot", lang=lang), result.stdout)
+        self.assertIn(messages.t("update.timeout_first", lang=lang), result.stdout)
+        self.assertNotIn(messages.t("update.timeout", lang=lang), result.stdout)
+        [message] = self.sent()
+        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", message["body"])
+        return self.record()["request"]["req"]
+
+    def test_first_update_reply_after_the_timeout_is_recorded_without_sending_again(self):
+        repo = self.installed()
+        version = (repo / "VERSION").read_text().strip()
+        req = self.first_update_pending(repo, "zh-CN")
+        self.put_reply(req, self.good_reply(repo))
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        import messages
+        self.assertIn(messages.t("update.cloud_earlier_reply", lang="zh-CN"), result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.record()["cloud"]["release"], version)
+
+    def test_first_update_reply_to_a_request_for_another_checkout_is_not_recorded(self):
+        repo = self.installed()
+        old = self.first_update_pending(repo)
+        self.put_reply(old, self.good_reply(repo))
+        self.cloud_changed(repo, "box/rn-fetch.py")
+        self.bot_replies(repo)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("this checkout changed after the update request was sent", result.stdout)
+        self.assertEqual(len(self.sent()), 2)
+        body = self.sent()[-1]["body"]
+        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", body)
+        self.assertNotIn(old, body)
+        self.assertEqual(self.record()["cloud"]["hash"], self.digest(repo, "cloud"))
+
+    def test_first_update_reply_to_a_request_for_another_release_is_not_recorded(self):
+        repo = self.installed()
+        old = self.first_update_pending(repo)
+        self.put_reply(old, self.good_reply(repo))
+        (repo / "VERSION").write_text("9.9.9\n")
+        (self.git / "release-commit").write_text("b" * 40 + "\n")
+        self.bot_replies(body=self.good_reply(repo, commit="b" * 40))
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.sent()), 2, result.stdout)
+        body = self.sent()[-1]["body"]
+        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", body)
+        self.assertIn("b" * 40, body)
+        self.assertNotIn(old, body)
+        self.assertIn("v9.9.9", body)
+        self.assertEqual(self.record()["cloud"]["release"], "9.9.9")
+
     def test_update_has_the_prompt_pasted_before_it_asks_grok_bot(self):
         repo = self.installed()
         prompt = repo / "prompts/routine.md"
@@ -1631,7 +1693,7 @@ exit 0""")
         self.assertRegex(body, rf"TAG=v{version}; COMMIT={'a' * 40}; REQ=[0-9a-f]{{16}}\n")
         self.assertIn(f"{self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py", body)
         self.assertIn('exec bash "$A/box/rn-cloud-update.sh" --after-checkout "$TAG" "$COMMIT" "$REQ"', body)
-        self.assertIn("This first time, Grok Bot asks you in Grok", result.stdout)
+        self.assertIn("This first time, Grok Bot does not run it by itself: it tells you in Grok", result.stdout)
         self.assertEqual(self.record()["cloud"]["release"], version)
 
     def test_update_does_not_ask_grok_bot_without_a_running_relay_or_a_sent_request(self):
@@ -2393,7 +2455,7 @@ exit 0""")
         repo = self.installed()
         old = self.record()
         old.pop("relay_name")
-        old["prompt"]["hash"] = ROUTINE_V082["en"]
+        old["prompt"]["hash"] = ROUTINE_V083["en"]
         self.write_record(old)
         result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

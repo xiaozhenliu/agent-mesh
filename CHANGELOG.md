@@ -4,6 +4,16 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.3 — 2026-11-13
+
+The first cloud update from v0.8.1 or earlier no longer stops at a refusal. Update with `./update.sh`; the routine prompt changes in this version, so paste the new prompt into Grok once when `update.sh` asks.
+
+### Fixed
+
+- The routine prompt has a rule for the first-update command block that `./update.sh` sends when the cloud was last confirmed with v0.8.1 or earlier: Grok Bot does not run it in the routine run, tells you the message id and a sentence to say, and runs it and replies after you say it in a Grok conversation. The v0.8.2 prompt refused the block, and `./update.sh` said Grok Bot would ask, so the update waited until you found out what to do (#37).
+- `./update.sh` says what to do in Grok when it sends the first-update block and when it stops waiting for its reply.
+- `llms.txt` states the current version.
+
 ## v0.8.2 — 2026-11-13
 
 Updating takes one command. `./update.sh` shows what will change, asks once, and then updates the Mac side and asks Grok Bot to update the cloud by itself: no pausing the routine, no copying command blocks or replies. Terminal text follows the chosen language. Update with `./update.sh` in a terminal; the routine prompt changes in this version, so paste the new prompt into Grok once when `update.sh` asks.

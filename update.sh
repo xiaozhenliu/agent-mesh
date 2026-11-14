@@ -577,7 +577,7 @@ cloud_auto() {
     if [ "$i" -ge "$rounds" ]; then
       [ "$rc" != 4 ] || printf '%s\n' "$LAST_CHECK"
       R_CLOUD="$(tq r.cloud_waiting)"
-      t update.timeout
+      if [ "$mode" = block ]; then t update.timeout_first; else t update.timeout; fi
       FAILED=1
       return 0
     fi
