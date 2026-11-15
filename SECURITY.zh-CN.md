@@ -18,7 +18,7 @@
 
 - agent-mesh 版本和 Reason Network 版本（`./install.sh --version` 会同时打印两者）。
 - 涉及的组件和执行位置：`[LOCAL]`、`[BOT-CLOUD]` 或 `[GROK-UI]`。
-- 复现步骤，最好能离线复现，例如基于 `test_relay.py` 或 `box/test_rn_fetch.py` 的测试用例。
+- 复现步骤，最好能离线复现，例如基于 `tests/relay/` 或 `tests/cloud/` 的测试用例。
 - 影响：攻击者需要什么前提，能做到什么。
 - 已经知道的缓解办法（如果有）。
 

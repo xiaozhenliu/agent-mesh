@@ -10,7 +10,7 @@
 
 ## 发布版本
 
-`VERSION` 记录 agent-mesh 项目版本（`major.minor.patch`），可用 `./install.sh --version` 查询。Reason Network v0.12.17 是独立固定的依赖版本：写在 `install.sh` 和 `box/rn-cloud-setup.sh` 的 `VERSION` 里，两个脚本各有一张相同的发布包 SHA-256 表，覆盖全部四个平台。两个脚本要一起改，`scripts/test_engine.py` 会核对二者一致。发布时一并更新 `VERSION`、两份 README 中的版本标识、`llms.txt` 和两份更新日志，记录兼容性变化及升级说明。文档检查会核对 README 和更新日志版本。在公开发布提交上创建 `v<VERSION>` 格式的附注 tag，保留已有 tag。
+`VERSION` 记录 agent-mesh 项目版本（`major.minor.patch`），可用 `./install.sh --version` 查询。Reason Network v0.12.17 是独立固定的依赖版本：写在 `install.sh` 和 `box/rn-cloud-setup.sh` 的 `VERSION` 里，两个脚本各有一张相同的发布包 SHA-256 表，覆盖全部四个平台。两个脚本要一起改，`tests/cli/test_engine.py` 会核对二者一致。发布时一并更新 `VERSION`、两份 README 中的版本标识、`llms.txt` 和两份更新日志，记录兼容性变化及升级说明。文档检查会核对 README 和更新日志版本。在公开发布提交上创建 `v<VERSION>` 格式的附注 tag，保留已有 tag。
 
 ## 翻译规则
 
@@ -29,12 +29,17 @@
 
 ```bash
 python3 scripts/check_docs.py
-python3 -m unittest discover -s scripts -p 'test_*.py'
-python3 test_relay.py
-python3 box/test_rn_fetch.py
+python3 -m unittest discover -s tests/cli -t . -p 'test_*.py'
+python3 -m unittest discover -s tests/rendering -t . -p 'test_*.py'
+python3 -m unittest discover -s tests/relay -t . -p 'test_*.py'
+python3 -m unittest discover -s tests/cloud -t . -p 'test_*.py'
 node dsh/reason-network-bridge.test.mjs
-for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh box/rn-cloud-update.sh box/rn-cloud-uninstall.sh; do bash -n "$script" || exit; done
+bash scripts/check_shell.sh
 ```
+
+`scripts/check_shell.sh` 找出所有 `*.sh` 文件，逐个运行 `bash -n`，再用 ShellCheck 检查（跟进它们 source 的文件）；`scripts/msg.sh` 按 bash 单独检查。它需要 `shellcheck`；没有安装时，`bash scripts/check_shell.sh --syntax-only` 只运行 `bash -n`，完整检查仍由 CI 的 shellcheck 作业执行。macOS 上的 CI 作业只做语法检查。
+
+`tests/` 下的每个测试包单独一个进程运行，不支持一次发现整个 `tests/` 目录。单个模块用 `python3 -m unittest tests.<包>.<模块>`，例如 `python3 -m unittest tests.cli.test_engine`。
 
 dsh 测试也可以用[插件指南](dsh/README.zh-CN.md)中的 App 自带运行时。安装器和卸载器测试使用临时 home 和模拟的系统、网络、服务、引擎命令，不安装软件、不删除临时目录以外的东西，也不接触真实服务。文档检查覆盖语言配对、相对链接和锚点、提示词占位符、AGENTS 模板里的生成块、协议向量和消息目录（各语言 key 与 `%s` 个数一致、只用允许的转换和转义、每个 key 都被使用、被使用的 key 都存在）；不能代替人工核对翻译含义。
 

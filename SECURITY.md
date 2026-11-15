@@ -18,7 +18,7 @@ Do not open a public issue, discussion or pull request for a security problem, a
 
 - The agent-mesh and Reason Network versions (`./install.sh --version` prints both).
 - The affected component and where it runs: `[LOCAL]`, `[BOT-CLOUD]` or `[GROK-UI]`.
-- Steps to reproduce, preferably offline, for example as a test case based on `test_relay.py` or `box/test_rn_fetch.py`.
+- Steps to reproduce, preferably offline, for example as a test case based on `tests/relay/` or `tests/cloud/`.
 - Impact: what an attacker needs, and what they can achieve.
 - Any mitigation you already know of.
 

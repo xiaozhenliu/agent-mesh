@@ -18,7 +18,8 @@ import time
 import unittest
 from pathlib import Path
 
-import test_install_portability as tip
+from tests.cli import install_support as tip
+from tests.cli.install_support import InstallHarness
 from render_prompt import ROOT
 
 OLD, NEW = "0.10.7", "0.12.17"
@@ -841,7 +842,7 @@ class PinnedChecksums(unittest.TestCase):
             self.assertFalse((base / "curl").exists())
 
 
-class MacUpgrade(FakeEngineMixin, tip.Installation):
+class MacUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
     """update.sh with a real (fake) engine daemon behind the fake launchd."""
 
     def upgradable(self, version=OLD):
@@ -1161,7 +1162,7 @@ class MacUpgrade(FakeEngineMixin, tip.Installation):
         self.assertTrue(self.loaded())
 
 
-class CloudUpgrade(FakeEngineMixin, tip.Installation):
+class CloudUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
     def cloud(self, version=OLD, joined=True, layout="new"):
         self.cloud_box()
         self.setup_ctl(self.base, self.env)
@@ -1386,15 +1387,3 @@ class CloudUpgrade(FakeEngineMixin, tip.Installation):
 
     def launcher_text(self):
         return (self.box / "bin/reason-network").read_text()
-
-
-def load_tests(loader, standard_tests, pattern):
-    suite = unittest.TestSuite()
-    for cls in (EngineCommands, CloudEngineCommands, PinnedChecksums, MacUpgrade, CloudUpgrade):
-        for name in sorted(n for n in vars(cls) if n.startswith("test")):
-            suite.addTest(cls(name))
-    return suite
-
-
-if __name__ == "__main__":
-    unittest.main()

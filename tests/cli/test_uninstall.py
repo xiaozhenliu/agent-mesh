@@ -180,7 +180,7 @@ class Session:
         return self.out.decode(errors="replace")
 
 
-class Base(unittest.TestCase):
+class Base:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -219,7 +219,7 @@ class Base(unittest.TestCase):
         return data
 
 
-class Mac(Base):
+class Mac(Base, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.home = self.base / "home dir" / "Alex's"
@@ -925,7 +925,7 @@ class Mac(Base):
         self.assertFalse(self.p(".reason/network").exists())
 
 
-class CloudScript(Base):
+class CloudScript(Base, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.w = self.base / "work space"
@@ -1318,7 +1318,3 @@ class Renderer(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('MODE="residual"', r.stdout)
         self.assertIn("偏好的语言", r.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -10,7 +10,7 @@ English uses the original filenames (`README.md`, `AGENT-INSTALL.md`, and so on)
 
 ## Release versions
 
-`VERSION` is the agent-mesh project version (`major.minor.patch`); the installer reports it with `./install.sh --version`. Reason Network v0.12.17 is a separate pinned dependency: `VERSION` in `install.sh` and `box/rn-cloud-setup.sh`, each with the same table of release SHA-256 checksums for all four targets. Change both scripts together; `scripts/test_engine.py` checks that they agree. For a release, update `VERSION`, both README version labels, `llms.txt`, and both changelogs together. Record compatibility changes and upgrade instructions. The documentation checker verifies the README and changelog versions. Use `v<VERSION>` for an annotated tag on the public release commit, and preserve existing tags.
+`VERSION` is the agent-mesh project version (`major.minor.patch`); the installer reports it with `./install.sh --version`. Reason Network v0.12.17 is a separate pinned dependency: `VERSION` in `install.sh` and `box/rn-cloud-setup.sh`, each with the same table of release SHA-256 checksums for all four targets. Change both scripts together; `tests/cli/test_engine.py` checks that they agree. For a release, update `VERSION`, both README version labels, `llms.txt`, and both changelogs together. Record compatibility changes and upgrade instructions. The documentation checker verifies the README and changelog versions. Use `v<VERSION>` for an annotated tag on the public release commit, and preserve existing tags.
 
 ## Translation rules
 
@@ -29,12 +29,17 @@ These offline checks can run on a development computer or CI, without connecting
 
 ```bash
 python3 scripts/check_docs.py
-python3 -m unittest discover -s scripts -p 'test_*.py'
-python3 test_relay.py
-python3 box/test_rn_fetch.py
+python3 -m unittest discover -s tests/cli -t . -p 'test_*.py'
+python3 -m unittest discover -s tests/rendering -t . -p 'test_*.py'
+python3 -m unittest discover -s tests/relay -t . -p 'test_*.py'
+python3 -m unittest discover -s tests/cloud -t . -p 'test_*.py'
 node dsh/reason-network-bridge.test.mjs
-for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh box/rn-cloud-update.sh box/rn-cloud-uninstall.sh; do bash -n "$script" || exit; done
+bash scripts/check_shell.sh
 ```
+
+`scripts/check_shell.sh` finds every `*.sh` file, runs `bash -n` on each, then runs ShellCheck on them, following the files they source; `scripts/msg.sh` is checked on its own as bash. It needs `shellcheck`; without it, `bash scripts/check_shell.sh --syntax-only` runs only `bash -n`, and the CI shellcheck job still runs the full check. The macOS CI job runs the syntax check only.
+
+Each package under `tests/` runs in its own process; discovering the whole `tests/` tree at once is refused. To run one module, use `python3 -m unittest tests.<package>.<module>`, for example `python3 -m unittest tests.cli.test_engine`.
 
 The dsh test can also use the app runtime documented in its [guide](dsh/README.md). The installer and uninstaller tests use disposable homes and fake system/network/service/engine commands; they do not install software, remove anything outside their temporary folders, or contact real services. The documentation checker validates language pairs, relative links and anchors, prompt placeholders, the generated block in each AGENTS template, protocol vectors, and the message catalogs (same keys and `%s` counts in every language, allowed conversions and escapes, every key used and every used key present). It cannot judge translation quality; review both languages for meaning.
 

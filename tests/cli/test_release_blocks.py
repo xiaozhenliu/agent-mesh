@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from render_prompt import ROOT, render_prompt
-from test_render_prompt import FIRST_UPDATE_PREFIX
+from tests.helpers.prompts import FIRST_UPDATE_PREFIX
 
 CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py")
 TAG = "v" + (ROOT / "VERSION").read_text().strip()
@@ -472,7 +472,3 @@ new_req() {{ echo {REQ}; }}
         result = self.run_block(block)
         self.assert_stopped(result, "this block was not filled in")
         self.assertFalse(os.path.lexists(self.clone))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -10,9 +10,9 @@ from unittest import mock
 
 import relay_names
 from relay_names import from_env, problem
+from tests.helpers.paths import BOX, SCRIPTS
 
-SCRIPT = Path(__file__).resolve().parent / "relay_names.py"
-BOX = Path(__file__).resolve().parent.parent / "box"
+SCRIPT = SCRIPTS / "relay_names.py"
 SESSIONS = """CREATE TABLE sessions (name TEXT PRIMARY KEY, key TEXT NOT NULL, agent TEXT NOT NULL, cwd TEXT NOT NULL,
 repo TEXT, branch TEXT, doing TEXT, tier TEXT NOT NULL, last_seen INTEGER NOT NULL);
 CREATE INDEX sessions_key ON sessions (key);
@@ -293,7 +293,3 @@ class Cli(unittest.TestCase):
             listing = directory(("demo", "mac", "alice", "offline"), other)
             self.assertEqual(self.run_cli("conflicts", "alice", "--db", str(db),
                                           stdin=json.dumps(listing)).returncode, 1, other)
-
-
-if __name__ == "__main__":
-    unittest.main()

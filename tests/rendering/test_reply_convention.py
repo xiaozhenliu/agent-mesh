@@ -97,6 +97,3 @@ class OverwriteInPlace(unittest.TestCase):
                 reply_convention.main(["refresh", str(self.path.parent)])
         self.assertIn("不是普通文件；没有做任何改动", str(caught.exception))
         self.assertEqual(self.path.read_bytes(), self.old)
-
-if __name__ == "__main__":
-    unittest.main()

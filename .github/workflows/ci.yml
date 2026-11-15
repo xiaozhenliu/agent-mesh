@@ -17,7 +17,7 @@ jobs:
   linux:
     name: linux (Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -35,19 +35,19 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Documentation
         run: python3 scripts/check_docs.py
-      - name: Script unit tests
-        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: CLI tests
+        run: python3 -m unittest discover -s tests/cli -t . -p 'test_*.py'
+      - name: Rendering tests
+        run: python3 -m unittest discover -s tests/rendering -t . -p 'test_*.py'
       - name: Relay tests
-        run: python3 test_relay.py
-      - name: Cloud fetch tests
-        run: python3 box/test_rn_fetch.py
-      - name: Shell syntax
-        run: for script in install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh box/rn-cloud-uninstall.sh; do bash -n "$script" || exit 1; done
+        run: python3 -m unittest discover -s tests/relay -t . -p 'test_*.py'
+      - name: Cloud tests
+        run: python3 -m unittest discover -s tests/cloud -t . -p 'test_*.py'
 
   macos:
     name: macos (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -68,12 +68,14 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Python version
         run: python3 --version
-      - name: Script unit tests
-        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: CLI tests
+        run: python3 -m unittest discover -s tests/cli -t . -p 'test_*.py'
+      - name: Rendering tests
+        run: python3 -m unittest discover -s tests/rendering -t . -p 'test_*.py'
       - name: Relay tests
-        run: python3 test_relay.py
+        run: python3 -m unittest discover -s tests/relay -t . -p 'test_*.py'
       - name: Shell syntax
-        run: for script in install.sh check.sh uninstall.sh update.sh; do bash -n "$script" || exit 1; done
+        run: bash scripts/check_shell.sh --syntax-only
 
   node:
     runs-on: ubuntu-latest
@@ -96,4 +98,4 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck install.sh check.sh uninstall.sh update.sh dsh/mac-install.sh dsh/mac-uninstall.sh box/rn-cloud-setup.sh box/rn-cloud.sh box/rn-cloud-uninstall.sh
+        run: shellcheck --version && bash scripts/check_shell.sh

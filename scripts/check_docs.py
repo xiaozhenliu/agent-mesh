@@ -22,6 +22,7 @@ def anchors(text):
 
 
 MESSAGES = ROOT / "scripts/messages"
+TESTS = ROOT / "tests"
 LANGUAGES = ("en", "zh-CN")
 KEY = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+")
 SHELL_USE = re.compile(r"(?<![\w-])(?:t|tq|die|ask|usage_error)[ \t]+([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)\b")
@@ -32,7 +33,8 @@ DYNAMIC = (re.compile(r"(?<![\w.])t\(\s*f?[\"']([a-z][a-z0-9_.]*)(?:[\"']\s*\+|\
 
 def code_files():
     for path in sorted(ROOT.rglob("*")):
-        if path.is_file() and MESSAGES not in path.parents and not path.name.startswith("test_"):
+        if path.is_file() and MESSAGES not in path.parents and TESTS not in path.parents \
+                and not path.name.startswith("test_"):
             if path.suffix in (".sh", ".py") or path.name in ("install.sh", "update.sh", "check.sh", "uninstall.sh"):
                 yield path
 

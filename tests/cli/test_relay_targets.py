@@ -9,7 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+from tests.helpers.paths import SCRIPTS
+
+HERE = SCRIPTS
 SCRIPT = HERE / "relay_targets.py"
 N0 = "https://aps1-1.relay.n0.iroh.link/"
 SFO = "https://relay-sfo1.compute.reasonmachines.com/"
@@ -118,7 +120,3 @@ class Targets(unittest.TestCase):
                 code, source, urls = self.run_it()
                 self.assertEqual((code, urls), (3, []))
                 self.assertTrue(source.startswith("unknown:"), source)
-
-
-if __name__ == "__main__":
-    unittest.main()

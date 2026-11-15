@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 
 import messages
+from tests.helpers.paths import ROOT
 
-ROOT = Path(__file__).resolve().parents[1]
 ARGS = ("v1.2.3", "100% done", "a\\nb", "-x", "名字")
 
 
@@ -56,7 +56,3 @@ class Catalogs(unittest.TestCase):
 
     def test_escapes_decode_once(self):
         self.assertEqual(messages.decode("a\\nb\\tc\\\\n\\x"), "a\nb\tc\\n\\x")
-
-
-if __name__ == "__main__":
-    unittest.main()
