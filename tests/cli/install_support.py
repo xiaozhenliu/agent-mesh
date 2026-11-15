@@ -18,6 +18,12 @@ from pathlib import Path
 from render_prompt import ROOT
 
 
+def own_group_with_default_signals():
+    os.setpgrp()
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+
+
 def rn_engine():
     spec = importlib.util.spec_from_file_location("rn_engine", ROOT / "box/rn-engine.py")
     module = importlib.util.module_from_spec(spec)
@@ -284,7 +290,8 @@ exit 0""")
         try:
             os.write(master, "".join(answer + "\n" for answer in answers).encode())
             proc = subprocess.Popen(["/bin/bash", str(root / "update.sh"), *args], env=self.env, stdin=slave,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setpgrp)
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    preexec_fn=own_group_with_default_signals)
             seen, deadline = b"", time.time() + 90
             while wait_for.encode() not in seen and time.time() < deadline:
                 ready, _, _ = select.select([proc.stderr], [], [], 0.5)

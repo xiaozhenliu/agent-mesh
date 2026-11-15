@@ -41,6 +41,8 @@ bash scripts/check_shell.sh
 
 `tests/` 下的每个测试包单独一个进程运行，不支持一次发现整个 `tests/` 目录。单个模块用 `python3 -m unittest tests.<包>.<模块>`，例如 `python3 -m unittest tests.cli.test_engine`。
 
+旧版 CLI 测试跑完后可能留下假引擎守护进程，每个都是一个 `python3` 进程，命令为 `<临时目录>/workspace/box/bin/engine/reason-network daemon --service`。用 `ps -axo pid,command | grep '[w]orkspace/box/bin/engine/reason-network daemon'` 列出，再用 `kill <pid>` 停掉。真实引擎是二进制文件，不由 `python3` 运行，不会匹配这个模式。现在的 CLI 测试会在假守护进程比测试活得久时报失败。
+
 dsh 测试也可以用[插件指南](dsh/README.zh-CN.md)中的 App 自带运行时。安装器和卸载器测试使用临时 home 和模拟的系统、网络、服务、引擎命令，不安装软件、不删除临时目录以外的东西，也不接触真实服务。文档检查覆盖语言配对、相对链接和锚点、提示词占位符、AGENTS 模板里的生成块、协议向量和消息目录（各语言 key 与 `%s` 个数一致、只用允许的转换和转义、每个 key 都被使用、被使用的 key 都存在）；不能代替人工核对翻译含义。
 
 只预览提示词，不安装、不读取凭证、不创建邀请、不联网：

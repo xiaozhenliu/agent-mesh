@@ -179,10 +179,11 @@ class FakeEngineMixin:
         env["FAKE_RN_CTL"] = str(self.ctl)
         env.setdefault("RN_ENGINE_STOP_TIMEOUT", "3")
         env.setdefault("RN_ENGINE_START_TIMEOUT", "4")
-        self.addCleanup(self.kill_daemons)
+        self.addCleanup(self.assert_no_daemons_under, Path(base))
+        self.addCleanup(self.kill_daemons, self.ctl)
 
-    def kill_daemons(self):
-        path = self.ctl / "daemons"
+    def kill_daemons(self, ctl):
+        path = ctl / "daemons"
         if not path.exists():
             return
         for line in path.read_text().split("\n"):
@@ -191,6 +192,19 @@ class FakeEngineMixin:
                     os.kill(int(line.split()[0]), signal.SIGKILL)
                 except (OSError, ValueError):
                     pass
+
+    def assert_no_daemons_under(self, base):
+        if not shutil.which("ps"):
+            return
+        prefix, deadline = f"{base}/", time.time() + 3
+        while True:
+            out = subprocess.run(["ps", "-ww", "-axo", "pid=,command="], capture_output=True, text=True,
+                                 check=True, timeout=10).stdout
+            left = [line.strip() for line in out.splitlines() if prefix in line and "daemon --service" in line]
+            if not left or time.time() > deadline:
+                break
+            time.sleep(0.1)
+        self.assertEqual(left, [], "fake engine daemons outlived the test")
 
     def put_engine(self, path, version):
         path.parent.mkdir(parents=True, exist_ok=True)

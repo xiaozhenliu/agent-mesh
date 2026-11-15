@@ -41,6 +41,8 @@ bash scripts/check_shell.sh
 
 Each package under `tests/` runs in its own process; discovering the whole `tests/` tree at once is refused. To run one module, use `python3 -m unittest tests.<package>.<module>`, for example `python3 -m unittest tests.cli.test_engine`.
 
+Earlier versions of the CLI tests could leave fake engine daemons running after a run. Each one is a `python3` process whose command is `<temporary folder>/workspace/box/bin/engine/reason-network daemon --service`. List them with `ps -axo pid,command | grep '[w]orkspace/box/bin/engine/reason-network daemon'` and stop them with `kill <pid>`. A real engine is a binary, not run by `python3`, so it never matches this pattern. The CLI tests now fail if a fake daemon outlives its test.
+
 The dsh test can also use the app runtime documented in its [guide](dsh/README.md). The installer and uninstaller tests use disposable homes and fake system/network/service/engine commands; they do not install software, remove anything outside their temporary folders, or contact real services. The documentation checker validates language pairs, relative links and anchors, prompt placeholders, the generated block in each AGENTS template, protocol vectors, and the message catalogs (same keys and `%s` counts in every language, allowed conversions and escapes, every key used and every used key present). It cannot judge translation quality; review both languages for meaning.
 
 Preview prompts without installing, reading credentials, creating an invite, or contacting the network:
