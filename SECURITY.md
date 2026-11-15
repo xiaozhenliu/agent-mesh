@@ -50,6 +50,7 @@ The [Security and privacy](README.md#security-and-privacy) section already docum
 - Message bodies are stored in plain text in both engines' databases, the relay's copies and the cloud inbox; see [Message bodies are stored in plain text](README.md#message-bodies-are-stored-in-plain-text) in the README for retention and cleanup.
 - Traffic may pass through iroh public relays, which this project has not independently audited.
 - Each wake-up consumes Grok Bot usage; the relay only rate-limits it.
+- Any team member can message and wake Grok Bot; the relay does not restrict senders within the team. Who joins the team is the boundary: `./check.sh` reports any member other than your local computer and `cloud`.
 
 A way around the documented protections, such as bypassing signatures, freshness, replay protection, address restrictions or rate limits, is still in scope.
 

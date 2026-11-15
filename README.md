@@ -248,6 +248,7 @@ The relay log records message ids, lengths and checksums, not bodies. `FWD_COPY_
 
 ### Team members
 
+- The team is the trust boundary. The relay forwards a message from any team member to the Bot and wakes it, without checking who sent it; the forwarded envelope keeps the original sender, and the hourly wake-up limit still applies. This lets you add another computer or Bot without extra settings, so keep the team limited to your own machines.
 - After setup, and periodically afterwards, run `reason-network team` and confirm that only your local computer and `cloud` are listed. `./check.sh` checks this too and reports FAIL for any other member. Remove an unknown person or machine with `reason-network remove <person>/<machine>`, then replace the signing key as described below.
 - Team members can see session names, the last working-directory component, repository names, and branches. Avoid starting agents directly in your home directory. Use invite links in the terminal, not a browser.
 
