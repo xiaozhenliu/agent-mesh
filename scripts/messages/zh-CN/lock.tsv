@@ -1,0 +1,6 @@
+lock.busy	另一个管理命令（install.sh、update.sh 或 uninstall.sh）正在运行（%s，锁文件 %s）；等它结束后再运行本命令
+lock.legacy_running	另一个 ./update.sh 正在运行（pid %s，%s）；请等它结束
+lock.legacy_stale	注意：删除上次未完成的 ./update.sh 留下的锁（%s）
+lock.not_inherited	设置了 AGENT_MESH_LOCK_FD，但 fd %s 没有持有管理锁 %s；请单独运行本命令，不要设置 AGENT_MESH_LOCK_FD
+lock.moved	等待期间锁文件 %s 再次被替换；请重新运行本命令
+lock.failed	无法使用锁文件 %s（%s）

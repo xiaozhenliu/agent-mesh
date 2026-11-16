@@ -29,7 +29,7 @@ check_tag() {
   done <<'AGENT_MESH_SUMS'
 <cloud-checksums>
 AGENT_MESH_SUMS
-  [ "$n" = 4 ] || { why="the checksum list is incomplete"; return 1; }
+  [ "$n" = 5 ] || { why="the checksum list is incomplete"; return 1; }
 }
 check_files() {
   (cd "$1" && sha256sum --strict --quiet -c -) <<'AGENT_MESH_SUMS'

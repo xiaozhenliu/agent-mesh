@@ -28,9 +28,31 @@ Known limitations:
 - A scan records a bad message before printing it; a run that stops in between loses that one notice. The message stays in the engine database, and the diagnostic `scan` still shows it.
 - The upgrade step does not record bad messages already there, so the first scan after the upgrade reports each of them once.
 
+## Several Bots
+
+Several Grok Bots on one Mac share the team, the Reason Network engine on both computers, the cloud computer with its clone `/workspace/agent-mesh`, and the signing key `outbound.key`; each Bot has its own three names, relay, webhook, routine, mail and thread notes ([Several Grok Bots](README.md#several-grok-bots)).
+
+| | First Bot | Added Bot `<name>` |
+|---|---|---|
+| Settings on `[LOCAL]` | `~/.config/agent-relay/env` | `~/.config/agent-relay-bots/<name>/env` (its `OUTBOUND_KEY_FILE` points to the shared key) |
+| Login service | `com.local.agent-relay` | `com.local.agent-relay.<name>` |
+| Relay state | `~/Library/Application Support/agent-relay/` | `~/Library/Application Support/agent-relay-bots/<name>/` |
+| Relay log | `~/Library/Logs/agent-relay.log` | `~/Library/Logs/agent-relay-<name>.log` |
+| Mail and thread notes on `[BOT-CLOUD]` | `/workspace/agent-mesh/inbox/`, `threads/`; relay name in `box/relay` | `/workspace/agent-mesh/bots/<name>/inbox/`, `threads/` |
+
+**Selector.** An added Bot's routine prompt runs every `rn-cloud.sh` command as `RN_BOT=<name> /workspace/agent-mesh/box/rn-cloud.sh …`. The command then uses `<name>-cloud`, `<name>-inbox` and the paths under `bots/<name>/`, and needs `bots/<name>/.registered`. `RN_BOT` cannot be combined with `AGENT_RELAY_NAME`, `RN_CLOUD_NAME`, `RN_INBOX_NAME`, `RN_INBOX_DIR` or `RN_THREADS_DIR`, and nothing falls back to the first Bot. Without `RN_BOT` the first Bot is used as before.
+
+**Registration.** An added Bot's routine prompt has a step 0: while `bots/<name>/.registered` is missing, the run executes `bash /workspace/agent-mesh/box/rn-cloud-add-bot.sh '<name>' '<team-name>' '<team-hash>'`, which checks the team, registers `<name>-cloud` and `<name>-inbox` and prints `Bot address: <team-name>/<name> (this cloud uses <name>-cloud and <name>-inbox)`. The team hash is the first 16 hex digits of the SHA-256 of the engine's team id. `./install.sh --add-bot` then sends the new Bot, through its relay, the single line `agent-mesh add-bot <name> <request>` (`<request>` is lowercase hex). The routine prompt has a rule for exactly this line from the user's own Mac: it runs `box/rn-cloud-add-bot.sh --check '<name>' '<request>'` and replies with the output, whose line `agent-mesh-result add-bot <request> ok <name> <team-hash>` the Mac compares before it records the Bot's cloud registration as confirmed. The same line from anyone else is not run.
+
+**Removed names.** Uninstalling one Bot writes the tombstone `box/bots-removed/<name>` before anything else; every command that names a tombstoned Bot is refused, and the name cannot be registered again. When the first Bot is removed, `box/relay` becomes `box/relay.removed`, and commands without `RN_BOT` are refused. On the Mac the deployment record keeps the list of removed names.
+
+**Maintenance lock.** `rn-cloud.sh` commands take the lock `/workspace/agent-mesh/.maint.lock` shared; cloud setup, the cloud update, an add-bot registration and the cloud uninstall take it exclusive. A command waits up to `RN_MAINT_WAIT` seconds (600 by default) and otherwise stops with `STOP: other cloud commands are still running; nothing was changed`. On the Mac, `install.sh`, `update.sh` and `uninstall.sh` share the lock file `~/.local/lib/agent-mesh.lock`, so only one of them runs at a time.
+
+`rn-cloud.sh purge` is refused while the cloud has more than one Bot, because it would delete the other Bots' mail too.
+
 ## Message formats
 
-The examples use the Bot address name `bot` (the default before v0.8.0). With another name, replace `bot`, `bot-cloud` and `bot-inbox` by `<name>`, `<name>-cloud` and `<name>-inbox`.
+The examples use the Bot address name `bot` (the default before v0.8.0). With another name, replace `bot`, `bot-cloud` and `bot-inbox` by `<name>`, `<name>-cloud` and `<name>-inbox`. With several Bots each Bot uses its own names, and all of them sign with the same key.
 
 ### Signing rules
 

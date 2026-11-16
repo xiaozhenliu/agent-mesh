@@ -12,21 +12,30 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
+import urllib.error
+import urllib.request
 from pathlib import Path
 
+import bots
 import relay_names
 from messages import t
-from render_prompt import ROOT, render_prompt
+from render_prompt import CLOUD_FILES, ROOT, TEAM, render_prompt
 from write_launch_agent import launch_agent_bytes
 
 SCHEMA = 1
 REMOTE = ("cloud", "cloud_setup", "prompt", "cloud_engine")
 CLOUD_PARTS = ("cloud", "cloud_setup", "cloud_engine")
 UPDATE_SCRIPT = "box/rn-cloud-update.sh"
+CLOUD_DIGEST = ("box/rn-cloud.sh", "box/rn-fetch.py", UPDATE_SCRIPT, "box/rn-cloud-add-bot.sh")
 NEEDS = ("cloud", "prompt", "cloud_engine")
 STATES = ("pending", "confirmed")
 TXN_KEYS = ("stage", "relay_was_loaded", "need", "lang", "commit", "target")
 STAGES = ("stopping", "relay_stopped", "routine_paused", "cloud_done", "prompt_done", "routine_resumed")
+
+
+class NoFirstBot(ValueError):
+    pass
 
 
 def home():
@@ -91,7 +100,11 @@ def relay_name(fallback=None):
         raise ValueError(relay_names.problem(fallback))
     name = relay_names.from_env(env_path())
     if name is None:
-        return fallback or relay_names.DEFAULT
+        if fallback:
+            return fallback
+        if bots.legacy_suppressed(home(), load(warn=False)):
+            raise NoFirstBot(t("state.no_first_bot", env_path()))
+        return relay_names.DEFAULT
     if fallback and fallback != name:
         raise ValueError(t("state.env_name_differs", env_path(), name, fallback))
     return name
@@ -120,10 +133,16 @@ def name_status(data, fallback=None):
     return "ok" if recorded == current else f"changed {recorded} {current}"
 
 
+def legacy_name_status(data, fallback=None):
+    try:
+        return name_status(data, fallback)
+    except NoFirstBot:
+        return None
+
+
 def digest(field, lang, relay=None):
     if field == "cloud":
-        names = ("rn-cloud.sh", "rn-fetch.py", "rn-cloud-update.sh")
-        parts = [sha((ROOT / "box" / name).read_bytes()) for name in names]
+        parts = [sha((ROOT / name).read_bytes()) for name in CLOUD_DIGEST]
         return sha("\n".join(parts).encode())
     if field == "cloud_setup":
         return sha((ROOT / "box/rn-cloud-setup.sh").read_bytes())
@@ -134,8 +153,30 @@ def digest(field, lang, relay=None):
     raise ValueError(f"unknown field: {field}")
 
 
+def added_bot(relay, data):
+    if relay is None or relay_names.problem(relay) or relay_names.from_env(env_path()) == relay:
+        return None
+    entries = {name: entry for name, entry in bots_of(data).items() if isinstance(entry, dict)}
+    bot = bots.find(home(), relay, dict(data, bots=entries))
+    return bot if bot is not None and bot["kind"] == bots.ADDED else None
+
+
 def prompt_text(lang, relay=None):
-    return render_prompt("routine", lang, relay_name=relay_name(relay))
+    data = load(warn=False) if relay is not None else {}
+    bot = added_bot(relay, data)
+    if bot is None:
+        return render_prompt("routine", lang, relay_name=relay_name(relay))
+    try:
+        text = Path(bot["env"]).read_text(encoding="utf-8", errors="replace")
+        person = relay_names.parse_env(text).get("PERSON", "")
+    except OSError:
+        person = ""
+    if not (TEAM.fullmatch(person) and len(person) <= 40):
+        raise ValueError(t("state.bot_no_team", relay, bot["env"]))
+    team_hash = (bot_entry(data, relay) or {}).get("team_hash")
+    if not isinstance(team_hash, str) or not re.fullmatch(r"[0-9a-f]{16}", team_hash):
+        raise ValueError(t("state.bot_no_team_hash", relay, record_path(), relay))
+    return render_prompt("routine", lang, team_name=person, bot_selector=relay, team_hash=team_hash)
 
 
 def load(warn=True):
@@ -184,7 +225,11 @@ def remote_status(data, field, lang):
     value = entry(data, field)
     if value is None:
         return "unknown"
-    if value["hash"] != digest(field, lang):
+    try:
+        current = digest(field, lang)
+    except NoFirstBot:
+        return "unknown"
+    if value["hash"] != current:
         return "changed"
     return "unchanged" if value["state"] == "confirmed" else "pending"
 
@@ -196,12 +241,73 @@ def same_file(installed, expected):
         return False
 
 
-def relay_status(python):
-    relay = lib_dir() / "agent_relay.py"
-    plist = home() / "Library/LaunchAgents/com.local.agent-relay.plist"
-    expected_plist = launch_agent_bytes(home(), python, str(relay))
-    ok = same_file(relay, (ROOT / "agent_relay.py").read_bytes()) and same_file(plist, expected_plist)
-    return "unchanged" if ok and not (lib_dir() / "rollback").exists() else "changed"
+def plist_bytes(python, bot):
+    relay = str(lib_dir() / "agent_relay.py")
+    if bot["kind"] == bots.LEGACY:
+        return launch_agent_bytes(home(), python, relay)
+    return launch_agent_bytes(home(), python, relay, label=bot["label"], env=bot["env"], state=bot["state_dir"],
+                              log=bot["log"], launchd_log=bot["launchd_log"])
+
+
+def code_current():
+    return (same_file(lib_dir() / "agent_relay.py", (ROOT / "agent_relay.py").read_bytes())
+            and not (lib_dir() / "rollback").exists())
+
+
+def cohort(roster):
+    return [b for b in roster if b["stage"] == "relay" and not b["removing"]]
+
+
+def lenient_roster():
+    try:
+        return bots.roster(home())
+    except ValueError:
+        return None
+
+
+def relay_status(python, roster=None):
+    members = cohort(roster if roster is not None else lenient_roster() or [])
+    if not members:
+        members = [bots.paths(home(), None, bots.LEGACY)]
+    ok = code_current() and all(same_file(Path(b["plist"]), plist_bytes(python, b)) for b in members)
+    return "unchanged" if ok else "changed"
+
+
+def has_webhook(env):
+    try:
+        cfg = relay_names.parse_env(Path(env).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+    return cfg.get("WEBHOOK_URL", "").startswith("https://") and len(cfg.get("WEBHOOK_KEY", "")) >= 8
+
+
+def bot_prompt_status(data, name, lang):
+    value = (bot_entry(data, name) or {}).get("prompt")
+    if not (isinstance(value, dict) and value.get("state") in STATES and isinstance(value.get("hash"), str)):
+        return "unknown"
+    try:
+        current = digest("prompt", lang, name)
+    except ValueError:
+        return "unknown"
+    if value["hash"] != current:
+        return "changed"
+    return "unchanged" if value["state"] == "confirmed" else "pending"
+
+
+def bot_lines(data, roster, python, lang):
+    removing = removing_of(data)
+    for b in roster:
+        if b["kind"] == bots.LEGACY:
+            prompt = remote_status(data, "prompt", lang)
+        else:
+            prompt = bot_prompt_status(data, b["name"], lang)
+        relay = "-"
+        if b["stage"] == "relay":
+            relay = "unchanged" if code_current() and same_file(Path(b["plist"]), plist_bytes(python, b)) else "changed"
+        step = removing.get("step") if b["removing"] and isinstance(removing.get("step"), str) else "-"
+        yield (f"bot {b['name']} kind {b['kind']} stage {b['stage']} webhook "
+               f"{'ok' if has_webhook(b['env']) else 'missing'} relay {relay} prompt {prompt} cloud {b['cloud']} "
+               f"removing {step if b['removing'] else '-'} record {b['record']}")
 
 
 def dsh_status():
@@ -211,11 +317,52 @@ def dsh_status():
     return "unchanged" if same_file(plugin, (ROOT / "dsh/reason-network-bridge.mjs").read_bytes()) else "changed"
 
 
+def valid_participant(value):
+    return (isinstance(value, dict) and isinstance(value.get("name"), str) and isinstance(value.get("label"), str)
+            and isinstance(value.get("plist"), str) and isinstance(value.get("was_loaded"), bool))
+
+
 def valid_txn(txn):
-    return (isinstance(txn, dict) and txn.get("stage") in STAGES and isinstance(txn.get("relay_was_loaded"), bool)
+    if not isinstance(txn, dict):
+        return False
+    participants = txn.get("participants")
+    loaded = isinstance(txn.get("relay_was_loaded"), bool) if participants is None else (
+        isinstance(participants, list) and all(valid_participant(p) for p in participants))
+    return (loaded and txn.get("stage") in STAGES
             and isinstance(txn.get("need"), list) and all(part in NEEDS for part in txn["need"])
             and txn.get("lang") in ("en", "zh-CN") and isinstance(txn.get("commit"), str)
             and isinstance(txn.get("target"), dict))
+
+
+def txn_participants(txn, data=None):
+    if txn.get("participants") is not None:
+        return [dict(p) for p in txn["participants"]]
+    legacy = bots.paths(home(), None, bots.LEGACY)
+    name = recorded_name(data or {}) or relay_names.from_env(env_path()) or relay_names.DEFAULT
+    return [{"name": name, "label": legacy["label"], "plist": legacy["plist"], "was_loaded": txn["relay_was_loaded"]}]
+
+
+def bots_of(data):
+    value = data.get("bots")
+    return value if isinstance(value, dict) else {}
+
+
+def bot_entry(data, name):
+    value = bots_of(data).get(name)
+    return value if isinstance(value, dict) else None
+
+
+def removing_of(data):
+    return bots.removing_of(data)
+
+
+def removed_bots(data):
+    value = data.get("removed_bots")
+    return [n for n in value if isinstance(n, str)] if isinstance(value, list) else []
+
+
+def legacy_removed(data):
+    return data.get("legacy_removed") is True
 
 
 def txn_of(data, warn=False):
@@ -232,15 +379,19 @@ def engine_txn_stage():
     if not path.exists():
         return "-"
     try:
-        stage = json.loads(path.read_text(encoding="utf-8")).get("stage")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        stage = data.get("stage")
     except (OSError, ValueError, AttributeError):
         return "damaged"
+    if data.get("phase") == "committed":
+        return "committed"
     return stage if isinstance(stage, str) and re.fullmatch(r"[a-z_]+", stage) else "damaged"
 
 
 def cmd_status(args):
     data = load()
-    print(f"relay {relay_status(args.python)}")
+    roster = lenient_roster()
+    print(f"relay {relay_status(args.python, roster)}")
     print(f"dsh {dsh_status()}")
     for field in REMOTE:
         print(f"{field} {remote_status(data, field, args.lang)}")
@@ -254,14 +405,50 @@ def cmd_status(args):
     print(f"cloud_release {cloud_release(data) or '-'}")
     request = request_of(data)
     print(f"request {request['req'] + ' ' + request['mode'] if request else '-'}")
-    status = name_status(data)
-    print(f"name {status}" if status.startswith("changed ") else f"name {status} {relay_name()}")
+    try:
+        status = name_status(data)
+        current = relay_name()
+    except NoFirstBot:
+        status, current = "unknown", "-"
+    print(f"name {status}" if status.startswith("changed ") else f"name {status} {current}")
+    if roster is None:
+        print("bots unreadable")
+        return
+    for line in bot_lines(data, roster, args.python, args.lang):
+        print(line)
+
+
+def known_entry(data, name):
+    value = bot_entry(data, name)
+    if value is None:
+        raise ValueError(t("state.bot_unrecorded", name, record_path()))
+    return value
+
+
+def mark_bot_prompt(data, args):
+    item = known_entry(data, args.relay_name)
+    value = {"hash": digest("prompt", args.lang, args.relay_name), "state": args.state}
+    old = item.get("prompt") if isinstance(item.get("prompt"), dict) else {}
+    if args.expect and args.expect != value["hash"]:
+        raise SystemExit(t("state.checkout_moved", "prompt"))
+    if args.if_pending and not (old.get("state") == "pending" and old.get("hash") == value["hash"]):
+        raise SystemExit(t("state.record_moved", "prompt"))
+    item["prompt"] = value
+    data["lang"] = args.lang
+    save(data)
 
 
 def cmd_mark(args):
-    data = load(warn=False)
-    status = name_status(data, args.relay_name)
-    if status.startswith("changed "):
+    data = load_strict()
+    if added_bot(args.relay_name, data):
+        if args.field == "prompt":
+            return mark_bot_prompt(data, args)
+        args.relay_name = None
+    if args.field == "prompt":
+        status = name_status(data, args.relay_name)
+    else:
+        status = legacy_name_status(data, args.relay_name)
+    if status is not None and status.startswith("changed "):
         _, recorded, current = status.split()
         raise SystemExit(t("state.renamed_not_recorded", recorded, current))
     value = {"hash": digest(args.field, args.lang, args.relay_name), "state": args.state}
@@ -314,6 +501,12 @@ def cmd_set_grok_name(args):
     if why:
         raise ValueError(why)
     data = load_strict()
+    if added_bot(args.relay_name, data):
+        item = known_entry(data, args.relay_name)
+        if not args.check:
+            item["grok_name"] = args.grok_name
+            save(data)
+        return
     status = name_status(data, args.relay_name)
     if status.startswith("changed "):
         _, recorded, current = status.split()
@@ -334,6 +527,10 @@ def utf8_stdout():
 
 def cmd_label(args):
     data = load(warn=False)
+    if added_bot(args.relay_name, data):
+        utf8_stdout()
+        print(bot_label(args.person, args.relay_name, bots.grok_of(bot_entry(data, args.relay_name))))
+        return
     name = relay_names.from_env(env_path()) or recorded_name(data) or args.relay_name
     if not name:
         raise SystemExit(3)
@@ -366,19 +563,86 @@ def cmd_lang(_args):
     print(lang if lang in ("en", "zh-CN") else "")
 
 
+def parse_participants(text):
+    try:
+        value = json.loads(text)
+    except ValueError:
+        value = None
+    if not (isinstance(value, list) and all(valid_participant(p) for p in value)):
+        raise ValueError(t("state.bad_participants"))
+    return [{k: p[k] for k in ("name", "label", "plist", "was_loaded")} for p in value]
+
+
+def print_participants(participants):
+    for p in participants:
+        print(f"{p['name']}\t{p['label']}\t{p['plist']}\t{1 if p['was_loaded'] else 0}")
+
+
+def prompt_bots(data):
+    return [b["name"] for b in bots.roster(home(), data)
+            if not b["removing"] and (b["kind"] == bots.LEGACY or b["cloud"] == "confirmed")]
+
+
+def txn_target(data, need, lang, names):
+    target = {part: digest(part, lang) for part in need if part != "prompt"}
+    if "prompt" in need and not data.get("bots") and not data.get("legacy_removed"):
+        target["prompt"] = digest("prompt", lang)
+    elif "prompt" in need:
+        names = prompt_bots(data) if names is None else [n for n in names.split(",") if n]
+        target["prompt"] = {name: digest("prompt", lang, name) for name in names}
+    return target
+
+
 def cmd_txn_start(args):
-    data = load(warn=False)
+    data = load_strict()
     need = [part for part in args.need.split(",") if part]
-    data["txn"] = {"stage": "stopping", "relay_was_loaded": args.was == "1", "need": need, "lang": args.lang,
-                   "commit": args.commit, "target": {part: digest(part, args.lang) for part in need}}
+    txn = {"stage": "stopping", "need": need, "lang": args.lang, "commit": args.commit,
+           "target": txn_target(data, need, args.lang, args.prompt_bots)}
+    if args.participants is not None:
+        txn["participants"] = parse_participants(args.participants)
+    elif args.was is not None:
+        txn["relay_was_loaded"] = args.was == "1"
+    else:
+        raise ValueError(t("state.bad_participants"))
+    data["txn"] = txn
     save(data)
 
 
+def live_participants(participants):
+    live = {b["label"] for b in cohort(bots.roster(home()))}
+    return [p for p in participants if p["label"] in live]
+
+
+def cmd_txn_participants(_args):
+    data = load(warn=False)
+    txn = txn_of(data)
+    if txn:
+        print_participants(live_participants(txn_participants(txn, data)))
+
+
+def cmd_etxn_participants(_args):
+    path = engine_txn_path()
+    try:
+        extra = json.loads(path.read_text(encoding="utf-8")).get("extra") or {}
+    except (OSError, ValueError, AttributeError):
+        extra = {}
+    if not isinstance(extra, dict):
+        extra = {}
+    if isinstance(extra.get("participants"), str):
+        print_participants(live_participants(parse_participants(extra["participants"])))
+        return
+    was = extra.get("relay_was_loaded", "1") != "0"
+    print_participants(live_participants(txn_participants({"relay_was_loaded": was}, load(warn=False))))
+
+
 def cmd_txn_get(args):
-    txn = txn_of(load(warn=False))
+    data = load(warn=False)
+    txn = txn_of(data)
     if not txn:
         return
     value = txn.get(args.key)
+    if args.key == "relay_was_loaded" and value is None:
+        value = any(p["was_loaded"] for p in txn_participants(txn, data))
     if isinstance(value, bool):
         print("1" if value else "0")
     elif isinstance(value, list):
@@ -388,19 +652,18 @@ def cmd_txn_get(args):
 
 
 def cmd_txn_set(args):
-    data = load(warn=False)
+    data = load_strict()
     txn = txn_of(data)
     if not txn:
         raise SystemExit(t("state.no_txn"))
     if args.key == "need":
         txn["need"] = [part for part in args.value.split(",") if part]
-        txn["target"] = {part: digest(part, txn.get("lang", "en")) for part in txn["need"]}
+        txn["target"] = txn_target(data, txn["need"], txn.get("lang", "en"), args.prompt_bots)
     else:
         txn[args.key] = args.value
     save(data)
 
 
-CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py")
 ENGINE_LINE = re.compile(r"engine: reason-network (\S+) running \(daemon pid \d+, started ")
 BUILD_LINE = re.compile(r"engine: pinned build ([0-9a-f]{64}) at box/bin/engine/reason-network")
 DEFAULT_REPO_URL = "https://github.com/xiaozhenliu/agent-mesh.git"
@@ -521,6 +784,13 @@ def bot_address():
     return f"{person}/{relay_name()}"
 
 
+def request_address(request):
+    value = request.get("address")
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[a-z0-9]+(?:-[a-z0-9]+)*", value):
+        return value
+    return bot_address()
+
+
 def request_of(data):
     value = data.get("request")
     if (isinstance(value, dict) and isinstance(value.get("req"), str) and re.fullmatch(r"[0-9a-f]{16}", value["req"])
@@ -532,10 +802,17 @@ def request_of(data):
 
 
 def find_reply(req, sender, floor_ms):
+    marker = re.compile(LEAD + r"agent-mesh-result request " + re.escape(req) + TAIL, re.M)
+    for body in reply_bodies(req, sender, floor_ms):
+        if marker.search(body):
+            return body
+    return None
+
+
+def reply_bodies(req, sender, floor_ms):
     path = relay_names.default_db()
     if not path.exists():
         raise LookupError(t("request.no_db", path))
-    marker = re.compile(LEAD + r"agent-mesh-result request " + re.escape(req) + TAIL, re.M)
     try:
         db = relay_names.open_ro(path)
         try:
@@ -548,14 +825,16 @@ def find_reply(req, sender, floor_ms):
             db.close()
     except sqlite3.Error as error:
         raise LookupError(t("request.db_error", path, error))
-    for (body,) in rows:
-        if isinstance(body, str) and marker.search(body):
-            return body
-    return None
+    return [body for (body,) in rows if isinstance(body, str)]
 
 
-def cmd_bot_address(_args):
-    print(bot_address())
+def cmd_bot_address(args):
+    if args.relay_name is None:
+        print(bot_address())
+        return
+    data = load(warn=False)
+    bot = added_bot(args.relay_name, data)
+    print(f"{bot_person(bot)}/{args.relay_name}" if bot is not None else bot_address())
 
 
 def cmd_request_new(args):
@@ -564,6 +843,8 @@ def cmd_request_new(args):
     data["request"] = {"req": req, "tag": args.tag, "commit": args.commit, "mode": args.mode,
                        "sent_ms": int(time.time() * 1000) - 2000,
                        "target": {field: digest(field, "en") for field in CLOUD_PARTS}}
+    if args.address:
+        data["request"]["address"] = args.address
     save(data)
     print(req)
 
@@ -593,7 +874,7 @@ def check_request(args):
         print(t("request.checkout_moved"))
         raise SystemExit(3)
     try:
-        text = find_reply(request["req"], bot_address(), request["sent_ms"])
+        text = find_reply(request["req"], request_address(request), request["sent_ms"])
     except LookupError as error:
         print(str(error))
         raise SystemExit(4)
@@ -610,7 +891,7 @@ def check_request(args):
     for field in CLOUD_PARTS:
         data[field] = {"hash": digest(field, "en"), "state": "confirmed"}
     data["cloud_engine"]["version"] = pinned()
-    if name_status(data) == "unknown":
+    if legacy_name_status(data) == "unknown":
         data["relay_name"] = relay_name()
     data.pop("request")
     stamp_release(data)
@@ -618,14 +899,228 @@ def check_request(args):
     print(t("reply.match_engine", pinned()))
 
 
+def added_bot_strict(data, name):
+    bot = added_bot(name, data)
+    if bot is None:
+        raise ValueError(t("state.not_added_bot", name))
+    return bot
+
+
+def bot_person(bot):
+    try:
+        text = Path(bot["env"]).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    person = relay_names.parse_env(text).get("PERSON", "")
+    if not (TEAM.fullmatch(person) and len(person) <= 40):
+        raise ValueError(t("state.bot_no_team", bot["name"], bot["env"]))
+    return person
+
+
+def cmd_add_record(args):
+    if not re.fullmatch(r"[0-9a-f]{16}", args.team_hash):
+        raise ValueError(t("state.bot_no_team_hash", args.relay_name, record_path(), args.relay_name))
+    why = relay_names.problem(args.relay_name) or (args.grok_name is not None and relay_names.grok_problem(args.grok_name))
+    if why:
+        raise ValueError(why)
+    data = load_strict()
+    if any(b["name"] == args.relay_name for b in bots.roster(home(), data)) or args.relay_name in removed_bots(data):
+        raise ValueError(t("names.add_is_bot", args.relay_name))
+    item = {"team_hash": args.team_hash, "stage": "configured", "prompt": {"state": "pending"},
+            "cloud": {"state": "pending"}, "added_ms": int(time.time() * 1000)}
+    if args.grok_name is not None:
+        item["grok_name"] = args.grok_name
+    data.setdefault("bots", {})[args.relay_name] = item
+    save(data)
+
+
+def cmd_bot_get(args):
+    data = load_strict()
+    bot = added_bot_strict(data, args.relay_name)
+    item = bot_entry(data, args.relay_name) or {}
+    cloud = item.get("cloud") if isinstance(item.get("cloud"), dict) else {}
+    req = cloud.get("req") if isinstance(cloud.get("req"), str) and re.fullmatch(r"[0-9a-f]{16}", cloud["req"]) else "-"
+    team_hash = item.get("team_hash")
+    print(f"stage {bot['stage']}")
+    print(f"cloud {bot['cloud']}")
+    print(f"req {req}")
+    print(f"team_hash {team_hash if isinstance(team_hash, str) and re.fullmatch(r'[0-9a-f]{16}', team_hash) else '-'}")
+    print(f"record {bot['record']}")
+    print(f"removing {1 if bot['removing'] else 0}")
+
+
+def cmd_bot_stage(args):
+    data = load_strict()
+    added_bot_strict(data, args.relay_name)
+    known_entry(data, args.relay_name)["stage"] = args.stage
+    save(data)
+
+
+def cmd_add_request(args):
+    data = load_strict()
+    added_bot_strict(data, args.relay_name)
+    item = known_entry(data, args.relay_name)
+    req = secrets.token_hex(8)
+    item["cloud"] = {"state": "pending", "req": req, "sent_ms": int(time.time() * 1000) - 2000}
+    save(data)
+    print(req)
+
+
+def add_marker(req, name, team_hash):
+    return LEAD + r"agent-mesh-result add-bot " + re.escape(req) + r" ok " + re.escape(name) + " " + team_hash + TAIL
+
+
+def cmd_add_reply(args):
+    if args.check:
+        try:
+            data = load_strict()
+            bot = added_bot_strict(data, args.relay_name)
+        except ValueError as error:
+            print(str(error))
+            raise SystemExit(4)
+    else:
+        data = load_strict()
+        bot = added_bot_strict(data, args.relay_name)
+    item = known_entry(data, args.relay_name)
+    cloud = item.get("cloud") if isinstance(item.get("cloud"), dict) else {}
+    if cloud.get("state") == "confirmed":
+        return
+    req, sent, team_hash = cloud.get("req"), cloud.get("sent_ms"), item.get("team_hash")
+    if not (isinstance(req, str) and re.fullmatch(r"[0-9a-f]{16}", req) and isinstance(sent, int)
+            and isinstance(team_hash, str) and re.fullmatch(r"[0-9a-f]{16}", team_hash)):
+        raise SystemExit(3)
+    sender = f"{bot_person(bot)}/{args.relay_name}"
+    try:
+        bodies = reply_bodies(req, sender, sent)
+    except LookupError as error:
+        print(str(error))
+        raise SystemExit(4)
+    ok = re.compile(add_marker(req, args.relay_name, team_hash), re.M)
+    other = re.compile(LEAD + r"(STOP:.*|agent-mesh-result add-bot " + re.escape(req) + r" .*)$", re.M)
+    if not any(ok.search(body) for body in bodies):
+        lines = [m.group(0).strip() for body in bodies for m in other.finditer(body)]
+        if not lines:
+            raise SystemExit(3)
+        print(t("state.add_reply_mismatch", sender))
+        for line in lines:
+            print(f"  {line}")
+        raise SystemExit(1)
+    if args.check:
+        return
+    item["cloud"] = {"state": "confirmed", "req": req, "sent_ms": sent}
+    prompt = item.get("prompt") if isinstance(item.get("prompt"), dict) else {}
+    if prompt.get("state") == "pending" and prompt.get("hash") == digest("prompt", args.lang, args.relay_name):
+        item["prompt"] = {"hash": prompt["hash"], "state": "confirmed"}
+    save(data)
+    print(t("state.add_confirmed", sender))
+
+
+WAKE_TEXT = ("agent-mesh: the Mac installer just added this Bot ({address}). If its cloud registration is not done "
+             "yet, do step 0 of your routine prompt now; once it is done, step 0 does nothing. There is no mail to "
+             "fetch for this notice.")
+
+
+def relay_module():
+    spec = importlib.util.spec_from_file_location("agent_relay_for_wake", ROOT / "agent_relay.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def cmd_wake_bot(args):
+    data = load_strict()
+    bot = added_bot_strict(data, args.relay_name)
+    relay = relay_module()
+    relay.ENV_FILE = Path(bot["env"])
+    try:
+        cfg = relay.load_env()
+    except SystemExit as error:
+        raise ValueError(t("state.wake_env", args.relay_name, error.code))
+    me = f"{cfg['PERSON']}/{cfg['LISTEN_NAME']}"
+    if cfg["LISTEN_NAME"] != args.relay_name:
+        raise ValueError(t("state.env_name_differs", bot["env"], cfg["LISTEN_NAME"], args.relay_name))
+    view = types.SimpleNamespace(me=me, cloud=f"{cfg['PERSON']}/{cfg['CLOUD_NAME']}",
+                                 inbox=f"{cfg['PERSON']}/{cfg['INBOX_NAME']}")
+    item = relay.notice_item(f"relay-add-bot-{int(time.time())}", WAKE_TEXT.format(address=me))
+    body = json.dumps(relay.Relay.payload(view, [item]), ensure_ascii=False).encode()
+    request = urllib.request.Request(cfg["WEBHOOK_URL"], data=body, method="POST",
+                                     headers=relay.webhook_headers(cfg["WEBHOOK_KEY"]))
+    try:
+        with relay.webhook_open(request, timeout=15) as resp:
+            code = resp.status
+    except urllib.error.HTTPError as error:
+        code = error.code
+        if error.fp is not None:
+            error.close()
+    except Exception as error:
+        code = type(error).__name__
+    if not (isinstance(code, int) and 200 <= code < 300):
+        raise ValueError(t("state.wake_failed", me, code))
+    print(t("state.woke", me))
+
+
+def held_lock():
+    fd = os.environ.get("AGENT_MESH_LOCK_FD")
+    if fd is None:
+        return
+    import mesh_lock
+    if not fd.isdigit() or mesh_lock.inherit(int(fd), str(home() / ".local/lib/agent-mesh.lock")) != mesh_lock.HELD:
+        raise SystemExit(5)
+
+
+def removing_target(data, args):
+    removing = removing_of(data)
+    if removing is not None and removing["name"] != args.relay_name:
+        raise ValueError(t("state.removing_other", removing["name"], args.relay_name))
+    return removing
+
+
+def cmd_removing_set(args):
+    held_lock()
+    data = load_strict()
+    removing_target(data, args)
+    if not any(b["name"] == args.relay_name and b["kind"] == args.kind for b in bots.roster(home(), data)):
+        raise ValueError(t("state.not_a_bot", args.relay_name))
+    data["removing"] = {"name": args.relay_name, "kind": args.kind, "step": args.step}
+    save(data)
+
+
+def cmd_removing_clear(args):
+    held_lock()
+    data = load_strict()
+    if removing_target(data, args) is not None:
+        data.pop("removing", None)
+        save(data)
+
+
+def cmd_removing_done(args):
+    held_lock()
+    data = load_strict()
+    removing = removing_target(data, args)
+    if removing is None:
+        raise ValueError(t("state.not_removing", args.relay_name))
+    if removing["kind"] == bots.LEGACY:
+        data["legacy_removed"] = True
+        for key in ("relay_name", "grok_name", "prompt"):
+            data.pop(key, None)
+    else:
+        bots_of(data).pop(args.relay_name, None)
+    gone = removed_bots(data)
+    if args.relay_name not in gone:
+        gone.append(args.relay_name)
+    data["removed_bots"] = gone
+    data.pop("removing", None)
+    save(data)
+
+
 def cmd_set_engine(args):
-    data = load(warn=False)
+    data = load_strict()
     data["engine"] = {"version": args.version}
     save(data)
 
 
 def cmd_txn_clear(_args):
-    data = load(warn=False)
+    data = load_strict()
     if "txn" in data:
         data.pop("txn")
         save(data)
@@ -641,7 +1136,8 @@ def main(argv=None):
     p = sub.add_parser("digest")
     p.add_argument("field", choices=REMOTE)
     p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
-    p.set_defaults(run=lambda a: print(digest(a.field, a.lang)))
+    p.add_argument("--relay-name")
+    p.set_defaults(run=lambda a: print(digest(a.field, a.lang, a.relay_name)))
     sub.add_parser("pinned").set_defaults(run=lambda a: print(pinned()))
     p = sub.add_parser("set-engine")
     p.add_argument("version")
@@ -675,15 +1171,20 @@ def main(argv=None):
     p = sub.add_parser("txn-start")
     p.add_argument("--lang", required=True, choices=("en", "zh-CN"))
     p.add_argument("--need", required=True)
-    p.add_argument("--was", required=True, choices=("0", "1"))
+    p.add_argument("--was", choices=("0", "1"))
+    p.add_argument("--participants")
+    p.add_argument("--prompt-bots")
     p.add_argument("--commit", required=True)
     p.set_defaults(run=cmd_txn_start)
+    sub.add_parser("txn-participants").set_defaults(run=cmd_txn_participants)
+    sub.add_parser("etxn-participants").set_defaults(run=cmd_etxn_participants)
     p = sub.add_parser("txn-get")
     p.add_argument("key", choices=TXN_KEYS)
     p.set_defaults(run=cmd_txn_get)
     p = sub.add_parser("txn-set")
     p.add_argument("key", choices=("stage", "need"))
     p.add_argument("value")
+    p.add_argument("--prompt-bots")
     p.set_defaults(run=cmd_txn_set)
     sub.add_parser("txn-clear").set_defaults(run=cmd_txn_clear)
     p = sub.add_parser("cloud-reply")
@@ -694,16 +1195,46 @@ def main(argv=None):
     p = sub.add_parser("release")
     p.add_argument("--repo-url", default=DEFAULT_REPO_URL)
     p.set_defaults(run=cmd_release)
-    sub.add_parser("bot-address").set_defaults(run=cmd_bot_address)
+    p = sub.add_parser("bot-address")
+    p.add_argument("--relay-name")
+    p.set_defaults(run=cmd_bot_address)
     p = sub.add_parser("request-new")
     p.add_argument("--tag", required=True)
     p.add_argument("--commit", required=True)
     p.add_argument("--mode", required=True, choices=("line", "block"))
+    p.add_argument("--address")
     p.set_defaults(run=cmd_request_new)
     p = sub.add_parser("request-check")
     p.add_argument("--tag", required=True)
     p.add_argument("--commit", required=True)
     p.set_defaults(run=cmd_request_check)
+    p = sub.add_parser("add-record")
+    p.add_argument("--relay-name", required=True)
+    p.add_argument("--team-hash", required=True)
+    p.add_argument("--grok-name")
+    p.set_defaults(run=cmd_add_record)
+    for name, run in (("bot-get", cmd_bot_get), ("add-request", cmd_add_request), ("wake-bot", cmd_wake_bot)):
+        p = sub.add_parser(name)
+        p.add_argument("--relay-name", required=True)
+        p.set_defaults(run=run)
+    p = sub.add_parser("bot-stage")
+    p.add_argument("--relay-name", required=True)
+    p.add_argument("--stage", required=True, choices=bots.STAGES)
+    p.set_defaults(run=cmd_bot_stage)
+    p = sub.add_parser("add-reply")
+    p.add_argument("--relay-name", required=True)
+    p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
+    p.add_argument("--check", action="store_true")
+    p.set_defaults(run=cmd_add_reply)
+    p = sub.add_parser("removing-set")
+    p.add_argument("--relay-name", required=True)
+    p.add_argument("--kind", required=True, choices=bots.KINDS)
+    p.add_argument("--step", required=True, choices=("started", "stopped", "routine", "cloud"))
+    p.set_defaults(run=cmd_removing_set)
+    for name, run in (("removing-clear", cmd_removing_clear), ("removing-done", cmd_removing_done)):
+        p = sub.add_parser(name)
+        p.add_argument("--relay-name", required=True)
+        p.set_defaults(run=run)
     args = parser.parse_args(argv)
     utf8_stdout()
     try:

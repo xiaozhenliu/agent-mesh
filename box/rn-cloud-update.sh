@@ -2,7 +2,8 @@
 set -uo pipefail
 
 main() {
-  local A r=agent-mesh-result after=0
+  local A r=agent-mesh-result after=0 lock ex
+  local -a args=("$@")
   A="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || { echo "STOP: cannot find the clone of this script"; exit 1; }
   stop() { echo "STOP: $*"; exit 1; }
   bounded() { if command -v timeout >/dev/null; then timeout "$@"; else shift; "$@"; fi; }
@@ -23,11 +24,22 @@ main() {
   fi
   local TAG="$1" COMMIT="$2" REQ="$3" st cur got head sums
   [[ "$REQ" =~ ^[0-9a-f]{8,32}$ ]] || stop "the request id must be 8 to 32 lowercase hex characters; nothing was changed"
-  [ "$after" = 1 ] || echo "$r request $REQ"
+  [ "$after" = 1 ] || [ -n "${RN_MAINT_FD:-}" ] || echo "$r request $REQ"
   [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || stop "the tag must look like v1.2.3; nothing was changed"
   [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || stop "the commit must be 40 lowercase hex characters; nothing was changed"
   cd "$A" || stop "no clone at $A; nothing was changed"
   export GIT_TERMINAL_PROMPT=0
+  lock="$A/.maint.lock"
+  if [ -z "${RN_MAINT_FD:-}" ]; then
+    if ! git check-ignore -q .maint.lock 2>/dev/null; then
+      ex="$(git rev-parse --git-path info/exclude 2>/dev/null)" && mkdir -p "$(dirname "$ex")" \
+        && printf '/.maint.lock\n' >> "$ex"
+    fi
+    exec python3 -I "$A/box/rn-engine.py" hold --exclusive --wait "${RN_MAINT_WAIT:-600}" "$lock" -- \
+      "$BASH" "$A/box/rn-cloud-update.sh" "${args[@]}"
+  fi
+  python3 -I "$A/box/rn-engine.py" held --exclusive "$lock" \
+    || stop "the exclusive cloud maintenance lock is not held (see the line above); nothing was changed"
   if [ "$after" = 0 ]; then
     st="$(git status --porcelain)" || stop "$A is not a git clone; nothing was changed"
     if [ -n "$st" ]; then
@@ -52,7 +64,7 @@ main() {
   [ "$head" = "$COMMIT" ] || stop "HEAD is $head, not $COMMIT"
   bash "$A/box/rn-cloud-setup.sh" --upgrade-engine </dev/null \
     || stop "the engine step failed (see the lines above); the clone stays at $TAG"
-  sums="$(sha256sum box/rn-cloud.sh box/rn-fetch.py box/rn-cloud-setup.sh box/rn-engine.py)" \
+  sums="$(sha256sum box/rn-cloud.sh box/rn-fetch.py box/rn-cloud-setup.sh box/rn-engine.py box/rn-cloud-add-bot.sh)" \
     || stop "cannot compute the checksums after checking out $TAG"
   echo "$r commit $head"
   printf '%s\n' "$sums" | sed "s/^/$r sum /"

@@ -10,10 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from render_prompt import ROOT, render_prompt
+from render_prompt import CLOUD_FILES, ROOT, render_prompt
 from tests.helpers.prompts import FIRST_UPDATE_PREFIX
 
-CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py")
 TAG = "v" + (ROOT / "VERSION").read_text().strip()
 UPDATE = "box/rn-cloud-update.sh"
 REQ = "0123456789abcdef"
@@ -256,8 +255,8 @@ new_req() {{ echo {REQ}; }}
                                 f"could not fetch {TAG}, or a different tag"),
             "other commit": (lambda: None, lambda: {"commit": self.old}, None),
             **{f"wrong checksum {i}": (lambda: None, lambda i=i: {"sums": self.tampered(i)},
-                                       f"{CLOUD_FILES[i]} in") for i in range(4)},
-            "short list": (lambda: None, lambda: {"sums": "".join(self.sums.splitlines(True)[:3])},
+                                       f"{CLOUD_FILES[i]} in") for i in range(len(CLOUD_FILES))},
+            "short list": (lambda: None, lambda: {"sums": "".join(self.sums.splitlines(True)[:len(CLOUD_FILES) - 1])},
                            "the checksum list is incomplete"),
         }
         for label, (prepare, kwargs, why) in cases.items():

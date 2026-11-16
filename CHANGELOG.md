@@ -4,6 +4,23 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.0 — 2026-11-16
+
+One Mac can connect several Grok Bots (#32). Update with `./update.sh`; the cloud scripts change, so it sends one cloud update request. An existing installation becomes the first Bot and keeps its paths and routine prompt.
+
+### Added
+
+- `./install.sh --add-bot` adds a Grok Bot. It asks only the Bot's name in Grok; the new Bot registers itself on the cloud.
+- `./uninstall.sh --level bot --relay-name <name>` removes one Bot and keeps the others. A removed name cannot be added again.
+- `./check.sh` shows one section per Bot.
+
+### Changed
+
+- `./update.sh` covers every Bot and no longer asks you to pause routines; `--manual` still does.
+- With several Bots, per-Bot options need `--relay-name <name>`. `--restart-relay` and `--rotate-key` cover every Bot.
+- An engine upgrade switches the engine and every relay together, and rolls all of them back if one fails.
+- `rn-cloud.sh purge` is refused while the cloud has more than one Bot.
+
 ## v0.8.3 — 2026-11-13
 
 The first cloud update from v0.8.1 or earlier no longer stops at a refusal. Update with `./update.sh`; the routine prompt changes in this version, so paste the new prompt into Grok once when `update.sh` asks.
@@ -16,135 +33,109 @@ The first cloud update from v0.8.1 or earlier no longer stops at a refusal. Upda
 
 ## v0.8.2 — 2026-11-13
 
-Updating takes one command. `./update.sh` shows what will change, asks once, and then updates the Mac side and asks Grok Bot to update the cloud by itself: no pausing the routine, no copying command blocks or replies. Terminal text follows the chosen language. Update with `./update.sh` in a terminal; the routine prompt changes in this version, so paste the new prompt into Grok once when `update.sh` asks.
+Updating takes one command: `./update.sh` asks once, updates the Mac side and has Grok Bot update the cloud by itself, without pausing the routine or copying replies. Update with `./update.sh` in a terminal; the routine prompt changes in this version, so paste the new prompt into Grok once when `update.sh` asks.
 
 ### Added
 
-- `box/rn-cloud-update.sh <tag> <commit> <request>`: the cloud update as one written command. It checks that the cloud clone has no local changes, never moves to an older version, fetches the release tag, checks that the tag points to the release commit, checks it out, and then runs the copy of itself from the new checkout, which runs the cloud engine step and prints the `agent-mesh-result` lines. On a problem found before the checkout it prints `STOP: <reason>` and changes nothing; if the engine step fails, the checked release stays checked out. It does not repair anything by itself.
-- The routine prompt gains one exception to "ask before production changes": a one-line `agent-mesh update <tag> <commit> <request>` message from the owner (the same team name as `box/person`) runs `box/rn-cloud-update.sh` without asking and replies with its full output. Other update-like messages are not run.
-- Terminal text in `install.sh`, `update.sh`, `check.sh`, `uninstall.sh`, the dsh scripts and the helper scripts follows `--lang en|zh-CN`, then the language recorded at install, then `AGENT_MESH_LANG`, then English. `check.sh` gains `--lang`. Machine-read output (status words, `PASS`/`FAIL`/`WARN`/`RESULT`, `agent-mesh-result`, `STOP:`, cloud script output, logs) stays English. The texts live in `scripts/messages/<lang>/*.tsv`.
+- `box/rn-cloud-update.sh <tag> <commit> <request>` updates the cloud to the checked release in one command, or prints `STOP: <reason>` and changes nothing.
+- The routine prompt runs a one-line `agent-mesh update <tag> <commit> <request>` message from the owner without asking and replies with its output; other update-like messages are not run.
+- Terminal text follows `--lang en|zh-CN`, then the language recorded at install, then `AGENT_MESH_LANG`, then English; `check.sh` gains `--lang`.
 
 ### Changed
 
-- `./update.sh` asks a single "Continue? [Y/n]" after showing the plan (`--yes` skips it). The questions about whether the cloud side is set up and whether to do the cloud engine step are gone: the cloud update always runs the engine step, and later cloud migrations go into `rn-cloud-setup.sh --upgrade-engine` or `rn-cloud-update.sh`. The local engine step no longer asks separately.
-- When the cloud needs an update, `./update.sh` sends `agent-mesh update <tag> <commit> <request>` to Grok Bot's address and waits up to 15 minutes (`AGENT_MESH_REPLY_WAIT`) for the reply carrying the same request id. Only a complete reply that matches the release is recorded; a `STOP` reply is shown and nothing is recorded. If no reply arrives in time, rerun `./update.sh`: it first checks whether the reply to the saved request has arrived.
-- The first update from a version without the new script sends a command block that checks and checks out the release and then runs the new script. `./update.sh --manual` keeps the guided flow of v0.8.1, in the chosen language.
-- The release check also compares `box/rn-cloud-update.sh` with the published release, and a change to it alone triggers a cloud update.
-- `rn-cloud-setup.sh` limits engine downloads to 20 seconds to connect and 3600 seconds in total.
+- `./update.sh` asks a single "Continue? [Y/n]" after showing the plan (`--yes` skips it).
+- When the cloud needs an update, `./update.sh` sends the update message to Grok Bot and waits up to 15 minutes (`AGENT_MESH_REPLY_WAIT`) for its reply; if none arrives, rerun `./update.sh`.
+- The first update from a version without the new script sends a command block instead; `./update.sh --manual` keeps the guided flow of v0.8.1.
 
 ## v0.8.1 — 2026-11-13
 
-Security fixes for the cloud side. The cloud installs and updates only a published release after checking it, and the cloud engine can no longer be replaced by another engine daemon updating itself. Update with `./update.sh` in a terminal: the cloud scripts and the cloud engine step run in one guided cloud step; the routine prompt does not change.
+Security hardening for the cloud side: the cloud installs and updates only a checked published release, and its engine can no longer be replaced by another engine daemon updating itself. Update with `./update.sh` in a terminal; it runs the cloud scripts and the cloud engine step in one guided cloud step, and the routine prompt does not change.
 
 ### Security
 
-- The cloud engine moves to `box/bin/engine/reason-network`. `box/bin/reason-network` becomes a small launcher for commands run by hand: it refuses to run without `REASON_NETWORK_HOME` (or `TINCAN_HOME`), refuses `upgrade`, `setup` and `join`/`init` without `--no-setup`, and always sets `REASON_NETWORK_NO_UPDATE=1`. Before, an engine command run by hand on the cloud could end up replacing the pinned engine with an unchecked one.
-- Every `rn-cloud.sh` command, `rn-fetch.py` and the cloud uninstall script check the engine's bytes against the builds pinned in `box/rn-engine.py` before running it, and stop if they differ. `rn-cloud.sh`, `rn-cloud-setup.sh` and `rn-engine.py` set `REASON_NETWORK_NO_UPDATE=1` for every engine command, so a damaged `config.toml` no longer turns automatic updates back on.
-- The cloud setup prompt and the update message pin the cloud clone to the release tag `v<VERSION>`: Grok Bot runs a command block that fetches the tag, checks that it points to the release commit and that the four cloud scripts (`box/rn-cloud.sh`, `box/rn-fetch.py`, `box/rn-cloud-setup.sh`, `box/rn-engine.py`) have the expected checksums, and only then checks the tag out and checks the files again. On any mismatch it stops without changing the clone, or puts the previous commit back. Before, the cloud cloned or pulled the default branch and ran its scripts before the Mac compared their checksums.
-- Cloud scripts run Python in isolated mode (`python3 -I`), so a file added next to them cannot be imported in place of a standard module.
+- An engine command run by hand on the cloud can no longer replace the pinned engine, and the cloud scripts stop when the engine is not a pinned build.
+- The cloud clone is pinned to the release tag `v<VERSION>` and checked before its scripts run.
 
 ### Changed
 
-- `install.sh --cloud-prompt` and `./update.sh` first check online that the release tag exists in the repository the cloud installs from and that the four cloud scripts in this checkout match it. If the check fails, they stop before printing anything for Grok Bot or changing the deployment (`./update.sh` may already have pulled this checkout). `./update.sh` no longer requires the checkout to be committed or at its upstream; it has a new `--repo-url` option (default: the public repository), and `--plan` shows the result of the check.
-- `rn-cloud-setup.sh --upgrade-engine` moves an engine still at `box/bin/reason-network` to `box/bin/engine`, and replaces an engine whose bytes are not a pinned build without running it (the copy stays in the backup and is never put back). It prints `engine: pinned build <sha256>` and `engine: launcher ok`, and notes other engine daemons running from `box/bin` without stopping them. Grok Bot's reply in the cloud engine step must show these lines.
-- `rn-cloud-setup.sh` and `install.sh` write `auto_update`, `lan` (and on the cloud `tray`) as top-level keys of the engine's `config.toml`: an existing key is replaced in place, a missing one is added at the start. Before, a missing key was appended at the end, where it fell into the last table and had no effect.
-- The update message's command block ends with lines that start with `agent-mesh-result`: the commit, the four checksums and `DONE <tag>`. `./update.sh` reads only these lines, so a reply that only repeats the message, or has a `STOP` line, is not recorded. While the cloud step is not recorded, the routine stays paused.
-- `rn-cloud.sh` without a command prints its usage before checking the engine.
+- `install.sh --cloud-prompt` and `./update.sh` first check online that the release tag matches this checkout's cloud scripts; `./update.sh` gains `--repo-url` (default: the public repository) and no longer requires a committed checkout.
+- `rn-cloud-setup.sh --upgrade-engine` also replaces an engine that is not a pinned build; Grok Bot's reply must show its `engine: pinned build` and `engine: launcher ok` lines.
+- `./update.sh` records the cloud step only from the `agent-mesh-result` lines of Grok Bot's reply.
+
+### Fixed
+
+- The engine settings `auto_update` and `lan` are written where they take effect.
 
 ## v0.8.0 — 2026-11-12
 
-The Bot address is the Bot's own name: a new installation asks for it instead of using `bot`, and the Bot's name in Grok is shown next to the address. Existing installations keep their address (#31).
+The Bot address is the Bot's own name: a new installation asks for it instead of using `bot`, and the Bot's name in Grok is shown next to the address (#31). Existing installations keep their address. Update with `./update.sh`; it only writes the filled-in reply convention copies, and the routine prompt is unchanged.
 
 ### Added
 
-- `install.sh --grok-name <name>`: the Bot's name as Grok shows it, in any language (up to 64 characters, no spaces at the start or end, no line breaks or other control characters). It is stored as given in `~/.local/lib/agent-mesh/deployed.json`, not in the relay env, and is not used for routing. Given alone, it records or changes the name of an existing installation without touching the address, the relay or the service (#31).
-- The installer's `Bot address:` line and `./check.sh` show `<team-name>/<address> → Grok: <name>` (#31).
-- The reply convention templates have a generated block between `<!-- agent-mesh:bot-address lang=… -->` and `<!-- /agent-mesh:bot-address -->`. The installer and `./update.sh` write filled-in copies with this team's Bot address and Grok name to `~/.local/lib/agent-mesh/templates/`; `python3 scripts/reply_convention.py refresh <repository>/AGENTS.md` updates a copy in a repository and replaces only the lines between the markers (#31).
+- `install.sh --grok-name <name>` records the Bot's name as Grok shows it, in any language; given alone, it changes only that name. Run it once after updating to show the name (#31).
+- The installer and `./check.sh` show `<team-name>/<address> → Grok: <name>` (#31).
+- The reply convention templates carry this team's Bot address and Grok name; `python3 scripts/reply_convention.py refresh <repository>/AGENTS.md` updates a repository's copy. Replace copies appended before v0.8.0 with one from `~/.local/lib/agent-mesh/templates/` (#31).
 
 ### Changed
 
-- A new installation (no relay env, no recorded address, no team on this Mac) needs `--relay-name`. Without it, `install.sh` stops before changing anything, asks what the Grok Bot is called and suggests an address derived from `--grok-name` (lowercase, accents removed, other characters turned into single hyphens). A name without Latin letters or digits, such as a Chinese one, gets no suggestion: the installing agent proposes one, for example in pinyin, and the user confirms it. Existing installations, including those named `bot`, keep their address without `--relay-name` (#31).
-- AGENT-INSTALL step 0 asks for the Bot's name in Grok and derives the address from it, instead of offering the default `bot` (#31).
-- `./check.sh` no longer assumes `bot` when the relay env is missing: it reads the address recorded in `deployed.json`, and skips the registration check when no address is known.
-- `install.sh` also takes the address from `deployed.json` when the relay env is missing, instead of assuming `bot` and then refusing the apparent rename (#31).
+- A new installation needs `--relay-name`; without it, `install.sh` stops and suggests an address derived from `--grok-name`, and AGENT-INSTALL asks for the Bot's name in Grok instead of offering `bot` (#31).
+- `./check.sh` and `install.sh` read the recorded address when the relay env is missing, instead of assuming `bot` (#31).
 
 ### Fixed
 
 - `./update.sh --help` printed only part of its description.
 
-### Upgrade notes
-
-Run `./update.sh`. The relay, the cloud scripts, the cloud engine and the routine prompt are unchanged, so it only writes the filled-in reply convention copies. To show the Bot's name in Grok next to the address, run `./install.sh --grok-name '<its name in Grok>'` once. Copies of the reply convention you appended to repositories before v0.8.0 have no generated block: replace that section with a filled-in copy from `~/.local/lib/agent-mesh/templates/`. The address itself cannot change; a different name still means an uninstall at level `identity` and a new install.
-
 ## v0.7.0 — 2026-11-12
 
-Pins Reason Network 0.12.17 and upgrades installed engines on the Mac and on the cloud, with a backup and a rollback on failure. Version 0.10.7 is affected by the upstream security advisory GHSA-84r9-56w3-xqp9 (fixed in 0.12.12).
+Pins Reason Network 0.12.17 and upgrades installed engines on the Mac and the cloud, with a backup and a rollback (#20); 0.10.7 is affected by the upstream security advisory GHSA-84r9-56w3-xqp9. First allow `*.compute.reasonmachines.com` alongside `*.iroh.link`, then run `./update.sh` in a terminal; its guided cloud step has Grok Bot run `box/rn-cloud-setup.sh --upgrade-engine` while the routine is paused. The routine prompt is unchanged.
 
 ### Added
 
-- `./update.sh` upgrades an older engine on the Mac: it switches the relay on the current engine first, lists other processes that use the engine (they do not block it), downloads 0.12.17 and checks the pinned SHA-256, backs up the binary and `~/.reason/network` to `~/.local/lib/agent-mesh/engine-backup-<time>/`, replaces the binary, restarts the daemon and checks that the running daemon is the new one, then starts the relay and checks that it registered on the new daemon. On failure or Ctrl-C only the old binary is put back and the relay starts again; mail received after the switch stays. A switch that could not be undone is recorded in `~/.local/lib/agent-mesh/engine-upgrade.json` and rolled back by the next run. It always asks in a terminal, also with `--yes`, never downgrades, and offers to restart a daemon that still runs a replaced binary ([UPGRADE.md](UPGRADE.md#reason-network-engine)) (#20).
-- `box/rn-cloud-setup.sh --upgrade-engine` checks or upgrades the cloud engine the same way (backup in `box/engine-backup-<time>/`). `./update.sh` adds it to the guided cloud step and compares Grok Bot's reply, which must show the checksums of `box/rn-cloud-setup.sh` and `box/rn-engine.py` and the line `engine: reason-network 0.12.17 running (daemon pid …)`. `deployed.json` records the cloud engine version (#20).
-- `box/rn-engine.py`: the engine checks and switches shared by `update.sh`, `check.sh` and the cloud setup. A daemon counts as the new one only when it holds the engine's lock and started after the binary was replaced. A daemon that does not exit after `reason-network stop` is ended with SIGTERM, then SIGKILL; when a rollback cannot be confirmed, the printed manual steps quote every path.
-- `check.sh` reports the engine version against the pinned one, whether the running daemon runs the installed binary, an unfinished engine upgrade with its backup, whether the relay registered on the running daemon (SKIP for up to 11 minutes after a restart), whether the installed relay reads 0.12 terminal addresses, and the cloud engine version this Mac last confirmed (#20, #30).
-- `./install.sh --fetch-engine <empty directory>` downloads and checks the pinned engine without installing it; `./update.sh` uses it.
+- `./update.sh` upgrades an older engine on the Mac, puts the old one back on failure or Ctrl-C and never downgrades ([UPGRADE.md](UPGRADE.md#reason-network-engine)). Afterwards restart open Claude Code and Codex sessions, and delete the engine backups once `./check.sh` passes.
+- `box/rn-cloud-setup.sh --upgrade-engine` does the same on the cloud (#20).
+- `check.sh` reports the engine version, an unfinished engine upgrade and the relay's registration (#20, #30).
 
 ### Changed
 
-- The pinned Reason Network is 0.12.17 instead of 0.10.7; new installs get 0.12.17 on both computers (#20).
-- Engine downloads are checked against SHA-256 values written in `install.sh` and `box/rn-cloud-setup.sh` for all four targets, instead of the `.sha256` file published next to the archive.
-- `install.sh` checks the engine version only where it matters: a full install stops on an older engine and points to `./update.sh`, and on a newer or unrecognised one. `--restart-relay`, `--webhook`, `--cloud-prompt` and `--preflight` work with an older engine, so `./update.sh` can switch the relay before the engine. Before, every mode stopped when the version differed (#20).
-- The full install marks the cloud engine as pending with the cloud setup it prints; `./update.sh` confirms them together.
-- `./uninstall.sh --level identity` also removes the engine backups, on the Mac with the deployment record and on `[BOT-CLOUD]` (`box/engine-backup-*`).
+- Reason Network 0.12 forgets ordinary sessions offline for more than a day, with their unread messages; the relay's and the cloud's mailboxes are exempt.
+- A full install stops on an older engine and points to `./update.sh` (#20); `./uninstall.sh --level identity` also removes the engine backups.
 
 ### Fixed
 
-- `box/rn-cloud-setup.sh` no longer unpacks the pinned engine over an existing one. A rerun keeps an engine of the pinned version, stops on an older one and points to `--upgrade-engine`, and stops on a newer or unrecognised one. Before, every run replaced the binary with the pinned archive, also a newer engine.
-- `./install.sh --restart-relay` (and so `./update.sh`) could accept a relay that never listened: the engine keeps a session row after the old relay stops, and that row satisfied the registration check. The relay now writes a marker each time `listen` reports its name; the installer removes it before the new relay starts and needs it back, with the new relay's name and process, before checking the session row. After a failed `listen`, for example when the daemon restarts, the relay registers again at once instead of waiting for the next long poll (#30).
-
-### Upgrade notes
-
-Run `./update.sh` in a terminal. It goes in this order: the new relay on the engine you have, the Mac engine, then the guided cloud step, where you pause the routine, Grok Bot pulls this commit and runs `box/rn-cloud-setup.sh --upgrade-engine`, you paste its reply, and you resume the routine. The cloud scripts `box/rn-cloud.sh` and `box/rn-fetch.py` and the routine prompt are unchanged. Before upgrading, allow `*.compute.reasonmachines.com` alongside `*.iroh.link` (README: Network). Afterwards restart open Claude Code and Codex sessions, check with `./check.sh`, and delete the engine backups once it passes. After the upgrade, Reason Network 0.12 forgets ordinary sessions that stay offline for more than a day, together with their unread messages; the relay's and the cloud's mailboxes are exempt.
+- `box/rn-cloud-setup.sh` no longer unpacks the pinned engine over an existing one, even a newer one.
+- `./install.sh --restart-relay` could accept a relay that never listened (#30).
 
 ## v0.6.0 — 2026-11-11
 
-Prepares for Reason Network 0.12: the relay, the self-check and the cloud scripts read what both engine versions produce. The pinned engine stays 0.10.7, and `install.sh` and `update.sh` still require it; switching the engine comes in a later release.
+Prepares for Reason Network 0.12: the relay, the self-check and the cloud scripts read what both engine versions produce; the pinned engine stays 0.10.7 (#20). Update with `./update.sh`; the cloud scripts and the routine prompt are unchanged, and when it asks whether the cloud side is set up for this version, answer yes.
 
 ### Added
 
-- `scripts/relay_targets.py`: tells `check.sh` and `install.sh` which relay the installed engine actually uses. A relay the team set with `reason-network relay <URL>` comes first; otherwise the engine version decides (n0's relays for 0.10.x; for 0.12.x the relay its daemon last logged, else the list in `relays.json`); before the engine is installed, the pinned version's default. The default-relay text in the first line of `reason-network team` is not used, because the client binary draws it. When the relay cannot be told, `check.sh` reports SKIP with what to allow instead of counting a fallback address as a pass (#20).
-- README: Reason Network 0.12's default relays (`*.compute.reasonmachines.com`), how a team sets or resets its relay, that messages are end-to-end encrypted and relays only forward them, and 0.12's rule that forgets ordinary sessions offline for more than a day together with their unread messages (the relay's and the cloud's mailboxes are exempt; 0.10.7 never forgets). Troubleshooting covers both relay domains (#20).
+- README: Reason Network 0.12's default relays (`*.compute.reasonmachines.com`), how a team sets or resets its relay, and 0.12 forgetting ordinary sessions offline for more than a day (#20).
 
 ### Changed
 
-- Relay: cloud receipts (`RN-GOT v1`) are also accepted from `<team-name>/terminal@<CLOUD_MACHINE>`, the form newer engines give a terminal sender. Only the configured cloud machine name is accepted; `terminal@<other>` stays refused. `terminal` and `terminal-<n>` are accepted as before ([PROTOCOL.md](PROTOCOL.md#recovery-and-receipts)) (#20).
-- `check.sh` and `install.sh`: the network check probes the relay found as above and names it in the result, instead of always probing n0's `aps1-1` (#20).
-- `./install.sh --restart-relay` (used by `update.sh`): the new relay must also register under its name before the switch is kept. If it registers under another name, the previous relay and its launchd state are restored and the command fails; before, the switch was kept and only a later check noticed (#20).
-- DeepSeek Harness plugin: a message from `terminal`, `terminal-<n>` or `terminal@<machine>` is shown as typed in a terminal (#20).
+- `check.sh` and `install.sh` probe the relay the installed engine actually uses; when it cannot be told, `check.sh` reports SKIP with what to allow (#20).
+- The relay also accepts cloud receipts from `<team-name>/terminal@<CLOUD_MACHINE>`, the form newer engines give a terminal sender (#20).
+- `./install.sh --restart-relay` restores the previous relay and fails when the new one registers under another name (#20).
+- The DeepSeek Harness plugin shows a message from `terminal@<machine>` as typed in a terminal (#20).
 
 ### Fixed
 
-- `check.sh`, `box/rn-cloud-setup.sh`, `box/rn-cloud-uninstall.sh` and `./uninstall.sh` read `reason-network team` lists in which a person is marked `(verified)`, as Reason Network 0.12 shows people who signed in with Reason. Before, such a list made `check.sh` miss the cloud machine and report it as an unexpected member, and made the cloud setup and uninstall steps misread which machine they run on (#20).
-
-### Upgrade notes
-
-The relay, `check.sh`, `install.sh`, `scripts/uninstall.py`, the new `scripts/relay_targets.py`, `box/rn-cloud-setup.sh`, `box/rn-cloud-uninstall.sh` and the DeepSeek Harness plugin changed. The cloud scripts `box/rn-cloud.sh` and `box/rn-fetch.py` and the routine prompt are unchanged, so the cloud needs no update. `./update.sh` restarts the relay and asks whether the cloud side is set up for this version because `box/rn-cloud-setup.sh` changed: there is no cloud setup migration, answer yes. The cloud uses the new setup script the next time it runs a setup.
+- `check.sh`, the cloud setup and uninstall scripts and `./uninstall.sh` read team lists that mark a person `(verified)`, as Reason Network 0.12 does (#20).
 
 ## v0.5.2 — 2026-11-11
 
-Makes the guided cloud update and the self-check report what actually happened.
+Makes the guided cloud update and the self-check report what actually happened (#26, #28). Update with `./update.sh`; the relay, the cloud scripts and the routine prompt are unchanged, so a confirmed v0.5.1 with no unfinished update needs nothing on the cloud.
 
 ### Changed
 
-- Documentation: the README is shorter. The uninstall steps, the upgrade steps and the message formats moved, unchanged, to [UNINSTALL.md](UNINSTALL.md), [UPGRADE.md](UPGRADE.md) and [PROTOCOL.md](PROTOCOL.md), each with a Simplified Chinese version; the README keeps a summary and a link under the same headings. "Key highlights" is merged into "What problem it solves". No behavior changes.
+- The README is shorter: the uninstall steps, the upgrade steps and the message formats moved, unchanged, to [UNINSTALL.md](UNINSTALL.md), [UPGRADE.md](UPGRADE.md) and [PROTOCOL.md](PROTOCOL.md). No behavior changes.
 
 ### Fixed
 
-- `update.sh`: the cloud step no longer records the cloud scripts as updated on a plain yes. You paste Grok Bot's reply instead, and the cloud is recorded as updated only when the reply shows exactly this checkout's commit and the checksums of `box/rn-cloud.sh` and `box/rn-fetch.py`. A plain yes, an empty answer, another commit or a different checksum leaves the cloud unrecorded and the routine paused, and the next `./update.sh` asks again. Before, a yes typed without the message ever reaching Grok Bot marked the cloud as current while it kept the old scripts. The message for Grok Bot now also covers a cloud clone on a detached HEAD: check out the branch this checkout tracks before `git pull --ff-only`, and stop instead of resetting anything (#28).
-- `check.sh`: the webhook line judges the latest webhook POST in the relay log. A failure that a later retry delivered (`code=200`) passes and is noted as recovered; it no longer sends you to `./install.sh --webhook` for a working webhook. A latest POST that failed, including a 3xx answer, still fails (#26).
-
-### Upgrade notes
-
-Only `update.sh`, `check.sh` and `scripts/deploy_state.py` changed; the relay, the cloud scripts, the cloud setup script and the routine prompt are unchanged, so updating from a confirmed v0.5.1 with no unfinished update needs nothing on the cloud. If the cloud was never confirmed, an earlier update was interrupted, or you skip versions, `./update.sh` runs the steps those need, now with the pasted reply.
+- `update.sh` records the cloud as updated only when you paste Grok Bot's reply and it shows this checkout's commit and cloud script checksums; a plain yes no longer counts. The message for Grok Bot also covers a cloud clone on a detached HEAD (#28).
+- `check.sh` judges the webhook by the latest POST in the relay log, so a failure that a later retry delivered no longer sends you to `./install.sh --webhook` (#26).
 
 ## v0.5.1 — 2026-11-11
 
@@ -160,39 +151,24 @@ Only the cloud script and the installer changed; the relay, the routine prompt a
 
 ## v0.5.0 — 2026-11-09
 
-Relay and cloud-script fixes, a choosable Bot address name and a tiered uninstaller.
-
-### Fixed
-
-- Relay: the webhook POST no longer follows HTTP redirects. A 3xx answer counts as a failed POST and is retried like any other failure; the log asks for the final address. `WEBHOOK_URL` must be the final address: if the relay log shows `webhook POST failed: 30x`, copy the webhook URL again from the routine and run `./install.sh --webhook`.
-- Relay: RN-OUT recipient addresses are checked against an allow-list. `to` must be `<person>/<session>[@<machine>]`, each part lowercase letters, digits and hyphens starting with a letter or digit, and a non-empty `reply_to` must be a plain message id. Anything else is refused before sending, with an alert; the nonce stays free, so a corrected envelope can be sent.
-- Relay: when a nonce that was refused or failed is tried again and the result is unknown, the earlier refusal or failure alert is withdrawn and the unknown alert says it replaces it, so the Bot no longer gets "may resend" and "do not resend" for the same message (#15).
-- Relay: a `done` receipt also withdraws a doorbell still queued for a message whose pending entry an RN-OUT reply had already ended, so the Bot is not woken once more (#17).
-- Cloud scripts: send results are judged on the engine's status words only. A recipient or team name containing words such as `held` or `error` (for example a team called `sheldon`) no longer makes a queued receipt, re-forward request or `rn-cloud.sh send` count as failed. For receipts and re-forward requests, an `rn send` that exits 0 without a `→` line now counts as failed, as the relay already required (#18).
-- Relay: when `reason-network listen` shows a signed RN-OUT envelope in a rewritten form (it rewrites text that looks like its own message tags, such as `<reason-message …>`), the relay no longer refuses it as a bad signature. If the displayed envelope does not parse or verify, the relay verifies the body the engine stored for that message id instead: read-only, only a message from the cloud session to this relay, not held, exactly one row. Freshness, nonce, rate and address checks still apply, and an altered message is still refused (#11).
-- Installer: two more pipelines that could stop early under `set -o pipefail` no longer report a false failure (the team lookup and the signing-key check during `--rotate-key`), as for the cloud connection check in v0.4.1 (#24).
-- Installer: team and machine names with repeated hyphens (such as `a--b`) are refused before anything is downloaded. The engine merged the hyphens, so the team ended up with another name than the one the installer and the prompts used (#25).
-- `box/rn-cloud-setup.sh` can run again on a cloud that already joined the team: when the full invite link shows the same team and the cloud is already `<team-name>/cloud`, it skips `join` instead of stopping there. A short invite code cannot show this; the engine then decides as before, and the error names the cause.
+Relay and cloud-script fixes, a choosable Bot address name and a tiered uninstaller. Run `git pull`, then `./update.sh --lang <en|zh-CN>` in a terminal, and answer yes when asked whether the cloud side is set up; the routine prompt is unchanged.
 
 ### Added
 
-- `box/rn-fetch.py send-status` prints only the status words of an `rn send` output read on stdin; `rn-cloud.sh send` uses it.
-- `install.sh --relay-name <name>` chooses the Bot address name: the relay listens as `<team-name>/<name>`, the cloud uses `<name>-cloud` and `<name>-inbox`. Default `bot`; 1–34 lowercase letters and digits joined by single hyphens, not `terminal`. The name cannot be changed, also not for an unfinished installation. The installer refuses a name already used in the team, writes the relay settings atomically, and checks that the engine registered exactly that address; `check.sh` reports the name and the registration; `update.sh` and the deployment record refuse a changed name. The routine and cloud setup prompts take the name; with `bot` the routine prompt is byte-for-byte the same as in v0.4.1. On the cloud, `rn-cloud-setup.sh` records the name in `box/relay`, and `rn-cloud.sh` and `rn-fetch.py` read it (`bot` without the file; an empty or damaged file stops them) and check after each registration that the engine used exactly that name.
-- Regression test for a relay stopped after the engine accepted an RN-OUT and before the result was saved: after the restart the send is reported once as unknown and not sent again (#14).
-- `box/rn-cloud-uninstall.sh` and the prompt `prompts/cloud-uninstall.md`: the uninstaller fills in the cloud script and embeds it, with its SHA-256 checksum, in the prompt for Grok Bot. On `[BOT-CLOUD]` the script checks the team, the cloud's machine name, `box/person` and `box/relay`, and that the Mac is online; `check` changes nothing and prints a `PROOF` value made with the deployment's signing key; `apply <code>` runs only with the code the Mac shows for a matching `PROOF`, leaves the team and removes the cloud's identity, key and names. It looks for other programs that use `box/` first (`SHARED:` lines, `accept-shared` only with the user's consent) and, at level `all`, lists the user's own files before removing `inbox/`, `threads/` and the clone; it keeps the clone when Git cannot list everything or a local branch, tag or `HEAD` has commits that no remote branch has. References to `agent-mesh/box` anywhere under `/workspace`, also relative ones, and files too large to check count as shared. A cloud identity whose engine is missing ends with `INCOMPLETE` instead of `DONE`.
+- `install.sh --relay-name <name>` chooses the Bot address name (default `bot`, kept by existing installations). It cannot be changed, and an installation with another name cannot go back to an earlier version.
+- The cloud uninstall prompt removes the cloud's identity only with a code shown on the Mac.
 
 ### Changed
 
-- `./uninstall.sh` is now a tiered uninstaller for both computers. Without options it only lists what is installed, including the team, the Bot address names, the queue, the dsh bridge and deployments it did not install; `--plan` shows what each level removes and keeps. `--level program` removes only the relay program and keeps the identity, settings, signing key, queue and logs, so `./install.sh --restart-relay` brings it back without touching the cloud. `--level identity` also leaves the team on both computers and removes keys and identity; `--level all` (`--all`) also removes logs, the engine, the dsh backups and the cloud's data. The deeper levels run only in a terminal, ask for the team name (`delete <team-name>` for `all`), stop before changing anything when names disagree or a path is unsafe, never touch other relays or login services (`--plan` shows the `I accept` gate; processes are shown without arguments), never stop a `com.local.agent-relay` service loaded from another home, and run the cloud step before this Mac leaves the team. A symlinked dsh temporary file stops them before dsh is touched, and `dsh/mac-uninstall.sh` no longer writes through one. `--residual` cleans up the cloud after an older `--all`; `--cloud-prompt` repeats the cloud step.
-- `./uninstall.sh` without options no longer removes anything, and `-y` works only with `--level program`: `./uninstall.sh -y` and `./uninstall.sh --all -y` now stop with a usage error.
+- `./uninstall.sh` is a tiered uninstaller for both computers: without options it only lists what is installed, `--plan` shows each level, and `--level program`, `--level identity` and `--level all` (`--all`) remove progressively more. `--residual` cleans up the cloud after an older `--all`.
+- `-y` works only with `--level program`: replace `./uninstall.sh -y` or `./uninstall.sh --all -y` with `--level program --yes`.
 
-### Upgrade notes
+### Fixed
 
-The relay and the cloud scripts changed; the routine prompt is unchanged. Run `git pull`, then `./update.sh --lang <en|zh-CN>` in a terminal, and follow its guided steps. Until the cloud scripts are updated, the old cloud classification stays in effect, including for team names that contain `held`. Check that `WEBHOOK_URL` is the final address before updating the relay.
-
-The uninstaller changed: scripts or notes that run `./uninstall.sh -y` or `./uninstall.sh --all -y` need `--level program --yes` or a run of `--level identity` / `--level all` in a terminal; see the README's Uninstall section. Run `git pull` before uninstalling an older installation.
-
-Existing installations keep the Bot address name `bot` and need no migration. The cloud setup script changed, so `update.sh` asks once whether the cloud side is set up for this version: answer yes. The next `./install.sh --webhook` adds the three name lines to the relay settings without changing their values. An installation with another Bot address name cannot go back to an earlier version: older cloud scripts ignore `box/relay` and send to `<team-name>/bot`. Renaming is not supported in any case; a different name needs a full uninstall and a new install.
+- Relay: the webhook POST no longer follows redirects, so `WEBHOOK_URL` must be the final address; if the relay log shows `webhook POST failed: 30x`, copy the URL from the routine again and run `./install.sh --webhook`.
+- Relay: recipient addresses are checked against an allow-list, conflicting resend alerts and extra wakes are gone (#15, #17), and envelopes that `reason-network listen` shows rewritten are no longer refused (#11).
+- Cloud scripts: a team name containing words such as `held` (for example `sheldon`) no longer fails sends (#18).
+- Installer: no false failures under `set -o pipefail` (#24), and names with repeated hyphens (`a--b`) are refused (#25).
 
 ## v0.4.1 — 2026-11-08
 
@@ -212,23 +188,18 @@ The relay and the routine prompt are unchanged; only the cloud script changed. R
 
 ## v0.4.0 — 2026-11-06
 
-`./update.sh` updates an existing installation without reinstalling.
+`./update.sh` updates an existing installation without reinstalling. Run `git pull` once, then `./update.sh --lang <en|zh-CN>` in a terminal; the first run goes through the guided cloud steps once, and a working installation can answer yes when asked whether the cloud side is set up. The relay, the cloud scripts and the routine prompt are unchanged.
 
 ### Added
 
-- `./update.sh` compares the relay, the dsh plugin, the cloud scripts and the routine prompt with what is deployed. It updates the relay and the dsh plugin itself; when the cloud scripts or the prompt change, it guides you in a terminal through stopping the relay, pausing the routine, having Grok Bot pull the exact local commit, pasting the new prompt, resuming the routine and starting the relay. `--plan` shows the comparison only; interrupted updates resume where they stopped. What was confirmed is recorded in `~/.local/lib/agent-mesh/deployed.json`.
-- `./install.sh --restart-relay` installs this checkout's relay and restarts it; if the new relay does not come up, the previous one is restored.
-- `dsh/mac-install.sh --plugin-only` replaces only the installed plugin file and keeps `~/.dsh/cordis.patch.yml`.
+- `./update.sh` compares the relay, the dsh plugin, the cloud scripts and the routine prompt with what is deployed, updates the relay and the dsh plugin itself, and guides you through the rest. `--plan` shows the comparison only; an interrupted update resumes where it stopped.
+- `./install.sh --restart-relay` installs this checkout's relay and restarts it, restoring the previous one if the new one does not come up.
+- `dsh/mac-install.sh --plugin-only` replaces only the installed plugin file.
 
 ### Changed
 
-- Every relay (re)start by `install.sh` now backs up the installed relay first, waits for the new one to report that it is up, and restores the previous files if it does not.
-- `install.sh` records the cloud scripts and the routine prompt it prints as pending; `./update.sh` asks whether they were applied. `./uninstall.sh` removes the record with the relay.
-- `dsh/mac-install.sh` also restores the previous plugin, not only the patch, when a step fails.
-
-### Upgrade notes
-
-The relay, the cloud scripts and the routine prompt are unchanged. `update.sh` is new, so run `git pull` in the local repository once, then `./update.sh --lang <en|zh-CN>` in a terminal. With no record yet, it treats the cloud scripts and the prompt as unknown and runs the guided steps once, and asks whether the cloud side is set up for this version (no cloud setup migration is needed since v0.1.0, so a working installation can answer yes). From then on, `./update.sh` covers every upgrade.
+- `install.sh` restores the previous relay when a new one does not come up, and `dsh/mac-install.sh` restores the previous plugin when a step fails.
+- `install.sh` records the cloud scripts and the routine prompt it prints as pending; `./update.sh` asks whether they were applied.
 
 ## v0.3.0 — 2026-11-05
 
@@ -262,34 +233,25 @@ Existing deployments need no update.
 
 ## v0.2.0 — 2026-11-03
 
-Reliable delivery release: per-message isolation in the relay, idempotent cloud fetch, receipts with re-rings, and reply deduplication.
+Reliable delivery: per-message isolation in the relay, idempotent cloud fetch, receipts with re-rings and reply deduplication. The relay, the cloud scripts and the routine prompt must be updated together, in the [order given in the README](README.md#upgrade).
 
 ### Added
 
-- Cloud receipts and relay re-rings (#7): after each fetch the cloud sends the relay a signed receipt (new format RN-GOT v1); the relay tracks every forwarded message, rings again when it is not stored or handled in time, and alerts the user after repeated failures. Alerts must be confirmed by the routine and survive spool overflow.
-- A reply resent by the cloud is delivered only once (#8): a reply with `reply_to` gets a nonce derived from its content, and the relay records the result of every nonce; a repeat of a sent reply is dropped, and one with an unknown result is not resent.
-- Cloud orphan scan: messages whose doorbell was lost and that nobody handled are handed out on the next fetch.
-- New commands `rn-cloud.sh working` and `rn-cloud.sh done`.
-- Relay settings `GOT_TIMEOUT_SECONDS`, `GOT_DONE_SECONDS`, `GOT_MAX_RERINGS` and `NONCE_KEEP_SECONDS`; cloud settings `RN_CLAIM_LEASE`, `RN_ORPHAN_DAYS`, `RN_ORPHANS` and `RN_GOT`.
-- CI: offline checks run on Linux and macOS for every push and pull request.
+- Cloud receipts and relay re-rings: the relay rings again when a message is not stored or handled in time, and alerts the user after repeated failures (#7).
+- A reply resent by the cloud is delivered only once (#8).
+- Messages whose doorbell was lost are handed out on the next fetch.
+- Commands `rn-cloud.sh working` and `rn-cloud.sh done`; relay settings `GOT_TIMEOUT_SECONDS`, `GOT_DONE_SECONDS`, `GOT_MAX_RERINGS` and `NONCE_KEEP_SECONDS`; cloud settings `RN_CLAIM_LEASE`, `RN_ORPHAN_DAYS`, `RN_ORPHANS` and `RN_GOT`.
 
 ### Changed
 
-- The cloud hands each message to one routine turn, with new statuses `handled`, `claimed` and `uncertain`; an interrupted message is left to the user instead of being redone.
-- The relay handles messages one by one, so one failure no longer affects the rest of its batch.
-- At startup the relay recovers messages the local engine marked read but that were never handled.
-- A re-forward request from a new cloud no longer rings an extra doorbell.
-- Proxied-send problems such as refused or unknown results are reported as relay alerts instead of spool notices.
-- The routine prompt follows the behavior above.
+- The cloud hands each message to one routine turn and leaves an interrupted one to the user.
+- The relay handles messages one by one, and at startup recovers messages marked read but never handled.
+- A re-forward request from a new cloud no longer rings an extra doorbell, and proxied-send problems are reported as relay alerts.
 
 ### Fixed
 
-- The relay treats every HTTP 2xx webhook response as delivered; before, only 200 counted, which caused repeated wakes.
-- A proxied send that times out no longer ends the whole batch and is reported as "not confirmed" (#1, #5).
-
-### Upgrade notes
-
-The relay, the cloud scripts and the routine prompt must be updated together, in the [order given in the README](README.md#upgrade).
+- Every HTTP 2xx webhook response counts as delivered, which ends repeated wakes.
+- A proxied send that times out no longer ends the whole batch (#1, #5).
 
 ## v0.1.1 — 2026-11-03
 

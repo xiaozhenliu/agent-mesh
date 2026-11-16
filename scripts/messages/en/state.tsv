@@ -35,3 +35,17 @@ request.no_person	%s has no PERSON line; run ./install.sh --webhook again
 request.no_db	%s does not exist; is Reason Network installed on this Mac?
 request.db_error	could not read %s: %s
 request.checkout_moved	this checkout changed after the update request was sent; the request is sent again
+state.no_first_bot	%s does not exist and this Mac has no first Bot (only added Bots); name the Bot with --relay-name
+state.bot_no_team	the routine prompt of Bot %s needs the team name (PERSON) from %s, which cannot be read or has none
+state.bot_no_team_hash	the routine prompt of Bot %s needs its team hash, which %s does not record (bots.%s.team_hash)
+state.bot_unrecorded	Bot %s is not recorded in %s
+state.not_added_bot	%s is not an added Bot on this Mac
+state.add_reply_mismatch	the reply from %s does not confirm the cloud registration:
+state.add_confirmed	The cloud registration of %s is confirmed.
+state.wake_env	cannot read the configuration of Bot %s: %s
+state.wake_failed	the wake notice to %s failed (%s); the webhook URL and key are not shown
+state.woke	Sent a wake notice to %s.
+state.bad_participants	update: the list of relays taking part in this update is missing or malformed
+state.removing_other	Bot %s is being uninstalled; finish that before changing %s
+state.not_a_bot	%s is not a Bot on this Mac
+state.not_removing	%s is not being uninstalled

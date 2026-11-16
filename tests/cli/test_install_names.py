@@ -122,7 +122,7 @@ class InstallNames(InstallHarness, unittest.TestCase):
             self.assertIn("--relay-name <address> --grok-name", result.stderr, extra)
         self.assertNotIn("curl", self.calls())
         self.assertEqual(self.rn_calls(), [])
-        self.assertFalse((self.home / ".local/lib").exists())
+        self.assertEqual([p.name for p in (self.home / ".local/lib").iterdir()], ["agent-mesh.lock"])
         self.assertFalse(self.env_file().exists())
 
     def test_existing_installations_keep_their_address_without_relay_name(self):
@@ -312,7 +312,7 @@ class InstallNames(InstallHarness, unittest.TestCase):
             result = self.run_script("install.sh", "--name", "demo", "--relay-name", "nova", "--grok-name", "Nova",
                                      "--yes")
             self.assertNotEqual(result.returncode, 0, content)
-            self.assertIn("--grok-name:", result.stderr, content)
+            self.assertIn("deployed.json", result.stderr, content)
             self.assertEqual(path.read_text(), content)
             self.assertFalse(self.env_file().exists(), content)
             self.assertEqual(self.rn_calls(), [], content)
@@ -505,7 +505,8 @@ class InstallNames(InstallHarness, unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertRegex(result.stdout, r"routine prompt\s+unchanged")
         self.assertRegex(result.stdout, r"address name\s+unknown\s+bot")
-        self.assertEqual(self.state_cmd("status", "--lang", "en", "--python", sys.executable, root=repo).stdout.splitlines()[-1], "name unknown bot")
+        status = self.state_cmd("status", "--lang", "en", "--python", sys.executable, root=repo).stdout.splitlines()
+        self.assertIn("name unknown bot", status)
         self.set_names("alice")
         result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

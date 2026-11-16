@@ -3,6 +3,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/scripts/msg.sh"
+. "$HERE/scripts/lock.sh"
 
 die() { printf 'update: %s\n' "$(tq "$@")" >&2; exit 1; }
 fail() { printf 'update: %s\n' "$*" >&2; exit 1; }
@@ -12,8 +13,9 @@ state() { "$PYTHON" "$HERE/scripts/deploy_state.py" "$@"; }
 installer() { "$BASH" "$HERE/install.sh" "$@" --lang "$DOC_LANG"; }
 service() { echo "gui/$(id -u)/$LABEL"; }
 relay_loaded() { launchctl print "$(service)" >/dev/null 2>&1; }
-engine() { "$PYTHON" "$HERE/box/rn-engine.py" "$@"; }
-relay_pid() { launchctl print "$(service)" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1; }
+engine() { "$PYTHON" "$HERE/box/rn-engine.py" "$@" 9>&-; }
+label_loaded() { launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1; }
+label_pid() { launchctl print "gui/$(id -u)/$1" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1; }
 word() { tq "st.$1"; }
 
 recorded_lang() {
@@ -67,27 +69,6 @@ parse_args() {
   done
 }
 
-take_lock() {
-  mkdir -p "$LIB_DIR"
-  if ! mkdir "$LOCK" 2>/dev/null; then
-    local pid cmd
-    pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      cmd="$(ps -p "$pid" -o command= 2>/dev/null)" || cmd="update.sh"
-      case "$cmd" in *update.sh*) die update.locked "$pid" ;; esac
-    fi
-    t update.stale_lock
-    rm -rf "$LOCK"
-    mkdir "$LOCK" || die update.no_lock "$LOCK"
-  fi
-  echo $$ > "$LOCK/pid"
-  LOCKED=1
-}
-
-release_lock() {
-  if [ "$LOCKED" = 1 ]; then rm -rf "$LOCK"; LOCKED=0; fi
-}
-
 summary() {
   echo
   t update.summary
@@ -105,17 +86,113 @@ prompt $R_PROMPT
 EOF
 }
 
-engine_recover() {
-  local was="$ENGINE_WAS"
-  if [ -f "$ETXN" ]; then
-    was="$(engine txn-get --txn "$ETXN" relay_was_loaded)" || was=1
-    if ! engine rollback --txn "$ETXN"; then
-      t update.engine_not_undone "$ETXN"
-      return 1
+bot_names() {
+  local i out=""
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do out="${out:+$out, }${B_NAMES[$i]}"; done
+  printf '%s' "$out"
+}
+
+participant_names() {
+  local i out=""
+  for ((i = 0; i < ${#P_NAMES[@]}; i++)); do out="${out:+$out, }${P_NAMES[$i]}"; done
+  printf '%s' "$out"
+}
+
+set_participants_now() {
+  local i
+  P_NAMES=(); P_LABELS=(); P_PLISTS=(); P_WAS=(); P_PIDS=()
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    [ "${B_STAGES[$i]}" = relay ] || continue
+    P_NAMES+=("${B_NAMES[$i]}"); P_LABELS+=("${B_LABELS[$i]}"); P_PLISTS+=("${B_PLISTS[$i]}")
+    if label_loaded "${B_LABELS[$i]}"; then
+      P_WAS+=(1); P_PIDS+=("$(label_pid "${B_LABELS[$i]}")")
+    else
+      P_WAS+=(0)
     fi
+  done
+}
+
+participants_json() {
+  local i
+  for ((i = 0; i < ${#P_NAMES[@]}; i++)); do
+    printf '%s\t%s\t%s\t%s\n' "${P_NAMES[$i]}" "${P_LABELS[$i]}" "${P_PLISTS[$i]}" "${P_WAS[$i]}"
+  done | "$PYTHON" -c 'import json, sys
+rows = [line.split("\t") for line in sys.stdin.read().splitlines() if line]
+print(json.dumps([{"name": a, "label": b, "plist": c, "was_loaded": d == "1"} for a, b, c, d in rows]))'
+}
+
+load_participants() {
+  local out n l p w
+  out="$(state "$1")" || return 1
+  P_NAMES=(); P_LABELS=(); P_PLISTS=(); P_WAS=(); P_PIDS=()
+  while IFS=$'\t' read -r n l p w; do
+    [ -n "$n" ] || continue
+    P_NAMES+=("$n"); P_LABELS+=("$l"); P_PLISTS+=("$p"); P_WAS+=("$w")
+  done <<< "$out"
+}
+
+stop_participants() {
+  local i
+  for ((i = 0; i < ${#P_LABELS[@]}; i++)); do
+    launchctl bootout "gui/$(id -u)/${P_LABELS[$i]}" 2>/dev/null || true
+  done
+  for ((i = 0; i < ${#P_LABELS[@]}; i++)); do
+    if label_loaded "${P_LABELS[$i]}"; then return 1; fi
+  done
+  return 0
+}
+
+relay_back() {
+  if [ "$MULTI" = 1 ]; then t "update.bot_$1" "${P_NAMES[$2]}"; else t "update.relay_$1"; fi
+}
+
+start_participants() {
+  local i rc=0
+  for ((i = 0; i < ${#P_LABELS[@]}; i++)); do
+    if [ "${P_WAS[$i]}" != 1 ]; then
+      if label_loaded "${P_LABELS[$i]}"; then launchctl bootout "gui/$(id -u)/${P_LABELS[$i]}" 2>/dev/null || true; fi
+      continue
+    fi
+    label_loaded "${P_LABELS[$i]}" && continue
+    if [ -f "${P_PLISTS[$i]}" ] && launchctl bootstrap "gui/$(id -u)" "${P_PLISTS[$i]}" 2>/dev/null 9>&-; then
+      relay_back running_again "$i"
+    else
+      relay_back not_back "$i"
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+engine_recover() {
+  local phase
+  if [ ! -f "$ETXN" ]; then ENGINE_TXN=0; return 0; fi
+  if ! load_participants etxn-participants; then
+    t update.engine_not_undone "$ETXN"
+    return 1
   fi
-  if [ "$was" = 1 ] && ! relay_loaded; then
-    installer --restart-relay || t update.relay_not_back
+  phase="$(engine txn-get --txn "$ETXN" phase)" || phase=""
+  if [ "$phase" = committed ]; then
+    rm -rf "$ROLLBACK"
+    rm -f "$ETXN"
+    ENGINE_TXN=0
+    return 0
+  fi
+  if [ "$phase" != prepared ] && ! stop_participants; then
+    t update.engine_not_undone "$ETXN"
+    return 1
+  fi
+  if ! engine rollback --txn "$ETXN"; then
+    t update.engine_not_undone "$ETXN"
+    return 1
+  fi
+  if [ -d "$ROLLBACK" ] && ! installer --undo-relay; then
+    t update.engine_not_undone "$ETXN"
+    return 1
+  fi
+  if ! start_participants; then
+    t update.engine_not_undone "$ETXN"
+    return 1
   fi
   rm -f "$ETXN"
   ENGINE_TXN=0
@@ -131,24 +208,23 @@ on_exit() {
     engine_recover || true
   fi
   if [ "$TXN_ACTIVE" = 1 ]; then
-    local stage was
+    local stage
     stage="$(state txn-get stage 2>/dev/null || true)"
-    was="$(state txn-get relay_was_loaded 2>/dev/null || true)"
-    case "$stage" in
-      routine_paused) t update.exit_paused_cloud ;;
-      cloud_done|prompt_done) t update.exit_paused ;;
-    esac
-    if [ "$was" = 1 ] && ! relay_loaded; then
-      if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
-        t update.relay_running_again
-      else
-        t update.relay_not_back
-      fi
+    if [ "$MULTI" = 1 ]; then
+      case "$stage" in
+        routine_paused) t update.exit_paused_cloud_bots "$(bot_names)" ;;
+        cloud_done|prompt_done) t update.exit_paused_bots "$(bot_names)" ;;
+      esac
+    else
+      case "$stage" in
+        routine_paused) t update.exit_paused_cloud ;;
+        cloud_done|prompt_done) t update.exit_paused ;;
+      esac
     fi
+    if load_participants txn-participants 2>/dev/null; then start_participants || true; fi
     t update.stopped_at "$stage"
   fi
   [ "$ACTING" = 0 ] || summary
-  release_lock
   exit "$rc"
 }
 
@@ -186,15 +262,60 @@ release_check() {
   REL_STATE="ok"; REL_NOTE="$(tq update.release_ok "$REL_TAG" "${REL_COMMIT:0:12}")"
 }
 
+prompt_bot() { [ "${B_KINDS[$1]}" = legacy ] || [ "${B_CLOUD[$1]}" = confirmed ]; }
+
+prompt_names() {
+  local i out=""
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    prompt_bot "$i" || continue
+    out="${out:+$out,}${B_NAMES[$i]}"
+  done
+  printf '%s' "$out"
+}
+
+merge_prompt() {
+  local i changed=0 unknown=0 pending=0
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    prompt_bot "$i" || continue
+    case "${B_PROMPT[$i]}" in
+      unchanged) ;;
+      pending) pending=1 ;;
+      changed) changed=1 ;;
+      *) unknown=1 ;;
+    esac
+  done
+  if [ "$changed" = 1 ]; then S_PROMPT=changed
+  elif [ "$unknown" = 1 ]; then S_PROMPT=unknown
+  elif [ "$pending" = 1 ]; then S_PROMPT=pending
+  else S_PROMPT=unchanged; fi
+}
+
+read_paths() {
+  local out n _k _s _c _r _y l p m i
+  out="$("$PYTHON" "$HERE/scripts/bots.py" list --paths)" || die update.no_status
+  while IFS=$'\t' read -r n _k _s _c _r _y l p m; do
+    for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+      if [ "${B_NAMES[$i]}" = "$n" ]; then B_LABELS[i]="$l"; B_PLISTS[i]="$p"; B_MARKERS[i]="$m"; fi
+    done
+  done <<< "$out"
+}
+
 read_status() {
-  local out k v
+  local out k v w i name_value
   out="$(state status --lang "$DOC_LANG" --python "$PYTHON")" || die update.no_status
+  B_NAMES=(); B_KINDS=(); B_STAGES=(); B_RELAY=(); B_PROMPT=(); B_CLOUD=(); B_REMOVING=()
+  B_LABELS=(); B_PLISTS=(); B_MARKERS=()
   while read -r k v; do
     case "$k" in
       relay) S_RELAY="$v" ;; dsh) S_DSH="$v" ;; cloud) S_CLOUD="$v" ;;
       cloud_setup) S_SETUP="$v" ;; prompt) S_PROMPT="$v" ;; txn) S_TXN="$v" ;; name) S_NAME="$v" ;;
       engine) read -r S_ENGINE S_EVER S_EPIN <<< "$v" ;; etxn) S_ETXN="$v" ;; cloud_engine) S_CENGINE="$v" ;;
       cloud_release) S_CREL="$v" ;;
+      bot)
+        read -r -a w <<< "$v"
+        B_NAMES+=("${w[0]}"); B_KINDS+=("${w[2]}"); B_STAGES+=("${w[4]}"); B_RELAY+=("${w[8]}")
+        B_PROMPT+=("${w[10]}"); B_CLOUD+=("${w[12]}"); B_REMOVING+=("${w[14]}")
+        B_LABELS+=("$LABEL"); B_PLISTS+=("$PLIST"); B_MARKERS+=("$MARKER") ;;
     esac
   done <<< "$out"
   [ "$S_ENGINE" != refused ] || die update.engine_refused "$S_EVER" "$S_EPIN"
@@ -204,12 +325,39 @@ read_status() {
       read -r _ recorded current <<< "$S_NAME"
       die update.renamed "$current" "$recorded" ;;
   esac
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    [ "${B_REMOVING[$i]}" = - ] || die update.bot_removing "${B_NAMES[$i]}" "${B_NAMES[$i]}"
+  done
+  if [ "${#B_NAMES[@]}" = 0 ]; then
+    read -r _ name_value <<< "$S_NAME"
+    [ -n "$name_value" ] && [ "$name_value" != - ] || name_value=bot
+    B_NAMES=("$name_value"); B_KINDS=(legacy); B_STAGES=(relay); B_RELAY=("$S_RELAY"); B_PROMPT=("$S_PROMPT")
+    B_CLOUD=(-); B_REMOVING=(-); B_LABELS=("$LABEL"); B_PLISTS=("$PLIST"); B_MARKERS=("$MARKER")
+  else
+    read_paths
+  fi
+  MULTI=0
+  [ "${#B_NAMES[@]}" -le 1 ] || MULTI=1
+  for ((i = 0; i < ${#B_KINDS[@]}; i++)); do [ "${B_KINDS[$i]}" = legacy ] || MULTI=1; done
+  merge_prompt
 }
 
 plan_line() {
   local what="$3"
   [ "$2" != unchanged ] || what="-"
   "$PYTHON" "$HERE/scripts/messages.py" row 15 "$(tq "label.$1")" 10 "$(word "$2")" "$what"
+}
+
+plan_bots() {
+  local i
+  t update.plan_bots
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    if [ "${B_KINDS[$i]}" = added ] && [ "${B_CLOUD[$i]}" != confirmed ]; then
+      t update.plan_bot_waiting "${B_NAMES[$i]}" "${B_NAMES[$i]}"
+    else
+      t update.plan_bot "${B_NAMES[$i]}" "$(word "${B_RELAY[$i]}")" "$(word "${B_PROMPT[$i]}")"
+    fi
+  done
 }
 
 print_plan() {
@@ -224,7 +372,11 @@ print_plan() {
     failed) plan_line release failed "$(tq update.plan_release_failed "$REL_NOTE")" ;;
   esac
   plan_line relay "$S_RELAY" "$(tq update.plan_relay)"
-  [ "$S_ETXN" = - ] || t update.plan_etxn "$S_ETXN"
+  case "$S_ETXN" in
+    -) ;;
+    committed) t update.plan_etxn_committed ;;
+    *) t update.plan_etxn "$S_ETXN" ;;
+  esac
   case "$S_ENGINE" in
     older) plan_line engine changed "$(tq update.plan_engine_older "$S_EVER" "$S_EPIN")" ;;
     stale) plan_line engine changed "$(tq update.plan_engine_stale)" ;;
@@ -246,8 +398,11 @@ print_plan() {
     pending) plan_line prompt pending "$(tq update.plan_prompt_pending)" ;;
     *) plan_line prompt "$S_PROMPT" "$(tq update.plan_prompt)" ;;
   esac
+  [ "$MULTI" = 0 ] || plan_bots
   [ "$S_ENGINE" = unchanged ] || t update.plan_engine_order
-  if [ "$MANUAL" = 1 ] && { cloud_needed || [ "$S_PROMPT" != unchanged ]; }; then t update.plan_manual_order; fi
+  if [ "$MANUAL" = 1 ] && { cloud_needed || [ "$S_PROMPT" != unchanged ]; }; then
+    if [ "$MULTI" = 1 ]; then t update.plan_manual_order_bots; else t update.plan_manual_order; fi
+  fi
 }
 
 read_reply() {
@@ -290,7 +445,7 @@ BLOCK
   printf '%s' "$REL_SUMS"
   cat <<'BLOCK'
 AGENT_MESH_SUMS
-[ "$n" = 4 ] || stop "the checksum list is incomplete; nothing was changed"
+[ "$n" = 5 ] || stop "the checksum list is incomplete; nothing was changed"
 old="$(git rev-parse HEAD)" || stop "cannot read HEAD; nothing was changed"
 restore() {
   if git checkout -q -f --detach "$old" && [ "$(git rev-parse HEAD)" = "$old" ] && [ -z "$(git status --porcelain)" ]; then
@@ -341,22 +496,43 @@ cloud_step() {
 }
 
 prompt_text() {
+  local i="$1" rn=()
+  [ "${B_KINDS[$i]}" != added ] || rn=(--relay-name "${B_NAMES[$i]}")
   echo
-  t update.prompt_replace "$DOC_LANG"
+  if [ "$MULTI" = 1 ]; then t update.prompt_replace_bot "${B_NAMES[$i]}" "$DOC_LANG"
+  else t update.prompt_replace "$DOC_LANG"; fi
   echo "----------------------------------------------------------------"
-  state show-prompt --lang "$DOC_LANG"
+  state show-prompt --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"}
   echo
   echo "----------------------------------------------------------------"
+}
+
+prompt_one() {
+  local i="$1" rn=()
+  [ "${B_KINDS[$i]}" != added ] || rn=(--relay-name "${B_NAMES[$i]}")
+  SHOWN="$(state digest prompt --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"})"
+  prompt_text "$i"
+  if [ "$MULTI" = 1 ]; then
+    ask update.ask_bot_prompt_saved_now "${B_NAMES[$i]}" || die update.bot_prompt_not_recorded "${B_NAMES[$i]}"
+  else
+    ask update.ask_prompt_saved_now || die update.prompt_not_recorded
+  fi
+  state mark prompt confirmed --lang "$DOC_LANG" --expect "$SHOWN" ${rn[@]+"${rn[@]}"}
+  B_PROMPT[i]=unchanged
 }
 
 prompt_step() {
-  SHOWN="$(state digest prompt --lang "$DOC_LANG")"
-  prompt_text
-  ask update.ask_prompt_saved_now || die update.prompt_not_recorded
+  local i
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    prompt_bot "$i" && [ "${B_PROMPT[$i]}" != unchanged ] || continue
+    prompt_one "$i"
+  done
+  merge_prompt
+  R_PROMPT="$(tq r.updated)"
 }
 
 guided() {
-  local stage paused=0 was
+  local stage paused=0
   NEED=""
   cloud_needed && NEED="cloud"
   [ "$S_PROMPT" = unchanged ] || NEED="${NEED:+$NEED,}prompt"
@@ -364,25 +540,29 @@ guided() {
     release_check || fail "$REL_NOTE"
   fi
   if [ "$S_TXN" = - ]; then
-    if relay_loaded; then was=1; else was=0; fi
+    set_participants_now
     TXN_ACTIVE=1
-    state txn-start --lang "$DOC_LANG" --need "$NEED" --was "$was" --commit "$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo none)"
+    state txn-start --lang "$DOC_LANG" --need "$NEED" --participants "$(participants_json)" \
+      --prompt-bots "$(prompt_names)" --commit "$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo none)"
     stage=stopping
   else
     TXN_ACTIVE=1
     stage="$S_TXN"
     t update.continuing "$stage"
-    state txn-set need "$NEED"
+    state txn-set need "$NEED" --prompt-bots "$(prompt_names)"
+    load_participants txn-participants || die update.no_status
   fi
 
-  t update.g_stop_relay
-  if relay_loaded; then launchctl bootout "$(service)" 2>/dev/null || true; fi
-  ! relay_loaded || die update.relay_no_stop
+  if [ "$MULTI" = 1 ]; then t update.g_stop_relays "$(participant_names)"; else t update.g_stop_relay; fi
+  stop_participants || die update.relay_no_stop
   if [ "$stage" = stopping ]; then state txn-set stage relay_stopped; stage=relay_stopped; fi
   case "$stage" in routine_paused|cloud_done|prompt_done) paused=1 ;; esac
 
   if [ -n "$NEED" ]; then
-    if [ "$paused" = 1 ]; then
+    if [ "$MULTI" = 1 ]; then
+      if [ "$paused" = 1 ]; then ask update.g_still_paused_all "$(bot_names)" || die update.stopped
+      else ask update.g_pause_all "$(bot_names)" || die update.stopped; fi
+    elif [ "$paused" = 1 ]; then
       ask update.g_still_paused || die update.stopped
     else
       ask update.g_pause || die update.stopped
@@ -401,15 +581,11 @@ guided() {
     if [ "$S_PROMPT" != unchanged ]; then
       t update.g_prompt
       prompt_step
-      state mark prompt confirmed --lang "$DOC_LANG" --expect "$SHOWN"
       state txn-set stage prompt_done
-      S_PROMPT=unchanged; R_PROMPT="$(tq r.updated)"
     fi
-    ask update.g_resume || die update.stopped
-    state txn-set stage routine_resumed
+    resume_routines
   elif [ "$paused" = 1 ]; then
-    ask update.g_resume || die update.stopped
-    state txn-set stage routine_resumed
+    resume_routines
   fi
 
   t update.g_start_relay
@@ -423,35 +599,78 @@ guided() {
   TXN_ACTIVE=0
 }
 
-engine_step() {
-  local tmp rc=0 was backup base n others pid
-  echo
-  t update.e_switch_relay "$S_EVER"
-  if ! installer --restart-relay; then
-    R_RELAY="$(tq r.failed)"
-    die update.e_relay_no_switch
-  fi
-  R_RELAY="$(tq r.updated)"
-  S_RELAY=unchanged
-  pid="$(relay_pid)"
-  others="$(engine others --bin "$RN" ${pid:+--skip-parent "$pid"})" || others=""
+resume_routines() {
+  if [ "$MULTI" = 1 ]; then ask update.g_resume_all "$(bot_names)" || die update.stopped
+  else ask update.g_resume || die update.stopped; fi
+  state txn-set stage routine_resumed
+}
+
+engine_others() {
+  local i skip=() others
+  for ((i = 0; i < ${#P_PIDS[@]}; i++)); do
+    [ -z "${P_PIDS[$i]}" ] || skip+=(--skip-parent "${P_PIDS[$i]}")
+  done
+  others="$(engine others --bin "$RN" ${skip[@]+"${skip[@]}"})" || others=""
   if [ -n "$others" ]; then
     t update.e_others
     printf '%s\n' "$others" | sed 's/^/  /'
   fi
+}
+
+engine_prepare() {
+  ENGINE_TXN=1
+  if ! engine prepare --txn "$ETXN" --home "$RN_HOME" --bin "$RN" --kind "$1" --keep "participants=$(participants_json)"
+  then
+    ENGINE_TXN=0
+    rm -f "$ETXN"
+    die update.e_no_txn "$ETXN"
+  fi
+  echo
+  t update.e_stop_relays "$(participant_names)"
+  if ! stop_participants; then
+    engine_recover || true
+    die update.e_relay_no_stop
+  fi
+  engine phase --txn "$ETXN" stopped
+}
+
+engine_relays() {
+  [ "${#P_NAMES[@]}" -gt 0 ] || return 0
+  installer --restart-relay --keep-rollback
+}
+
+engine_commit() {
+  if ! engine phase --txn "$ETXN" committed; then
+    R_ENGINE="$(tq r.failed)"
+    die update.e_not_committed "$ETXN"
+  fi
+  rm -rf "$ROLLBACK"
+  rm -f "$ETXN"
+  ENGINE_TXN=0
+  R_RELAY="$(tq r.updated)"
+  S_RELAY=unchanged
+}
+
+engine_step() {
+  local tmp rc=0 backup base n
+  echo
+  set_participants_now
+  engine_others
   if [ "$S_ENGINE" = stale ]; then
     t update.e_restart "$S_EVER"
-    if relay_loaded; then ENGINE_WAS=1; else ENGINE_WAS=0; fi
-    ENGINE_TXN=1
-    launchctl bootout "$(service)" 2>/dev/null || true
-    if ! engine restart --home "$RN_HOME" --bin "$RN"; then
-      ENGINE_TXN=0
-      installer --restart-relay || true
+    engine_prepare restart
+    if ! engine restart --home "$RN_HOME" --bin "$RN" --txn "$ETXN"; then
       R_ENGINE="$(tq r.restart_failed)"
+      engine_recover || { ENGINE_TXN=0; die update.e_not_undone; }
       die update.e_restart_failed
     fi
-    installer --restart-relay || { ENGINE_TXN=0; R_ENGINE="$(tq r.daemon_restarted)"; die update.e_relay_after_restart; }
-    ENGINE_TXN=0
+    t update.e_start_relay "$S_EVER"
+    if ! engine_relays; then
+      R_ENGINE="$(tq r.daemon_restarted)"; R_RELAY="$(tq r.failed)"
+      engine_recover || { ENGINE_TXN=0; die update.e_relay_not_undone; }
+      die update.e_relay_after_restart
+    fi
+    engine_commit
     R_ENGINE="$(tq r.daemon_restarted_on "$S_EVER")"
     return 0
   fi
@@ -463,19 +682,12 @@ engine_step() {
     R_ENGINE="$(tq r.download_failed)"
     die update.e_download_failed
   fi
-  if relay_loaded; then was=1; else was=0; fi
-  ENGINE_WAS="$was"
-  ENGINE_TXN=1
-  launchctl bootout "$(service)" 2>/dev/null || true
-  if relay_loaded; then
-    ENGINE_TXN=0
-    die update.e_relay_no_stop
-  fi
+  engine_prepare upgrade
   backup="$LIB_DIR/engine-backup-$(date -u +%Y%m%dT%H%M%SZ)"
   base="$backup"; n=1
   while [ -e "$backup" ]; do n=$((n + 1)); backup="$base-$n"; done
   engine switch --home "$RN_HOME" --bin "$RN" --new "$tmp/reason-network" --pinned "$S_EPIN" \
-    --backup "$backup" --txn "$ETXN" --keep "relay_was_loaded=$was" || rc=$?
+    --backup "$backup" --txn "$ETXN" || rc=$?
   rm -rf "$tmp"; ENGINE_TMP=""
   if [ "$rc" != 0 ]; then
     R_ENGINE="$(tq r.failed)"
@@ -484,20 +696,19 @@ engine_step() {
     die update.e_failed_back "$S_EVER"
   fi
   t update.e_start_relay "$S_EPIN"
-  if ! installer --restart-relay; then
-    R_ENGINE="$(tq r.failed)"
+  if ! engine_relays; then
+    R_ENGINE="$(tq r.failed)"; R_RELAY="$(tq r.failed)"
     engine_recover || { ENGINE_TXN=0; die update.e_relay_not_undone; }
     R_ENGINE="$(tq r.relay_rolled_back "$S_EPIN" "$S_EVER" "$backup")"
     die update.e_relay_failed_back "$S_EVER"
   fi
-  rm -f "$ETXN"
-  ENGINE_TXN=0
+  engine_commit
   state set-engine "$S_EPIN" || t update.e_not_recorded "$LIB_DIR/deployed.json"
   R_ENGINE="$(tq r.upgraded "$S_EVER" "$S_EPIN" "$backup")"
 }
 
 update_dsh() {
-  if "$BASH" "$HERE/dsh/mac-install.sh" --plugin-only; then
+  if "$BASH" "$HERE/dsh/mac-install.sh" --plugin-only 9>&-; then
     R_DSH="$(tq r.dsh_updated)"
   else
     R_DSH="$(tq r.dsh_failed)"
@@ -505,7 +716,22 @@ update_dsh() {
   fi
 }
 
+add_pending_step() {
+  local i rc out again=0
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    [ "${B_KINDS[$i]}" = added ] && [ "${B_CLOUD[$i]}" = pending ] || continue
+    rc=0; out="$(state add-reply --relay-name "${B_NAMES[$i]}" --lang "$DOC_LANG" 2>&1)" || rc=$?
+    case "$rc" in
+      0) [ -z "$out" ] || printf '%s\n' "$out"; again=1 ;;
+      3) ;;
+      *) [ -z "$out" ] || printf '%s\n' "$out" ;;
+    esac
+  done
+  [ "$again" = 0 ] || read_status
+}
+
 pending_step() {
+  local i rn rc
   if cloud_pending; then
     ask update.ask_setup_done "$S_EPIN" || die update.setup_first
     [ "$S_CLOUD" != pending ] || state mark cloud confirmed --if-pending
@@ -514,18 +740,49 @@ pending_step() {
     read_status
     cloud_needed || { R_CLOUD="$(tq r.confirmed)"; R_SETUP="$(tq r.confirmed)"; R_CENGINE="$(tq r.confirmed)"; }
   fi
-  if [ "$S_PROMPT" = pending ]; then
-    if ask update.ask_prompt_saved "$DOC_LANG"; then
-      state mark prompt confirmed --lang "$DOC_LANG" --if-pending; S_PROMPT=unchanged; R_PROMPT="$(tq r.confirmed)"
+  [ "$S_PROMPT" = pending ] || return 0
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    prompt_bot "$i" && [ "${B_PROMPT[$i]}" = pending ] || continue
+    rn=()
+    [ "${B_KINDS[$i]}" != added ] || rn=(--relay-name "${B_NAMES[$i]}")
+    if [ "$MULTI" = 1 ]; then
+      ask update.ask_bot_prompt_saved "${B_NAMES[$i]}" "$DOC_LANG" && rc=0 || rc=1
     else
-      S_PROMPT=changed
+      ask update.ask_prompt_saved "$DOC_LANG" && rc=0 || rc=1
     fi
-  fi
+    if [ "$rc" = 0 ]; then
+      state mark prompt confirmed --lang "$DOC_LANG" --if-pending ${rn[@]+"${rn[@]}"}
+      B_PROMPT[i]=unchanged
+    else
+      B_PROMPT[i]=changed
+    fi
+  done
+  merge_prompt
+  [ "$S_PROMPT" != unchanged ] || R_PROMPT="$(tq r.confirmed)"
 }
 
 cloud_recorded() {
   S_CLOUD=unchanged; S_SETUP=unchanged; S_CENGINE=unchanged
   R_CLOUD="$(tq r.cloud_updated "$REL_TAG")"; R_SETUP="$(tq r.confirmed)"; R_CENGINE="$(tq r.engine_confirmed "$S_EPIN")"
+}
+
+pick_target() {
+  local i addr mark m_name m_pid _ pid
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    [ "${B_STAGES[$i]}" = relay ] && prompt_bot "$i" && label_loaded "${B_LABELS[$i]}" || continue
+    if [ "${B_KINDS[$i]}" = added ]; then
+      addr="$(state bot-address --relay-name "${B_NAMES[$i]}" 2>/dev/null)" || continue
+    else
+      addr="$(state bot-address 2>/dev/null)" || continue
+    fi
+    mark="$("$PYTHON" "$HERE/scripts/relay_names.py" marker "${B_MARKERS[$i]}" 2>/dev/null)" || continue
+    read -r m_name m_pid _ <<< "$mark"
+    pid="$(label_pid "${B_LABELS[$i]}")"
+    [ "$m_name" = "$addr" ] && [ -n "$pid" ] && [ "$pid" = "$m_pid" ] || continue
+    TARGET="$addr"
+    return 0
+  done
+  return 1
 }
 
 request_check() {
@@ -552,21 +809,28 @@ bootstrap_message() {
 }
 
 cloud_auto() {
-  local mode=line addr req i=0 rounds rc
+  local mode=line addr="" req i=0 rounds rc
   [ "$S_CREL" != - ] || mode=block
   [ "$REL_STATE" = ok ] || release_check || fail "$REL_NOTE"
-  addr="$(state bot-address)" || die update.no_address
+  [ "$MULTI" = 1 ] || addr="$(state bot-address)" || die update.no_address
   echo
   t update.cloud_heading "$REL_TAG"
   rc=0; request_check || rc=$?
   [ "$rc" != 0 ] || { t update.cloud_earlier_reply; return 0; }
-  relay_loaded || die update.relay_down
-  req="$(state request-new --tag "$REL_TAG" --commit "$REL_COMMIT" --mode "$mode")" || die update.no_request
+  if [ "$MULTI" = 1 ]; then
+    TARGET=""
+    pick_target || die update.no_target
+    addr="$TARGET"
+  else
+    relay_loaded || die update.relay_down
+  fi
+  req="$(state request-new --tag "$REL_TAG" --commit "$REL_COMMIT" --mode "$mode" --address "$addr")" \
+    || die update.no_request
   if [ "$mode" = line ]; then
-    "$RN" send "$addr" - < <(printf '%s' "agent-mesh update $REL_TAG $REL_COMMIT $req") >/dev/null || die update.send_failed "$addr"
+    "$RN" send "$addr" - < <(printf '%s' "agent-mesh update $REL_TAG $REL_COMMIT $req") >/dev/null 9>&- || die update.send_failed "$addr"
     t update.sent "$addr"
   else
-    "$RN" send "$addr" - < <(bootstrap_message "$req") >/dev/null || die update.send_failed "$addr"
+    "$RN" send "$addr" - < <(bootstrap_message "$req") >/dev/null 9>&- || die update.send_failed "$addr"
     t update.sent_first "$addr"
   fi
   t update.waiting
@@ -588,11 +852,12 @@ cloud_auto() {
 }
 
 main() {
-  LIB_DIR="$HOME/.local/lib/agent-mesh"; LOCK="$LIB_DIR/update.lock"
+  LIB_DIR="$HOME/.local/lib/agent-mesh"; ROLLBACK="$LIB_DIR/rollback"
   LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+  MARKER="$HOME/Library/Application Support/agent-relay/registered"
   RN="$HOME/.local/bin/reason-network"; RN_HOME="$HOME/.reason/network"; ETXN="$LIB_DIR/engine-upgrade.json"
   LANG_ARG=""; YES=0; PULL=1; PLAN=0; MANUAL=0; REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
-  REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""; LAST_CHECK=""
+  REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""; LAST_CHECK=""; TARGET=""
   FAILED=0; NEED=""; SHOWN=""; SHOWN_SETUP=""; SHOWN_ENGINE=""; S_NAME=""; REPLY_TEXT=""; S_CREL=-
   S_ENGINE=unchanged; S_EVER=""; S_EPIN=""; S_ETXN=-; S_CENGINE=unchanged
   pick_lang "$@"
@@ -602,15 +867,15 @@ main() {
 
   installer --preflight || die update.preflight_failed
   PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
-  take_lock
+  mesh_lock_take "$PYTHON" || exit 1
 
   if [ "$PULL" = 1 ] && pull_checkout; then
-    release_lock
     trap - EXIT INT TERM
     exec "$BASH" "$HERE/update.sh" --no-pull "$@"
   fi
 
   read_status
+  [ "$PLAN" = 1 ] || add_pending_step
   local terminal=0 confirm=0
   if [ "$S_TXN" != - ] || [ "$S_PROMPT" != unchanged ] || cloud_pending || { [ "$MANUAL" = 1 ] && cloud_needed; }; then
     terminal=1
@@ -646,9 +911,9 @@ main() {
 
   local changed=0
   if [ "$S_ETXN" != - ]; then
-    t update.etxn_first "$S_ETXN"
+    if [ "$S_ETXN" = committed ]; then t update.etxn_committed; else t update.etxn_first "$S_ETXN"; fi
     ENGINE_TXN=1
-    engine_recover || die update.etxn_failed
+    engine_recover || { ENGINE_TXN=0; die update.etxn_failed; }
     changed=1
     read_status
   fi
@@ -671,8 +936,6 @@ main() {
   if [ "$S_DSH" = changed ]; then update_dsh; changed=1; fi
   if [ "$S_PROMPT" != unchanged ]; then
     prompt_step
-    state mark prompt confirmed --lang "$DOC_LANG" --expect "$SHOWN"
-    S_PROMPT=unchanged; R_PROMPT="$(tq r.updated)"
     changed=1
   fi
   if cloud_needed; then
@@ -683,12 +946,13 @@ main() {
   if [ "$changed" = 1 ]; then
     echo
     t update.check
-    "$BASH" "$HERE/check.sh" --lang "$DOC_LANG" || { t update.check_failed; FAILED=1; }
+    "$BASH" "$HERE/check.sh" --lang "$DOC_LANG" 9>&- || { t update.check_failed; FAILED=1; }
   fi
   [ "$FAILED" = 0 ] || exit 1
 }
 
-LOCKED=0; TXN_ACTIVE=0; ACTING=0; ENGINE_TXN=0; ENGINE_WAS=1; ENGINE_TMP=""
+TXN_ACTIVE=0; ACTING=0; ENGINE_TXN=0; ENGINE_TMP=""; MULTI=0
+B_NAMES=(); P_NAMES=(); P_LABELS=(); P_PLISTS=(); P_WAS=(); P_PIDS=()
 trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM

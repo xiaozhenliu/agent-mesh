@@ -34,13 +34,13 @@
 
 `[BOT-CLOUD]` 上的 `box/rn-cloud-update.sh` 核对 tag、提交和请求号的格式，拒绝比云端仓库版本更旧的 tag（从不降级），云端仓库有本地改动时停止并列出改动的文件，然后取回该 tag，核对它指向发布提交，切换到它（分离 HEAD），再运行新 checkout 里的同名脚本；后者运行 `box/rn-cloud-setup.sh --upgrade-engine` 并打印结尾的结果行。脚本第一行是 `agent-mesh-result request <请求号>`；任何一步失败都打印 `STOP:` 行，不打印结尾的结果行。引擎步骤失败时保留新 checkout。
 
-回信中有脚本自己打印的结尾几行，每行以 `agent-mesh-result` 开头，分别是发布提交号、四个云端文件各自的校验值和 `DONE <tag>`，并有固定版本、固定构建和 `launcher ok` 三行 `engine:`，才记录云端已更新。有 `STOP:` 行、提交号不同或校验值不同时不记录；`./update.sh` 显示原因，下次运行会发新的请求。15 分钟内没有回信时，Grok Bot 可能还在执行（结果也会出现在 Grok 里）：下次运行 `./update.sh` 先按保存的请求号查找回信，找到就记录，找不到才重新发送。针对其他版本的请求，或在这个 checkout 变化之前发出的请求，它们的回信不会被记录。
+回信中有脚本自己打印的结尾几行，每行以 `agent-mesh-result` 开头，分别是发布提交号、五个云端文件各自的校验值和 `DONE <tag>`，并有固定版本、固定构建和 `launcher ok` 三行 `engine:`，才记录云端已更新。有 `STOP:` 行、提交号不同或校验值不同时不记录；`./update.sh` 显示原因，下次运行会发新的请求。15 分钟内没有回信时，Grok Bot 可能还在执行（结果也会出现在 Grok 里）：下次运行 `./update.sh` 先按保存的请求号查找回信，找到就记录，找不到才重新发送。针对其他版本的请求，或在这个 checkout 变化之前发出的请求，它们的回信不会被记录。
 
-**用这个版本第一次更新云端。**上次以 v0.8.1 或更早版本确认的云端还没有 `box/rn-cloud-update.sh`，旧的 routine 提示词也没有更新请求的规则。这时先粘贴新的 routine 提示词，然后 `./update.sh` 发一条带命令块的消息。Grok Bot 不会自己运行：它在 Grok 里告诉你消息 id 和一句确认用的话，你在 Grok 对话里说了这句话后它才运行命令块。命令块先打印请求号，在改动任何内容之前拒绝比云端仓库版本更旧的 tag，取回该 tag，核对它指向发布提交、四个云端文件的校验值符合预期，切换到该 tag 并再次核对文件（不符时恢复到原来的提交），然后运行新 checkout 里的 `box/rn-cloud-update.sh`。以后的更新只发那一行请求。
+**用这个版本第一次更新云端。**上次以 v0.8.1 或更早版本确认的云端还没有 `box/rn-cloud-update.sh`，旧的 routine 提示词也没有更新请求的规则。这时先粘贴新的 routine 提示词，然后 `./update.sh` 发一条带命令块的消息。Grok Bot 不会自己运行：它在 Grok 里告诉你消息 id 和一句确认用的话，你在 Grok 对话里说了这句话后它才运行命令块。命令块先打印请求号，在改动任何内容之前拒绝比云端仓库版本更旧的 tag，取回该 tag，核对它指向发布提交、五个云端文件的校验值符合预期，切换到该 tag 并再次核对文件（不符时恢复到原来的提交），然后运行新 checkout 里的 `box/rn-cloud-update.sh`。以后的更新只发那一行请求。
 
 如果你确认之前 `./update.sh` 已经停止等待，在 Grok 里确认后，在同一个本地仓库里重新运行 `./update.sh --no-pull`：它会找到这次请求的回信并记录。如果你是在 v0.8.2 卡在这一步（它的提示词会拒绝命令块，只告诉你有这条请求），可以照同样的做法；也可以把本地仓库更新到更新的发布版，按提示粘贴它的提示词，再按 Grok Bot 给出的新 id 确认新请求（旧请求不会被记作另一个版本的结果，Grok Bot 也不会再处理它）。
 
-云端只安装已发布的版本。改动任何东西之前，`./update.sh` 先在线核对：云端安装来源仓库（公开仓库，或 `--repo-url` 指定的仓库）里存在发布 tag `v<VERSION>`，且本地仓库中的 `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`、`box/rn-cloud-update.sh` 与它一致；本地仓库的其他文件可以不同，也不要求已提交或等于上游。tag 取不到或有文件不同时，更新在停止 relay、动引擎之前就停下，什么都不改。`--plan` 会显示核对结果。只有更新涉及云端时才需要联网核对。
+云端只安装已发布的版本。改动任何东西之前，`./update.sh` 先在线核对：云端安装来源仓库（公开仓库，或 `--repo-url` 指定的仓库）里存在发布 tag `v<VERSION>`，且本地仓库中的 `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`、`box/rn-cloud-add-bot.sh`、`box/rn-cloud-update.sh` 与它一致；本地仓库的其他文件可以不同，也不要求已提交或等于上游。tag 取不到或有文件不同时，更新在停止 relay、动引擎之前就停下，什么都不改。`--plan` 会显示核对结果。只有更新涉及云端时才需要联网核对。
 
 - `./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署；不加 `--no-pull` 时仍可能先快进本地仓库。
 - 退出码 3 表示需要在终端作答，部署未改动。退出码 1 表示没有全部完成，例如还没收到 Grok Bot 的回信；汇总里写明是哪一部分。
@@ -52,19 +52,34 @@
 - 从 v0.3.0 或更早版本第一次更新：先自己运行一次 `git pull`，因为旧仓库里还没有 `update.sh`。没有部署记录时，云端各部分和提示词按"未知"处理，云端更新和提示词步骤会走一遍。
 - 脚本看不到 routine 和云电脑，只能依据你的回答，以及 Grok Bot 回信里报告的内容。
 
+## 多个 Bot
+
+这台 Mac 上有多个 Grok Bot 时（见[多个 Grok Bot](README.zh-CN.md#多个-grok-bot)），一次 `./update.sh` 覆盖所有 Bot；只有一个 Bot 的 Mac 看到的输出和以前一样。
+
+- **计划。** 结果行是所有 Bot 合起来的结果，后面按顺序每个 Bot 一行，写出它的 relay 和提示词状态。还在等云端登记的 Bot 会附上 `./install.sh --relay-name <name> --wake-bot`，用它唤醒。
+- **未完成的添加。** 显示计划之前，`./update.sh` 为每个云端登记仍未确认的添加 Bot（例如 `./install.sh --add-bot` 停止等待之后）查找回信，已经到达的就记录下来。
+- **Routine 提示词。** 每个 Bot 有自己的 routine 提示词。变化了的提示词逐个显示，并写明属于哪个 Bot；把它粘贴进那个 Bot 的 routine 并确认。云端登记还没确认的 Bot 会跳过。中途停下时，已确认的提示词保持记录，下次只问其余的。切换语言会让每个 Bot 的提示词都变化。
+- **引擎和 relay。** 一次引擎步骤覆盖每个已安装 Bot 的 relay：一起停止，引擎只切换或重启一次，再一起启动（见 [Reason Network 引擎](#reason-network-引擎)）。失败时每个 relay 都回到之前的状态。
+- **云端。** 这些 Bot 共用一台云电脑，所以云端更新只运行一次。请求经由按顺序第一个云端登记已确认、relay 在运行并已登记的 Bot 发出；一个都没有时，`./update.sh` 在发送任何东西之前停下，建议运行 `./install.sh --restart-relay`。Routine 不暂停：更新运行期间云端脚本持有一把维护锁，其他 Bot 的云端命令等它释放，最多 10 分钟。
+- **`--manual`**，以及 `./update.sh` 继续执行的未完成 `--manual` 运行，会停止每个 Bot 的 relay，请你暂停、之后再恢复每个 Bot 的 routine。中途停下时，它会列出 routine 仍在暂停的 Bot。
+- 有 Bot 正在卸载时，`./update.sh` 会停下，直到 `./uninstall.sh --level bot --relay-name <name>` 完成（见[只卸载一个 Bot](UNINSTALL.zh-CN.md#只卸载一个-bot)）。
+
 ## Reason Network 引擎
 
-agent-mesh 0.7.0 把固定的引擎从 Reason Network 0.10.7 换成 0.12.17（0.10.7 在上游安全公告 GHSA-84r9-56w3-xqp9 的影响范围内）。`./update.sh` 会升级两台电脑上的引擎。从任何更早的 agent-mesh 版本都能一次升级完成：它先在旧引擎上装好新 relay，所以不需要先装 0.6.0。
+agent-mesh 0.7.0 把固定的引擎从 Reason Network 0.10.7 换成 0.12.17（0.10.7 在上游安全公告 GHSA-84r9-56w3-xqp9 的影响范围内）。`./update.sh` 会升级两台电脑上的引擎。从任何更早的 agent-mesh 版本都能一次升级完成，不需要先装 0.6.0。
 
 `[LOCAL]` 上的引擎切换包含在 `./update.sh` 列出计划后唯一那次"继续？"里；`--yes` 代为回答，所以没有终端时也能切换。顺序如下：
 
-1. 在现有引擎上安装当前仓库的 relay，确认 relay 以自己的名字注册。失败时换回原来的 relay，引擎不动。
-2. 列出其他正在使用引擎的进程，例如开着的 Claude Code、Codex 会话。它们不阻止升级，守护进程重启后会继续工作；升级完成后重开这些会话，让它们用上新版本。
-3. 下载 0.12.17，按写在 `install.sh` 里的 SHA-256 校验（`box/rn-cloud-setup.sh` 里是同一张表），下载内容被改动就拒绝。下载或校验失败时引擎不变；第 1 步装好的 relay 保持安装并继续运行。
-4. 停止 relay，把二进制和 `~/.reason/network` 复制到 `~/.local/lib/agent-mesh/engine-backup-<UTC 时间>/`（权限 700），替换二进制，重启守护进程，并核对正在运行的守护进程是在替换之后启动的、报告 0.12.17、团队里的机器还在、`who` 能正常返回。
-5. 启动 relay，确认 relay 已在新的守护进程上注册。
+1. 列出其他正在使用引擎的进程，例如开着的 Claude Code、Codex 会话。它们不阻止升级，守护进程重启后会继续工作；升级完成后重开这些会话，让它们用上新版本。
+2. 下载 0.12.17，按写在 `install.sh` 里的 SHA-256 校验（`box/rn-cloud-setup.sh` 里是同一张表），下载内容被改动就拒绝。下载或校验失败时什么都不改；relay 照原样继续运行。
+3. 写入升级记录 `~/.local/lib/agent-mesh/engine-upgrade.json`，停止 relay（有多个 Bot 时停止每个已安装 Bot 的 relay）。
+4. 把二进制和 `~/.reason/network` 复制到 `~/.local/lib/agent-mesh/engine-backup-<UTC 时间>/`（权限 700），替换二进制，重启守护进程，并核对正在运行的守护进程是在替换之后启动的、报告 0.12.17、团队里的机器还在、`who` 能正常返回。
+5. 安装当前仓库的 relay 并启动（每个 Bot 的 relay），确认它已在新的守护进程上以自己的名字注册。原来的 relay 保存在 `~/.local/lib/agent-mesh/rollback/`，直到第 6 步。
+6. 把这次升级标记为完成，删除升级记录和原来的 relay。
 
-第 4、5 步失败或你按了 Ctrl-C 时，只换回旧二进制，在它上面重启守护进程，再启动 relay。状态目录不恢复：新引擎只加表加列，0.10.7 能打开升级后的库，切换之后收到的信都保留。守护进程在 `reason-network stop` 之后不退出时，先发 SIGTERM，再发 SIGKILL 结束它。换回 0.10.7 不会找回 0.12 已经丢掉的、或 0.10.7 不认识的内容：0.12 运行期间被遗忘的普通会话及其未读信（relay 和云端的信箱不会被遗忘）；以及较新的团队签名证明和 `[folders]` 设置，0.10.7 下次保存团队状态时会丢弃它们。回滚后在 0.10.7 下新建的 CLI 会话不算信箱，下次升级后由 0.12 的 `listen` 重新标记。如果确认不了旧引擎已经在运行，脚本会打印手动处理步骤，并保留记录 `~/.local/lib/agent-mesh/engine-upgrade.json`；这时 `./check.sh` 报 FAIL，下次运行 `./update.sh` 会先回滚这次切换。用备份恢复状态目录只是最后一步手动操作，会丢掉切换之后收到的信。
+重启仍在运行已被替换二进制的守护进程时，步骤相同，只是第 4 步换成重启守护进程。从 v0.9.0 起，新 relay 在引擎步骤之后才安装；更早的版本先在旧引擎上装好新 relay。
+
+第 4、5 步失败或你按了 Ctrl-C 时，换回旧二进制并在它上面重启守护进程，原来的 relay 程序和登录服务文件也换回来，每个 relay 回到之前的状态（之前停着的仍然停着）。状态目录不恢复：新引擎只加表加列，0.10.7 能打开升级后的库，切换之后收到的信都保留。守护进程在 `reason-network stop` 之后不退出时，先发 SIGTERM，再发 SIGKILL 结束它。换回 0.10.7 不会找回 0.12 已经丢掉的、或 0.10.7 不认识的内容：0.12 运行期间被遗忘的普通会话及其未读信（relay 和云端的信箱不会被遗忘）；以及较新的团队签名证明和 `[folders]` 设置，0.10.7 下次保存团队状态时会丢弃它们。回滚后在 0.10.7 下新建的 CLI 会话不算信箱，下次升级后由 0.12 的 `listen` 重新标记。如果确认不了旧引擎已经在运行，脚本会打印手动处理步骤，并保留记录 `~/.local/lib/agent-mesh/engine-upgrade.json`；这时 `./check.sh` 报 FAIL，下次运行 `./update.sh` 会先回滚这次切换。用备份恢复状态目录只是最后一步手动操作，会丢掉切换之后收到的信。
 
 备份里有这台电脑的引擎身份和收到的消息。`./check.sh` 全部通过后删掉它；`./uninstall.sh --level identity` 也会连同部署记录一起删除它。
 
@@ -88,7 +103,7 @@ agent-mesh 0.7.0 把固定的引擎从 Reason Network 0.10.7 换成 0.12.17（0.
 
 ## 手动升级
 
-relay、云端脚本和 routine 提示词都有变化时，按下列顺序一起更新，保证部分组件仍是旧版本时不会有门铃发出：
+relay、云端脚本和 routine 提示词都有变化时，按下列顺序一起更新，保证部分组件仍是旧版本时不会有门铃发出。有多个 Bot 时，第 1、2、4 步对每个 Bot 都做一遍（添加的 Bot 的服务是 `com.local.agent-relay.<name>`，每个 Bot 有自己的 routine 提示词）；第 5 步的 `./install.sh --restart-relay` 会重启每个 Bot 的 relay：
 
 1. 在 `[LOCAL]` 停止 relay：`launchctl bootout "gui/$(id -u)/com.local.agent-relay"`。此后到达 Mac 的消息留在本机引擎中未读，不会按门铃。
 2. 在 `[GROK-UI]` 暂停 routine，等没有运行中的任务。

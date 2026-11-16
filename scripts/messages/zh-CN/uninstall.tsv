@@ -260,5 +260,69 @@ uninstall.bad_home	HOME 必须是主目录的绝对路径
 uninstall.no_python	缺少 python3；见 README.zh-CN.md「准备」
 uninstall.python_broken	python3 无法启动
 uninstall.python_old	需要 Python 3.9+
-uninstall.help	从这台 Mac 移除 agent-mesh，并引导你从 Bot 的云电脑移除。不带选项时只显示已安装的内容；在你选定级别并确认\n之前不会删除任何东西。\n  ./uninstall.sh --plan [--level L]        已安装的内容，以及某个级别会做什么；不删除任何东西\n  ./uninstall.sh --level program [--yes]   只移除 relay 程序；团队、设置、密钥和云端保留\n  ./uninstall.sh --level identity          还会在两台电脑上退出团队，删除密钥和身份\n  ./uninstall.sh --level all               还会删除日志、引擎和云端数据（可简写为 --all）\n  ./uninstall.sh --residual --level identity|all   这台 Mac 上已没有身份时使用（例如旧版 --all 之后）\n  ./uninstall.sh --cloud-prompt --level identity|all   只重做云端步骤\n  --lang en|zh-CN                          输出和打印的云端提示词所用的语言；默认依次取安装时记录的语言、\n                                           AGENT_MESH_LANG、en\n级别 identity 和 all 只能在你自己的终端里运行，并要求你输入确认词。
+uninstall.help	从这台 Mac 移除 agent-mesh，并引导你从 Bot 的云电脑移除。不带选项时只显示已安装的内容；在你选定级别并确认\n之前不会删除任何东西。\n  ./uninstall.sh --plan [--level L]        已安装的内容，以及某个级别会做什么；不删除任何东西\n  ./uninstall.sh --level program [--yes]   只移除每个 Bot 的 relay 程序；团队、设置、密钥和云端保留\n  ./uninstall.sh --level bot --relay-name NAME   只移除一个 Bot（至少还剩一个），包括它的云端数据\n  ./uninstall.sh --level identity          还会在两台电脑上退出团队，删除密钥和身份\n  ./uninstall.sh --level all               还会删除日志、引擎和云端数据（可简写为 --all）\n  ./uninstall.sh --residual --level identity|all   这台 Mac 上已没有身份时使用（例如旧版 --all 之后）\n  ./uninstall.sh --cloud-prompt --level identity|all   只重做云端步骤\n  --lang en|zh-CN                          输出和打印的云端提示词所用的语言；默认依次取安装时记录的语言、\n                                           AGENT_MESH_LANG、en\n级别 bot、identity 和 all 只能在你自己的终端里运行，并要求你输入确认词。
 uninstall.bad_option	uninstall：%s（见 ./uninstall.sh --help）
+uninstall.bots_unsafe	%s；无法安全读取添加的 Bot，所有级别都不运行；请手动处理
+uninstall.field_bots	Bot
+uninstall.bots_count	%s 个；%s；云端机器 "%s"
+uninstall.kind_legacy	第一个 Bot
+uninstall.kind_added	添加的 Bot，阶段 %s，云端 %s
+uninstall.bot_orphan	只剩登录服务，设置已不在
+uninstall.bot_removing	正在卸载，步骤 %s
+uninstall.record_missing	deployed.json 中没有记录
+uninstall.bot_line	%s：%s；%s；webhook %s；队列 %s
+uninstall.plan_service_multi	每个 Bot 的 relay 登录服务和 plist
+uninstall.plan_settings_multi	每个 Bot 的 relay 设置和签名密钥（~/.config/agent-relay、~/.config/agent-relay-bots）
+uninstall.plan_state_multi	每个 Bot 的 relay 状态：队列、防重放记录、保留副本
+uninstall.plan_routine_multi	每个 Bot 的 Grok routine（webhook URL 和密钥）
+uninstall.plan_mesh_lock	管理锁文件（~/.local/lib/agent-mesh.lock），最后删除
+uninstall.plan_bot_service	这个 Bot 的 relay 登录服务和 plist
+uninstall.plan_bot_routine	这个 Bot 的 Grok routine（webhook URL 和密钥）
+uninstall.plan_bot_cloud	云端：这个 Bot 的收件、threads 和名字
+uninstall.plan_bot_settings_legacy	这个 Bot 的设置（~/.config/agent-relay/env）
+uninstall.plan_bot_settings_added	这个 Bot 的设置（~/.config/agent-relay-bots/<name>）
+uninstall.plan_bot_state	这个 Bot 的 relay 状态（队列、防重放记录、副本）
+uninstall.plan_bot_logs	这个 Bot 的 relay 日志
+uninstall.plan_bot_record	deployed.json 中这个 Bot 的记录
+uninstall.plan_bot_shared	团队、引擎、identity、密钥、relay 程序、其他 Bot
+uninstall.action_bot_removes_bot	由另一个 Bot（见下）删除
+uninstall.action_bot_record	删除；这个名字以后不能再添加
+uninstall.plan_bots	这台 Mac 上的 Bot：%s
+uninstall.level_bot_named	bot：移除 Bot %s；其他 Bot、团队和密钥保留
+uninstall.plan_executor	云端步骤发给 %s 的 Grok Bot 执行。
+uninstall.plan_resume	上次运行在步骤 %s 之后停下；这次从那里继续。
+uninstall.bot_record_bad	%s；部署记录可读时才能移除单个 Bot
+uninstall.bot_unknown	%s 不是这台 Mac 上的 Bot（现有 Bot：%s）
+uninstall.bot_other_removing	Bot %s 正在卸载；先用 %s 完成它
+uninstall.bot_last	%s 是这台 Mac 上仅剩的 Bot；要移除整套部署，请用 --level identity 或 --level all
+uninstall.bot_no_executor	没有其他云端登记已确认的 Bot 能为 %s 执行云端步骤；先完成其中一个的登记（./install.sh --relay-name NAME --wake-bot）
+uninstall.bot_queue_unreadable	无法读取这个 Bot 的队列（%s）；什么都没有删除
+uninstall.bot_queue_busy	%s 还有信没转交（spool %s，pending %s）；等它们送达后再运行
+uninstall.confirm_bots	级别 %s 会移除这台 Mac 上的全部 Bot：
+uninstall.label_service_of	%s 的 relay 登录服务
+uninstall.cloud_send_bot	[GROK-UI] 用户：把下面的内容作为一条消息发给 %s 的 Grok Bot（不要发给 %s）。它在 [BOT-CLOUD] 上运行，并回复检查结果和一行 PROOF：
+uninstall.ask_done_bot	[LOCAL] Bot 报告 DONE 时输入 done；没能完成时输入 skip： 
+uninstall.label_bots_settings	添加的 Bot 的设置（~/.config/agent-relay-bots）
+uninstall.label_bots_state	添加的 Bot 的状态
+uninstall.label_mesh_lock	管理锁文件
+uninstall.bot_record_failed	无法更新部署记录：%s
+uninstall.bot_restarted	已重新启动它的 relay，并取消了这次卸载。
+uninstall.bot_not_finished	这个 Bot 仍标记为正在卸载；再次运行 %s 继续
+uninstall.routine_delete_bot	[GROK-UI] 用户：在 Grok 中删除（或暂停）%s 的 routine，并确认它没有正在进行的运行。
+uninstall.ask_deleted_bot	完成后输入 deleted 或 paused，或者输入 later： 
+uninstall.routine_paused	按你所说已暂停；不再需要时请删除
+uninstall.label_cloud_bot	这个 Bot 的云端数据
+uninstall.label_bot_settings	这个 Bot 的 relay 设置
+uninstall.label_bot_record	deployed.json 中这个 Bot 的记录
+uninstall.label_convention	回复约定模板
+uninstall.bot_sessions_kept	引擎会一直保留 %s 的旧会话：发到这个地址的信会排队、没人读。请告诉使用它的 agent 改为写给另一个 Bot。
+uninstall.bot_refresh_convention	请更新各仓库中的回复约定块：python3 scripts/reply_convention.py refresh <repository>/AGENTS.md
+uninstall.bot_incomplete_summary	Bot %s 尚未移除。再次运行 %s 完成。
+uninstall.bot_complete	bot 级卸载完成：%s 已移除
+uninstall.choose_bot_hint	  只移除一个 Bot：./uninstall.sh --level bot --relay-name NAME
+uninstall.error_bot_name	--level bot 需要 --relay-name NAME
+uninstall.error_relay_name	--relay-name 只能与 --level bot 一起使用
+uninstall.plan_bot_hint	只移除一个 Bot：./uninstall.sh --plan --level bot --relay-name NAME 会显示它做什么。
+uninstall.bot_engine_unfinished	上次引擎升级没有完成（%s）；先运行 ./update.sh，再移除 Bot
+uninstall.bot_rollback_unfinished	上次 relay 切换没有完成（存在 %s）；先运行 ./install.sh --restart-relay 或 ./update.sh，再移除 Bot
+uninstall.bot_update_unfinished	上次更新没有完成；先运行 ./update.sh，再移除 Bot

@@ -32,4 +32,12 @@ command -v python3 >/dev/null || die "$(tq uninstall.no_python)"
 PYTHON="$(python3 -c 'import sys; print(sys.executable)')" || die "$(tq uninstall.python_broken)"
 "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 9))' || die "$(tq uninstall.python_old)"
 export REASON_NETWORK_HOME="$HOME/.reason/network"
+plan=0; level=0
+for arg in "$@"; do
+  case "$arg" in --p|--pl|--pla|--plan) plan=1 ;; --le*|--a|--al|--all) level=1 ;; esac
+done
+if [ "$plan" = 0 ] && { [ "$level" = 1 ] || [ -t 0 ]; }; then
+  . "$HERE/scripts/lock.sh"
+  mesh_lock_take "$PYTHON" || exit 1
+fi
 exec "$PYTHON" "$HERE/scripts/uninstall.py" "$@"

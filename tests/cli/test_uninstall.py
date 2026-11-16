@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import os
+import plistlib
 import pty
 import re
 import select
@@ -17,6 +18,8 @@ import unittest
 from pathlib import Path
 
 from render_prompt import ROOT, cloud_uninstall_script, render_prompt
+from tests.cli.test_install_add import KEY as BETA_KEY
+from tests.cli.test_install_add import AddSupport, m
 from write_launch_agent import launch_agent_bytes
 
 WEBHOOK_URL = "https://example.invalid/hook/very-secret-path"
@@ -668,7 +671,7 @@ class Mac(Base, unittest.TestCase):
         (self.base / "ps/one").write_text("/bin/bash ./update.sh --lang en\n")
         r = self.run_un("--level", "program", "--yes")
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn("./update.sh is running", r.stdout)
+        self.assertIn("./update.sh is running", r.stderr)
         (self.base / "ps/one").write_text("/usr/bin/python3 something else\n")
         r = self.run_un("--plan")
         self.assertIn("left", r.stdout)
@@ -681,7 +684,8 @@ class Mac(Base, unittest.TestCase):
         (lock / "pid").write_text(f"{dead.pid}\n")
         r = self.run_un("--level", "program", "--yes")
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertTrue(lock.exists())
+        self.assertIn("removing the lock of an earlier ./update.sh", r.stdout)
+        self.assertFalse(lock.exists())
 
     def test_queue_counts_damage_and_growth_while_stopping(self):
         self.install(queue={"spool": [{"id": "1"}], "pending": {"a": {}},
@@ -914,6 +918,17 @@ class Mac(Base, unittest.TestCase):
         self.assertIn("PROOF matches", s.text())
         self.assertNotIn(other, s.text().split("PROOF matches")[0])
 
+    def test_bot_level_is_refused_while_only_one_bot_exists(self):
+        self.install(name="alice")
+        r = self.run_un("--level", "bot", "--relay-name", "alice")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("STOP: alice is the only Bot left on this Mac; use --level identity or --level all", r.stdout)
+        self.assertTrue(self.p(".config/agent-relay/env").exists())
+        self.assertNotIn("removing", json.loads(self.p(".local/lib/agent-mesh/deployed.json").read_text()))
+        self.assertIn("relay login service and plist", self.run_un("--plan").stdout)
+        self.assertNotIn("--level bot", self.run_un("--plan").stdout)
+        self.assertNotIn("bootout", self.calls())
+
     def test_older_layouts_without_record_or_names(self):
         self.install(record=False, relay_text="print('old relay')\n")
         r = self.run_un("--plan")
@@ -923,6 +938,490 @@ class Mac(Base, unittest.TestCase):
         s, code = self.run_deep()
         self.assertEqual(code, 0, s.text())
         self.assertFalse(self.p(".reason/network").exists())
+
+
+LEGACY = "com.local.agent-relay"
+SHARED = "a" * 64
+
+
+class MultiBot(AddSupport, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo_dir = self.two_ready()
+        self.added(self.repo_dir)
+        self.tool("ps", "exit 0")
+        self.team(cloud=True)
+        (self.home / ".reason/network/machine.key").write_text("machine")
+
+    def team(self, cloud):
+        rows = "  demo  cloud  direct 4ms\n" if cloud else ""
+        (self.who / "team").write_text("team demo · relay: https://relay.example\n  demo  mac  this machine\n" + rows)
+
+    def p(self, rel):
+        return self.home / rel
+
+    def conf(self, name):
+        return self.p(f".config/agent-relay-bots/{name}")
+
+    def state_dir(self, name):
+        return self.p(f"Library/Application Support/agent-relay-bots/{name}")
+
+    def un(self, *args):
+        r = self.run_script("uninstall.sh", *args, timeout=60)
+        self.clean(r.stdout + r.stderr)
+        return r
+
+    def clean(self, text):
+        for secret in (SHARED, BETA_KEY, "0123456789"):
+            self.assertNotIn(secret, text)
+
+    def session(self, *args):
+        return Session(["/bin/bash", str(ROOT / "uninstall.sh"), *args], self.env)
+
+    def finish(self, s):
+        code = s.finish()
+        self.clean(s.text())
+        return code
+
+    def proof(self, s, done="done"):
+        seen = s.expect("or 'skip': ")
+        challenge = re.search(r'CHALLENGE="([0-9a-f]{16})"', seen).group(1)
+        s.send(ack(SHARED, challenge, "proof"))
+        s.expect(ack(SHARED, challenge))
+        s.expect("could not finish: ")
+        s.send(done)
+        return seen
+
+    def remove_bot(self, name, routine="deleted", done="done", cloud=True):
+        s = self.session("--level", "bot", "--relay-name", name)
+        s.expect("to go on (anything else stops): ")
+        s.send(name)
+        seen = ""
+        if routine is not None:
+            s.expect("Type deleted or paused when that is done, or later: ")
+            s.send(routine)
+        if cloud and routine in (None, "deleted", "paused"):
+            seen = self.proof(s, done)
+        return s, self.finish(s), seen
+
+    def removing(self):
+        return self.record().get("removing")
+
+    def started_labels(self, since=0):
+        return [label for label, _ in self.multi_started()[since:]]
+
+    def test_bot_level_removes_an_added_bot_and_keeps_the_first(self):
+        loaded = self.multi_loaded()
+        legacy_plist = self.legacy_plist().read_bytes()
+        legacy_state = self.p("Library/Application Support/agent-relay/registered").read_bytes()
+        r = self.un("--level", "bot", "--relay-name", "beta")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("The cloud step is sent to the Grok Bot of demo/alpha.", r.stdout)
+        self.assertIn("./uninstall.sh --level bot --relay-name beta", r.stdout)
+        self.assertNotIn("STOP", r.stdout)
+        self.assertTrue(self.plist("beta").is_file())
+        self.assertIsNone(self.removing())
+        r = self.un("--plan")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("Bots on this Mac: demo/alpha, demo/beta → Grok: Beta", r.stdout)
+        self.assertIn("./uninstall.sh --plan --level bot --relay-name NAME", r.stdout)
+        self.assertEqual(self.un("--level", "bot").returncode, 2)
+        self.assertEqual(self.un("--level", "program", "--relay-name", "beta").returncode, 2)
+        s, code, seen = self.remove_bot("beta")
+        out = s.text()
+        self.assertEqual(code, 0, out)
+        self.assertIn("level bot complete: beta is removed", out)
+        self.assertIn('RELAY_NAME="beta"; LEVEL="bot"; MODE="normal"', seen)
+        self.assertIn("send this to the Grok Bot of demo/alpha (not to beta)", seen)
+        self.assertIn("\n1. [BOT-CLOUD]", seen)
+        self.assertNotIn("RN_BOT", seen)
+        self.assertIn("The engine keeps the old sessions of demo/beta", out)
+        for gone in (self.conf("beta"), self.state_dir("beta"), self.plist("beta"),
+                     self.p("Library/Logs/agent-relay-beta.log"), self.p("Library/Logs/agent-relay-beta.launchd.log")):
+            self.assertFalse(gone.exists(), gone)
+        data = self.record()
+        self.assertEqual((data.get("bots"), data["removed_bots"], data["relay_name"]), ({}, ["beta"], "alpha"))
+        self.assertNotIn("removing", data)
+        self.assertEqual(self.multi_loaded(), {LEGACY: loaded[LEGACY]})
+        self.assertEqual(self.legacy_plist().read_bytes(), legacy_plist)
+        self.assertEqual(self.p("Library/Application Support/agent-relay/registered").read_bytes(), legacy_state)
+        for kept in (".config/agent-relay/env", ".config/agent-relay/outbound.key", "Library/Logs/agent-relay.log",
+                     ".local/lib/agent-mesh/agent_relay.py"):
+            self.assertTrue(self.p(kept).exists(), kept)
+        template = self.p(".local/lib/agent-mesh/templates/AGENTS.reason-network.md").read_text()
+        self.assertIn("demo/alpha", template)
+        self.assertNotIn("demo/beta", template)
+        self.assertNotIn("bootout gui/501/com.local.agent-relay\n", self.calls() + "\n")
+        r = self.un("--level", "bot", "--relay-name", "alpha")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("alpha is the only Bot left on this Mac; use --level identity or --level all", r.stdout)
+        r = self.un("--plan", "--level", "bot", "--relay-name", "beta")
+        self.assertIn("beta is not a Bot on this Mac (Bots: alpha)", r.stdout)
+        r = self.run_script("install.sh", "--add-bot", "--grok-name", "Beta", "--relay-name", "beta",
+                            root=self.repo_dir, timeout=60)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("beta", self.record().get("bots", {}))
+        self.assertFalse(self.conf("beta").exists())
+
+    def test_bot_level_removes_the_first_bot_and_the_others_carry_on(self):
+        beta = {path: path.read_bytes() for path in (self.conf("beta") / "env", self.plist("beta"),
+                                                       self.state_dir("beta") / "registered")}
+        beta_pid = self.multi_loaded()[f"{LEGACY}.beta"]["pid"]
+        s, code, seen = self.remove_bot("alpha", routine="paused")
+        out = s.text()
+        self.assertEqual(code, 0, out)
+        self.assertIn('RELAY_NAME="alpha"; LEVEL="bot"', seen)
+        self.assertIn("Grok Bot of demo/beta → Grok: Beta (not to alpha)", seen)
+        self.assertIn("RN_BOT=beta /workspace/agent-mesh/box/rn-cloud.sh fetch", seen)
+        self.assertIn("paused, as you said", out)
+        for gone in (".config/agent-relay/env", "Library/Application Support/agent-relay",
+                     "Library/Logs/agent-relay.log", "Library/LaunchAgents/com.local.agent-relay.plist"):
+            self.assertFalse(self.p(gone).exists(), gone)
+        for kept in (".config/agent-relay/outbound.key", "Library/Logs/agent-relay-beta.log",
+                     ".local/lib/agent-mesh/agent_relay.py", ".reason/network/machine.key"):
+            self.assertTrue(self.p(kept).exists(), kept)
+        data = self.record()
+        self.assertEqual((data["legacy_removed"], data["removed_bots"]), (True, ["alpha"]))
+        for key in ("relay_name", "grok_name", "prompt", "removing"):
+            self.assertNotIn(key, data)
+        self.assertEqual(list(self.multi_loaded()), [f"{LEGACY}.beta"])
+        self.assertEqual(self.multi_loaded()[f"{LEGACY}.beta"]["pid"], beta_pid)
+        self.assertEqual({path: path.read_bytes() for path in beta}, beta)
+        r = self.un("--level", "bot", "--relay-name", "beta")
+        self.assertIn("beta is the only Bot left on this Mac", r.stdout)
+        before = len(self.multi_started())
+        r = self.run_script("install.sh", "--restart-relay", root=self.repo_dir, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.started_labels(before), [f"{LEGACY}.beta"])
+        self.assertFalse(self.legacy_plist().exists())
+        self.registers_on_wake("gamma")
+        self.bot_confirms("gamma")
+        r = self.add(self.repo_dir, grok="Gamma")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.conf("gamma") / "env").is_file())
+        self.assertFalse(self.p(".config/agent-relay/env").exists())
+        self.assertEqual((self.conf("beta") / "env").read_bytes(), beta[self.conf("beta") / "env"])
+        r = self.run_script("install.sh", "--add-bot", "--grok-name", "Alpha", "--relay-name", "alpha",
+                            root=self.repo_dir, timeout=60)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.p(".config/agent-relay/env").exists())
+        (self.home / ".local/lib/agent-mesh/deployed.json").unlink()
+        listed = subprocess.run([sys.executable, str(ROOT / "scripts/bots.py"), "list"], env=self.env,
+                                capture_output=True, text=True)
+        self.assertEqual([line.split("\t")[0] for line in listed.stdout.splitlines()], ["beta", "gamma"])
+        before = len(self.multi_started())
+        r = self.run_script("install.sh", "--restart-relay", root=self.repo_dir, timeout=60)
+        self.assertNotIn(LEGACY, self.started_labels(before))
+        self.assertFalse(self.legacy_plist().exists())
+
+    def test_an_interrupted_bot_uninstall_is_left_out_and_resumes_where_it_stopped(self):
+        s, code, _ = self.remove_bot("beta", routine="later")
+        self.assertEqual(code, 1, s.text())
+        self.assertIn("The Bot beta is not removed yet. Run ./uninstall.sh --level bot --relay-name beta again", s.text())
+        self.assertEqual(self.removing(), {"name": "beta", "kind": "added", "step": "stopped"})
+        self.assertFalse(self.plist("beta").exists())
+        self.assertNotIn(f"{LEGACY}.beta", self.multi_loaded())
+        self.assertTrue(self.conf("beta").exists())
+        check = self.run_script("check.sh", timeout=60).stdout
+        self.assertIn("FAIL  the Bot beta is being uninstalled and gets no mail\n"
+                      "      -> ./uninstall.sh --level bot --relay-name beta", check)
+        before = len(self.multi_started())
+        r = self.run_script("install.sh", "--restart-relay", root=self.repo_dir, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.started_labels(before), [LEGACY])
+        self.assertFalse(self.plist("beta").exists())
+        r = self.un("--plan", "--level", "bot", "--relay-name", "alpha")
+        self.assertIn("the Bot beta is being uninstalled; finish it first", r.stdout)
+        r = self.un("--plan", "--level", "bot", "--relay-name", "beta")
+        self.assertIn("An earlier run stopped after step stopped; this run goes on from there.", r.stdout)
+        calls = len(self.call_lines())
+        s, code, seen = self.remove_bot("beta", routine="deleted", done="skip")
+        self.assertEqual(code, 1, s.text())
+        self.assertIn("this Bot's cloud data", s.text())
+        self.assertEqual(self.removing()["step"], "routine")
+        self.assertFalse(any("bootout" in line for line in self.call_lines()[calls:]))
+        self.assertTrue(self.conf("beta").exists())
+        s, code, _ = self.remove_bot("beta", routine=None)
+        self.assertEqual(code, 0, s.text())
+        self.assertNotIn("Type deleted or paused", s.text())
+        self.assertFalse(self.conf("beta").exists())
+        self.assertIsNone(self.removing())
+
+    def test_first_bot_uninstall_resumes_after_each_mac_side_step(self):
+        state = [sys.executable, str(ROOT / "scripts/deploy_state.py")]
+        subprocess.run(state + ["removing-set", "--relay-name", "alpha", "--kind", "legacy", "--step", "started"],
+                       env=self.env, check=True)
+        self.assertIn(LEGACY, self.multi_loaded())
+        s, code, _ = self.remove_bot("alpha", routine="later")
+        self.assertEqual(code, 1, s.text())
+        self.assertNotIn(LEGACY, self.multi_loaded())
+        self.assertFalse(self.legacy_plist().exists())
+        self.assertEqual(self.removing()["step"], "stopped")
+        subprocess.run(state + ["removing-set", "--relay-name", "alpha", "--kind", "legacy", "--step", "cloud"],
+                       env=self.env, check=True)
+        self.p(".config/agent-relay/env").unlink()
+        s, code, _ = self.remove_bot("alpha", routine=None, cloud=False)
+        self.assertEqual(code, 0, s.text())
+        self.assertNotIn("PROOF", s.text())
+        data = self.record()
+        self.assertEqual((data["legacy_removed"], data["removed_bots"], "relay_name" in data), (True, ["alpha"], False))
+        self.assertFalse(self.p("Library/Application Support/agent-relay").exists())
+        self.assertTrue(self.p(".config/agent-relay/outbound.key").exists())
+
+    def bot_prompt_digest(self, name):
+        return subprocess.run([sys.executable, str(self.repo_dir / "scripts/deploy_state.py"), "digest", "prompt",
+                               "--lang", "en", "--relay-name", name], env=self.env, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def test_shared_cloud_updates_go_to_the_remaining_bot_after_the_first_bot_is_removed(self):
+        s, code, _ = self.remove_bot("alpha")
+        self.assertEqual(code, 0, s.text())
+        (self.who / "sent").unlink(missing_ok=True)
+        self.cloud_changed(self.repo_dir)
+        self.bot_replies(self.repo_dir, sender="demo/beta")
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        r = self.run_script("update.sh", "--no-pull", "--yes", root=self.repo_dir, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        [message] = self.sent()
+        self.assertEqual(message["to"], "demo/beta")
+        data = self.record()
+        self.assertEqual(data["cloud"]["hash"], self.digest(self.repo_dir, "cloud"))
+        self.assertNotIn("request", data)
+        self.assertNotIn("relay_name", data)
+        self.cloud_changed(self.repo_dir)
+        data["bots"]["beta"]["prompt"]["hash"] = "0" * 64
+        self.write_record(data)
+        r = self.run_tty(self.repo_dir, "--no-pull", "--manual",
+                         answers=["y", "y", *self.cloud_reply(self.repo_dir), "y", "n"])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        data = self.record()
+        self.assertEqual(data["txn"]["stage"], "prompt_done")
+        self.assertEqual(data["txn"]["target"]["prompt"], {"beta": self.bot_prompt_digest("beta")})
+        self.assertEqual(data["bots"]["beta"]["prompt"]["hash"], self.bot_prompt_digest("beta"))
+        self.assertEqual(data["cloud"]["hash"], self.digest(self.repo_dir, "cloud"))
+        self.assertNotIn("relay_name", data)
+        r = self.run_tty(self.repo_dir, "--no-pull", answers=["y", "y"])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("txn", self.record())
+        self.assertEqual(list(self.multi_loaded()), [f"{LEGACY}.beta"])
+
+    def test_bot_uninstall_waits_for_unfinished_switches_and_a_restore_leaves_a_removed_bot_out(self):
+        lib = self.p(".local/lib/agent-mesh")
+        etxn = lib / "engine-upgrade.json"
+        etxn.write_text("{}")
+        r = self.un("--plan", "--level", "bot", "--relay-name", "beta")
+        self.assertIn(m("uninstall.bot_engine_unfinished", etxn), r.stdout)
+        etxn.unlink()
+        data = self.record()
+        data["txn"] = {"stage": "relay_stopped", "need": [], "lang": "en", "commit": "a" * 40, "target": {}}
+        self.write_record(data)
+        r = self.un("--plan", "--level", "bot", "--relay-name", "beta")
+        self.assertIn(m("uninstall.bot_update_unfinished"), r.stdout)
+        del data["txn"]
+        self.write_record(data)
+        r = self.run_script("install.sh", "--restart-relay", "--keep-rollback", root=self.repo_dir, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rollback = lib / "rollback"
+        self.assertTrue((rollback / "bots/beta/loaded").is_file())
+        r = self.un("--level", "bot", "--relay-name", "beta")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(m("uninstall.bot_rollback_unfinished", rollback), r.stdout)
+        self.assertIsNone(self.removing())
+        self.assertIn(f"{LEGACY}.beta", self.multi_loaded())
+        aside = lib / "rollback.aside"
+        rollback.rename(aside)
+        s, code, _ = self.remove_bot("beta", routine="later")
+        self.assertEqual(code, 1, s.text())
+        self.assertEqual(self.removing(), {"name": "beta", "kind": "added", "step": "stopped"})
+        aside.rename(rollback)
+        before = len(self.multi_started())
+        r = self.run_script("install.sh", "--restart-relay", root=self.repo_dir, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(m("install.rollback_skipped", "beta"), r.stdout + r.stderr)
+        self.assertNotIn(f"{LEGACY}.beta", self.multi_loaded())
+        self.assertNotIn(f"{LEGACY}.beta", self.started_labels(before))
+        self.assertFalse(self.plist("beta").exists())
+        self.assertFalse(rollback.exists())
+        s, code, _ = self.remove_bot("beta")
+        self.assertEqual(code, 0, s.text())
+        self.assertIsNone(self.removing())
+        self.assertEqual(self.record()["removed_bots"], ["beta"])
+
+    def test_a_bot_whose_mac_files_cannot_be_deleted_stays_marked_and_a_rerun_finishes(self):
+        state = self.state_dir("beta")
+        state.chmod(0o500)
+        self.addCleanup(lambda: state.exists() and state.chmod(0o700))
+        s, code, _ = self.remove_bot("beta")
+        self.assertEqual(code, 1, s.text())
+        self.assertIn("The Bot beta is not removed yet. Run ./uninstall.sh --level bot --relay-name beta again",
+                      s.text())
+        self.assertEqual(self.removing(), {"name": "beta", "kind": "added", "step": "cloud"})
+        self.assertIn("beta", self.record()["bots"])
+        self.assertNotIn("removed_bots", self.record())
+        state.chmod(0o700)
+        s, code, _ = self.remove_bot("beta", routine=None, cloud=False)
+        self.assertEqual(code, 0, s.text())
+        self.assertIsNone(self.removing())
+        self.assertFalse(state.exists())
+        self.assertEqual(self.record()["removed_bots"], ["beta"])
+
+    def test_first_bot_uninstall_stops_at_each_mac_side_step_that_cannot_delete_and_resumes(self):
+        steps = ((self.p("Library/LaunchAgents"), "started", self.legacy_plist()),
+                 (self.p(".config/agent-relay"), "cloud", self.p(".config/agent-relay/env")),
+                 (self.p("Library/Application Support/agent-relay"), "cloud",
+                  self.p("Library/Application Support/agent-relay/registered")),
+                 (self.p("Library/Logs"), "cloud", self.p("Library/Logs/agent-relay.log")))
+        for directory, step, kept in steps:
+            with self.subTest(directory.name):
+                self.p("Library/Logs").mkdir(parents=True, exist_ok=True)
+                self.p("Library/Logs/agent-relay.log").write_text("log\n")
+                directory.chmod(0o500)
+                try:
+                    if step == "started":
+                        s, code, _ = self.remove_bot("alpha", routine=None, cloud=False)
+                    elif self.removing() and self.removing()["step"] == "cloud":
+                        s, code, _ = self.remove_bot("alpha", routine=None, cloud=False)
+                    else:
+                        s, code, _ = self.remove_bot("alpha")
+                finally:
+                    directory.chmod(0o700)
+                self.assertEqual(code, 1, s.text())
+                self.assertEqual(self.removing(), {"name": "alpha", "kind": "legacy", "step": step})
+                self.assertTrue(kept.exists(), kept)
+                self.assertNotIn("legacy_removed", self.record())
+        s, code, _ = self.remove_bot("alpha", routine=None, cloud=False)
+        self.assertEqual(code, 0, s.text())
+        data = self.record()
+        self.assertEqual((data["legacy_removed"], data["removed_bots"]), (True, ["alpha"]))
+        for gone in (".config/agent-relay/env", "Library/Application Support/agent-relay",
+                     "Library/Logs/agent-relay.log", "Library/LaunchAgents/com.local.agent-relay.plist"):
+            self.assertFalse(self.p(gone).exists(), gone)
+        self.assertEqual(list(self.multi_loaded()), [f"{LEGACY}.beta"])
+
+    def test_a_busy_queue_stops_before_anything_changes_and_an_unfinished_add_can_be_removed(self):
+        (self.state_dir("beta") / "state.json").write_text(json.dumps({"spool": [{"id": "m1"}], "pending": {}}))
+        r = self.un("--level", "bot", "--relay-name", "beta")
+        self.assertIn("demo/beta → Grok: Beta still has mail to pass on (spool 1, pending 0)", r.stdout)
+        self.assertIsNone(self.removing())
+        (self.state_dir("beta") / "state.json").write_text(json.dumps({"spool": [], "pending": {}}))
+        subprocess.run([sys.executable, str(ROOT / "scripts/deploy_state.py"), "add-record", "--relay-name", "gamma",
+                        "--team-hash", "1" * 16, "--grok-name", "Gamma"], env=self.env, check=True)
+        self.conf("gamma").mkdir(parents=True)
+        env = (self.conf("beta") / "env").read_text().replace("beta", "gamma")
+        (self.conf("gamma") / "env").write_text(env)
+        (self.conf("gamma") / "env").chmod(0o600)
+        s, code, seen = self.remove_bot("gamma")
+        self.assertEqual(code, 0, s.text())
+        self.assertIn("relay login service of demo/gamma → Grok: Gamma: absent", s.text())
+        self.assertFalse(self.conf("gamma").exists())
+        self.assertEqual(self.record()["removed_bots"], ["gamma"])
+        self.assertIn(f"{LEGACY}.beta", self.multi_loaded())
+
+    def test_program_level_stops_every_bot_and_restart_relay_brings_them_back(self):
+        r = self.un("--level", "program", "--yes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("relay login service of demo/alpha: done", r.stdout)
+        self.assertIn("relay login service of demo/beta → Grok: Beta: done", r.stdout)
+        self.assertEqual(self.multi_loaded(), {})
+        self.assertFalse(self.plist("beta").exists() or self.legacy_plist().exists())
+        for kept in (self.conf("beta") / "env", self.state_dir("beta"), self.p(".config/agent-relay/env"),
+                     self.p(".local/lib/agent-mesh/deployed.json")):
+            self.assertTrue(kept.exists(), kept)
+        self.assertEqual(self.record()["bots"]["beta"]["stage"], "relay")
+        before = len(self.multi_started())
+        r = self.run_script("install.sh", "--restart-relay", root=self.repo_dir, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.started_labels(before), [LEGACY, f"{LEGACY}.beta"])
+
+    def deep(self, level, phrase, routine="deleted"):
+        s = self.session("--level", level)
+        confirm = s.expect("to go on (anything else stops): ")
+        s.send(phrase)
+        seen = s.expect("or 'skip': ")
+        challenge = re.search(r'CHALLENGE="([0-9a-f]{16})"', seen).group(1)
+        s.send(ack(SHARED, challenge, "proof"))
+        s.expect(ack(SHARED, challenge))
+        s.expect("could not finish: ")
+        self.team(cloud=False)
+        s.send("done")
+        s.expect("Type deleted when it is gone, or later: ")
+        s.send(routine)
+        return s, self.finish(s), confirm + seen
+
+    def test_identity_level_removes_every_bot(self):
+        s, code, seen = self.deep("identity", "demo")
+        out = s.text()
+        self.assertEqual(code, 0, out)
+        self.assertIn("Level identity removes every Bot on this Mac:\n  - demo/alpha\n  - demo/beta → Grok: Beta", seen)
+        self.assertIn('RELAY_NAME="alpha"; LEVEL="identity"', seen)
+        self.assertNotIn("RN_BOT", seen)
+        for gone in (".config/agent-relay", ".config/agent-relay-bots", "Library/Application Support/agent-relay",
+                     "Library/Application Support/agent-relay-bots", ".local/lib/agent-mesh", ".reason/network"):
+            self.assertFalse(self.p(gone).exists(), gone)
+        self.assertFalse(self.plist("beta").exists() or self.legacy_plist().exists())
+        self.assertEqual(self.multi_loaded(), {})
+        for kept in ("Library/Logs/agent-relay.log", "Library/Logs/agent-relay-beta.log", ".local/lib/agent-mesh.lock"):
+            self.assertTrue(self.p(kept).exists(), kept)
+
+    def test_all_level_after_the_first_bot_is_gone_and_residual_mode(self):
+        s, code, _ = self.remove_bot("alpha")
+        self.assertEqual(code, 0, s.text())
+        s, code, seen = self.deep("all", "delete demo")
+        out = s.text()
+        self.assertEqual(code, 0, out)
+        self.assertIn('RELAY_NAME="beta"; LEVEL="all"', seen)
+        self.assertIn("RN_BOT=beta /workspace/agent-mesh/box/rn-cloud.sh fetch", seen)
+        for gone in (".config/agent-relay", ".config/agent-relay-bots", "Library/Logs/agent-relay-beta.log",
+                     "Library/Application Support/agent-relay-bots", ".local/lib/agent-mesh.lock",
+                     ".local/bin/reason-network"):
+            self.assertFalse(self.p(gone).exists(), gone)
+        self.assertIn("management lock file: done", out)
+        bots = self.conf("luna")
+        bots.mkdir(parents=True)
+        (bots / "env").write_text("RN_BIN=x\nLISTEN_NAME=luna\nCLOUD_NAME=luna-cloud\nINBOX_NAME=luna-inbox\n")
+        agents = self.p("Library/LaunchAgents")
+        relay = self.p(".local/lib/agent-mesh/agent_relay.py")
+        (agents / f"{LEGACY}.luna.plist").write_bytes(launch_agent_bytes(
+            self.home, sys.executable, str(relay), label=f"{LEGACY}.luna", env=bots / "env",
+            state=self.state_dir("luna"), log=self.p("Library/Logs/agent-relay-luna.log"),
+            launchd_log=self.p("Library/Logs/agent-relay-luna.launchd.log")))
+        (agents / f"{LEGACY}.orphan.plist").write_bytes(launch_agent_bytes(
+            self.home, sys.executable, str(relay), label=f"{LEGACY}.orphan", env=self.conf("orphan") / "env",
+            state=self.state_dir("orphan"), log=self.p("Library/Logs/agent-relay-orphan.log"),
+            launchd_log=self.p("Library/Logs/agent-relay-orphan.launchd.log")))
+        s = self.session("--residual", "--level", "identity")
+        s.expect("Type the team name you installed with: ")
+        s.send("demo")
+        s.expect("to go on (anything else stops): ")
+        s.send("demo")
+        s.expect("or 'skip': ")
+        s.send("none")
+        s.expect("could not finish: ")
+        s.send("done")
+        s.expect("Type deleted when it is gone, or later: ")
+        s.send("deleted")
+        self.assertEqual(self.finish(s), 0, s.text())
+        self.assertFalse(self.p(".config/agent-relay-bots").exists())
+        self.assertEqual(sorted(os.listdir(agents)), [])
+
+    def test_a_foreign_plist_under_an_added_label_blocks_whole_levels_only(self):
+        plist = self.plist("beta")
+        original = plist.read_bytes()
+        data = plistlib.loads(original)
+        data["EnvironmentVariables"]["AGENT_RELAY_ENV"] = str(self.home / "elsewhere/env")
+        plist.write_bytes(plistlib.dumps(data))
+        r = self.un("--plan")
+        self.assertEqual(r.stdout.count(f"STOP: {plist} overrides AGENT_RELAY_* settings"), 3, r.stdout)
+        r = self.un("--plan", "--level", "bot", "--relay-name", "alpha")
+        self.assertNotIn("STOP", r.stdout)
+        r = self.un("--plan", "--level", "bot", "--relay-name", "beta")
+        self.assertIn("STOP", r.stdout)
+        r = self.un("--level", "program", "--yes")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"{LEGACY}.beta", self.multi_loaded())
+        self.assertIn(LEGACY, self.multi_loaded())
+        plist.write_bytes(original)
+        self.assertNotIn("STOP", self.un("--plan").stdout)
 
 
 class CloudScript(Base, unittest.TestCase):

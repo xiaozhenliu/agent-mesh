@@ -7,6 +7,7 @@ import unittest
 from tests.cli.install_support import (
     InstallHarness,
 )
+from tests.cli.test_install_add import LEGACY_LABEL, AddSupport, m
 
 
 class RestartRelay(InstallHarness, unittest.TestCase):
@@ -160,3 +161,66 @@ class RestartRelay(InstallHarness, unittest.TestCase):
         self.assertNotIn("already up to date", result.stdout)
         self.assertTrue(self.loaded())
         self.assertFalse(rollback.exists())
+
+
+class SeveralBots(AddSupport, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo_dir = self.two_ready()
+        self.added(self.repo_dir)
+        self.key = self.home / ".config/agent-relay/outbound.key"
+        self.labels = [LEGACY_LABEL, f"{LEGACY_LABEL}.beta"]
+
+    def plists(self):
+        return [self.legacy_plist().read_bytes(), self.plist("beta").read_bytes()]
+
+    def test_rotate_key_restarts_every_relay_with_the_new_key(self):
+        old, before = self.key.read_text(), len(self.multi_started())
+        result = self.run_script("install.sh", "--rotate-key", "--yes", root=self.repo_dir, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(self.key.read_text(), old)
+        self.assertEqual([label for label, _ in self.multi_started()[before:]], self.labels)
+        self.assertIn(m("install.rotate_key_kept", self.key), result.stdout)
+        self.assertIn(m("install.rotate_bot_new", "demo/alpha"), result.stdout)
+        self.assertIn(m("install.rotate_bot_new", "demo/beta → Grok: Beta"), result.stdout)
+        result = self.run_script("install.sh", "--rotate-key", "--yes", "--relay-name", "beta", root=self.repo_dir)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(m("install.all_bots_no_name"), result.stderr)
+
+    def test_a_failed_restart_restores_every_relay_and_says_the_key_is_new(self):
+        plists = self.plists()
+        for label in self.labels:
+            old = self.key.read_text()
+            (self.state / f"fail-bootstrap.{label}").write_text("")
+            result = self.run_script("install.sh", "--rotate-key", "--yes", root=self.repo_dir, timeout=60)
+            self.assertEqual(result.returncode, 1, label + result.stdout + result.stderr)
+            self.assertIn(m("install.rotate_restart_failed_all"), result.stderr, label)
+            self.assertIn(m("install.rotate_key_kept", self.key), result.stdout, label)
+            self.assertIn("previous relay restored", result.stdout, label)
+            self.assertNotEqual(self.key.read_text(), old, label)
+            self.assertEqual(self.plists(), plists, label)
+            self.assertEqual(sorted(self.multi_loaded()), self.labels, label)
+            self.assertFalse((self.home / ".local/lib/agent-mesh/rollback").exists(), label)
+
+    def test_a_failed_restart_of_the_last_relay_restores_the_code_of_all(self):
+        relay = self.home / ".local/lib/agent-mesh/agent_relay.py"
+        old_relay, plists = relay.read_bytes(), self.plists()
+        old_sha = hashlib.sha256(old_relay).hexdigest()
+        with open(self.repo_dir / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        new_sha = self.sha(self.repo_dir / "agent_relay.py")
+        for flag in ("no-up", "die", "noreg"):
+            (self.state / f"{flag}.{LEGACY_LABEL}.beta").write_text("")
+            before = len(self.multi_started())
+            result = self.run_script("install.sh", "--restart-relay", root=self.repo_dir, timeout=60)
+            self.assertNotEqual(result.returncode, 0, flag)
+            self.assertIn("previous relay restored", result.stdout, flag + result.stdout + result.stderr)
+            self.assertEqual(relay.read_bytes(), old_relay, flag)
+            self.assertEqual(self.plists(), plists, flag)
+            started = self.multi_started()[before:]
+            self.assertEqual(started[:2], [[LEGACY_LABEL, new_sha], [f"{LEGACY_LABEL}.beta", new_sha]], flag)
+            self.assertEqual(started[2:], [[LEGACY_LABEL, old_sha], [f"{LEGACY_LABEL}.beta", old_sha]], flag)
+            self.assertEqual(sorted(self.multi_loaded()), self.labels, flag)
+        result = self.run_script("install.sh", "--restart-relay", root=self.repo_dir, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(relay.read_bytes(), (self.repo_dir / "agent_relay.py").read_bytes())

@@ -1,0 +1,6 @@
+lock.busy	another management command (install.sh, update.sh or uninstall.sh) is running (%s in %s); let it finish, then run this command again
+lock.legacy_running	another ./update.sh is running (pid %s, %s); let it finish first
+lock.legacy_stale	note: removing the lock of an earlier ./update.sh that did not finish (%s)
+lock.not_inherited	AGENT_MESH_LOCK_FD is set, but fd %s does not hold the management lock %s; run this command on its own, without AGENT_MESH_LOCK_FD
+lock.moved	the lock file %s was replaced again while waiting; run this command again
+lock.failed	cannot use the lock file %s (%s)

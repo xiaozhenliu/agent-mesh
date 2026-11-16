@@ -99,3 +99,29 @@ check.cloud_engine_pending	the cloud setup the installer printed is not confirme
 check.cloud_engine_none	no confirmed cloud engine version recorded; ./update.sh's cloud engine step records it
 check.cloud_engine_unreadable	could not read %s: %s
 check.result_fail	fix the FAIL lines above
+check.upgrade_committed	an earlier engine upgrade finished; its leftover record is harmless and the next ./update.sh removes it
+check.upgrade_not_switched	an engine upgrade stopped before the engine was switched; the engine is unchanged
+check.upgrade_not_switched_fix	run ./update.sh in a terminal to finish or undo it
+check.roster_unreadable	the list of Bots on this Mac cannot be read
+check.roster_unreadable_fix	%s; fix or restore ~/.local/lib/agent-mesh/deployed.json, then run ./check.sh again
+check.lock_ok	management lock file is private to you
+check.lock	management lock file
+check.lock_absent	not created yet; the next ./install.sh or ./update.sh creates it
+check.lock_writable	others can write the management lock file %s
+check.lock_link	the management lock file %s is a symlink
+check.lock_other	the management lock file %s is not a regular file
+check.lock_owner	the management lock file %s belongs to another user
+check.lock_fix	remove %s while no install.sh, update.sh or uninstall.sh runs; the next command creates it again
+check.lock_unreadable	cannot check the management lock file %s: %s
+check.bot_removing	the Bot %s is being uninstalled and gets no mail
+check.env_names_ok	relay names in env derive from %s
+check.service	relay service
+check.service_configured	not started until the cloud registers this Bot; %s asks the Bot to do it
+check.cloud_reg_ok	cloud registration confirmed
+check.cloud_reg_reply	the Bot's reply confirms the cloud registration; the next ./update.sh records it
+check.cloud_reg_mismatch	the Bot's reply does not confirm the cloud registration: %s
+check.cloud_reg	cloud registration
+check.cloud_reg_unknown	cannot check it: %s
+check.cloud_reg_sessions	the cloud sessions exist but the Bot has not replied yet; %s wakes it again
+check.cloud_reg_none	not registered on the cloud yet; %s asks the Bot to do it
+check.not_registered_fix_bot	see tail -n 30 %s and ./install.sh --restart-relay; if ./update.sh has not run for this checkout, run it (README: Troubleshooting); Bot %s

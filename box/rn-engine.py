@@ -9,8 +9,14 @@
   rn-engine.py registered --home DIR --marker FILE --name TEAM/NAME [--relay-pid PID] [--grace S]
                                                    ok | wait | fail and a reason: has the relay registered (its
                                                    marker) since the running daemon started
-  rn-engine.py others --bin PATH [--skip-parent PID]
-                                                   other processes running PATH (not the daemon or its tray)
+  rn-engine.py others --bin PATH [--skip-parent PID]...
+                                                   other processes running PATH (not the daemon or its tray, nor the
+                                                   children of any PID given)
+  rn-engine.py prepare --txn FILE --home DIR --bin PATH [--kind upgrade|restart] [--keep K=V]...
+                                                   write FILE in phase prepared before anything is stopped; switch and
+                                                   restart --txn FILE then keep its K=V fields and add their own
+  rn-engine.py phase --txn FILE stopped|switched|committed
+                                                   record the next phase of the transaction in FILE
   rn-engine.py switch --home DIR --bin PATH --new NEWBIN --pinned V --backup DEST [--txn FILE] [--keep K=V]...
                      [--old-bin OLD] [--untrusted-old]
                                                    back up PATH and DIR, replace PATH atomically, restart the daemon
@@ -19,10 +25,12 @@
                                                    backed up and restored there, and the launcher is written there on
                                                    success. --untrusted-old: the old binary is not a pinned build; it
                                                    is backed up but never run, and never put back
-  rn-engine.py restart --home DIR --bin PATH       restart the daemon on PATH and verify it started after PATH was
+  rn-engine.py restart --home DIR --bin PATH [--txn FILE]
+                                                   restart the daemon on PATH and verify it started after PATH was
                                                    last replaced
   rn-engine.py rollback --txn FILE                 undo an unfinished switch recorded in FILE (binary only; a binary
-                                                   that was not a pinned build is never put back)
+                                                   that was not a pinned build is never put back; a committed
+                                                   transaction or a daemon restart has nothing to undo)
   rn-engine.py txn-get --txn FILE KEY              print one value of the switch record (nothing if absent)
   rn-engine.py backup-state --home DIR --to DEST   copy DIR to DEST (mode 700) with a consistent network.db
   rn-engine.py build --bin PATH                    "<version> <sha256>" if PATH is a pinned Linux build, else exit 1
@@ -35,6 +43,24 @@
                                                    of the engine config FILE: replaced in place, or added at the start
   rn-engine.py strays --bin-dir DIR --home DIR     engine daemons running a binary under DIR other than the daemon
                                                    of DIR's state (report only)
+  rn-engine.py team-facts --home DIR --bin PATH    "<team-hash> <person>/<machine>" from `reason-network team --json`:
+                                                   the first 16 hex digits of sha256(team_id) and this machine; exit 1
+                                                   if this computer is not in a team or the output cannot be read
+  rn-engine.py hold --shared|--exclusive [--wait S] LOCKFILE -- CMD...
+                                                   run CMD holding the cloud maintenance lock (flock on LOCKFILE,
+                                                   waiting up to S seconds, default 600). The lock is open on fd 9,
+                                                   which CMD inherits with RN_MAINT_FD=9 and RN_MAINT_MODE, so CMD and
+                                                   any program it execs keep holding it even if hold itself dies. CMD
+                                                   gets hold's stdin, SIGTERM and SIGINT; hold exits with CMD's code.
+                                                   When RN_MAINT_FD is already set, hold checks it as held does and
+                                                   runs CMD without taking the lock again. A timeout prints
+                                                   "STOP: other cloud commands are still running; nothing was changed"
+                                                   and exits 1 without running CMD
+  rn-engine.py held --shared|--exclusive LOCKFILE  exit 0 if the inherited fd 9 (RN_MAINT_FD, RN_MAINT_MODE) holds
+                                                   the maintenance lock in a mode that is enough (exclusive is enough
+                                                   for shared, never the other way round); fd 9 itself is never
+                                                   locked again, a separate descriptor probes it. Exit 1 with the
+                                                   reason otherwise
 
 A daemon holds an exclusive lock on daemon.lock and writes its pid there; the file keeps the last pid after the
 daemon exits, so the lock decides, as in the engine itself. A daemon runs the new binary only if it started after
@@ -336,7 +362,7 @@ def run(binary, home, *args, timeout=60):
     env = dict(os.environ, REASON_NETWORK_HOME=str(home), REASON_NETWORK_NO_UPDATE="1")
     try:
         return subprocess.run([str(binary), *args], capture_output=True, text=True, env=env, timeout=timeout,
-                              stdin=subprocess.DEVNULL, preexec_fn=default_signals)
+                              stdin=subprocess.DEVNULL, preexec_fn=default_signals, close_fds=True)
     except subprocess.TimeoutExpired:
         raise Failed(f"reason-network {' '.join(args)} did not finish within {timeout:.0f} s")
     except OSError as error:
@@ -564,13 +590,50 @@ def undo(data, txn):
     return True
 
 
+OPEN_PHASES = ("prepared", "stopped")
+
+
+def keep_pair(text):
+    if "=" not in text or not text.split("=", 1)[0]:
+        raise argparse.ArgumentTypeError(f"expected KEY=VALUE, got {text!r}")
+    return text
+
+
+def open_txn(path):
+    if not path or not Path(path).exists():
+        return None
+    data = load_txn(path)
+    return data if data is not None and data.get("phase") in OPEN_PHASES else None
+
+
+def cmd_prepare(a):
+    data = {"stage": "prepared", "phase": "prepared", "kind": a.kind, "bin": str(a.bin), "home": str(a.home),
+            "backup": "", "extra": dict(kv.split("=", 1) for kv in a.keep)}
+    save_txn(a.txn, data)
+    return 0
+
+
+def cmd_phase(a):
+    data = load_txn(a.txn)
+    if data is None:
+        print(f"rn-engine: no transaction record at {a.txn}", file=sys.stderr, flush=True)
+        return 1
+    data["phase"] = a.phase
+    save_txn(a.txn, data)
+    return 0
+
+
 def cmd_switch(a):
     binary, home = Path(a.bin), Path(a.home)
     old = Path(a.old_bin) if a.old_bin else binary
     backup = Path(a.backup)
-    data = {"stage": "backup", "bin": str(binary), "home": str(home), "backup": str(backup),
-            "old_version": "" if a.untrusted_old else version_of(old), "pinned": a.pinned,
-            "old_pid": daemon_pid(home), "machines": [], "extra": dict(kv.split("=", 1) for kv in a.keep)}
+    outer = open_txn(a.txn)
+    data = dict(outer or {})
+    extra = dict(data.get("extra") or {})
+    extra.update(dict(kv.split("=", 1) for kv in a.keep))
+    data.update({"stage": "backup", "bin": str(binary), "home": str(home), "backup": str(backup),
+                 "old_version": "" if a.untrusted_old else version_of(old), "pinned": a.pinned,
+                 "old_pid": daemon_pid(home), "machines": [], "extra": extra})
     if a.old_bin:
         data["old_bin"] = str(old)
     if a.untrusted_old:
@@ -624,6 +687,8 @@ def cmd_switch(a):
             put_launcher(old)
             say(f"{old} is now the launcher")
         data["stage"] = "verified"
+        if outer is not None:
+            data["phase"] = "switched"
         save_txn(a.txn, data)
         report(binary, pid, start, data["since"])
 
@@ -643,6 +708,10 @@ def cmd_switch(a):
 
 
 def cmd_restart(a):
+    outer = open_txn(a.txn)
+    if outer is not None:
+        outer["stage"] = "restarting"
+        save_txn(a.txn, outer)
     try:
         since = replaced(a.bin)
         pid, start, _ = guarded(lambda: restart_daemon(a.bin, a.home, since))
@@ -652,6 +721,9 @@ def cmd_restart(a):
     except Interrupted:
         print("engine: interrupted", flush=True)
         return 1
+    if outer is not None:
+        outer.update(stage="restarted", phase="switched", since=since)
+        save_txn(a.txn, outer)
     report(a.bin, pid, start, since)
     return 0
 
@@ -709,7 +781,9 @@ def cmd_rollback(a):
     data = load_txn(a.txn)
     if data is None:
         return 0
-    if data["stage"] in ("backup", "rolled_back", "failed_untrusted"):
+    if data.get("phase") == "committed" or data.get("kind") == "restart":
+        return 0
+    if data["stage"] in ("prepared", "backup", "rolled_back", "failed_untrusted"):
         return 0
     if data.get("untrusted_old"):
         if data["stage"] == "verified":
@@ -744,7 +818,7 @@ def cmd_others(a):
         words = cmd[len(program):].split()
         if words and words[0] in ("daemon", "tray"):
             continue
-        if a.skip_parent and ppid == str(a.skip_parent):
+        if ppid in {str(p) for p in a.skip_parent}:
             continue
         print(f"{pid} {cmd}")
     return 0
@@ -780,6 +854,155 @@ def cmd_strays(a):
     return 0
 
 
+def cmd_team_facts(a):
+    try:
+        r = run(a.bin, a.home, "team", "--json")
+    except Failed as error:
+        print(f"rn-engine: {error}", file=sys.stderr, flush=True)
+        return 1
+    try:
+        data = json.loads(r.stdout) if r.returncode == 0 else None
+        team, person, machine = data["team_id"], data["person"], data["machine"]
+        if not all(isinstance(v, str) and v for v in (team, person, machine)):
+            raise ValueError
+    except (TypeError, KeyError, ValueError):
+        print(f"rn-engine: reason-network team --json did not name this computer's team: "
+              f"{(r.stderr or r.stdout).strip()[:300]}", file=sys.stderr, flush=True)
+        return 1
+    print(f"{hashlib.sha256(team.encode('utf-8')).hexdigest()[:16]} {person}/{machine}")
+    return 0
+
+
+MAINT_FD = 9
+MAINT_STOP = "STOP: other cloud commands are still running; nothing was changed"
+
+
+def maint_problem(lockfile, need):
+    mode = os.environ.get("RN_MAINT_MODE")
+    if os.environ.get("RN_MAINT_FD") != str(MAINT_FD):
+        return "RN_MAINT_FD is not 9"
+    if mode not in ("shared", "exclusive"):
+        return "RN_MAINT_MODE is neither shared nor exclusive"
+    if need == "exclusive" and mode != "exclusive":
+        return "this command needs the exclusive maintenance lock, but it runs inside a shared one"
+    try:
+        have, want = os.fstat(MAINT_FD), os.stat(lockfile)
+    except OSError as error:
+        return f"the maintenance lock cannot be checked: {error}"
+    if (have.st_dev, have.st_ino) != (want.st_dev, want.st_ino):
+        return f"fd 9 is not {lockfile}"
+    probe = os.open(lockfile, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        fcntl.flock(probe, (fcntl.LOCK_SH if mode == "exclusive" else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return None
+    finally:
+        os.close(probe)
+    return f"the {mode} maintenance lock is not held"
+
+
+def maint_acquire(lockfile, mode, wait):
+    op = (fcntl.LOCK_EX if mode == "exclusive" else fcntl.LOCK_SH) | fcntl.LOCK_NB
+    deadline = time.monotonic() + wait
+    while True:
+        fd = os.open(lockfile, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        while True:
+            try:
+                fcntl.flock(fd, op)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    return None
+                time.sleep(0.1)
+        try:
+            have, want = os.fstat(fd), os.stat(lockfile)
+            same = (have.st_dev, have.st_ino) == (want.st_dev, want.st_ino)
+        except FileNotFoundError:
+            same = False
+        if same:
+            return fd
+        os.close(fd)
+
+
+def maint_args(argv, command):
+    mode, wait, rest = None, 600.0, list(argv)
+    if command:
+        if "--" not in rest:
+            raise ValueError
+        cut = rest.index("--")
+        rest, cmd = rest[:cut], rest[cut + 1:]
+        if not cmd:
+            raise ValueError
+    else:
+        cmd = None
+    while rest and rest[0].startswith("--"):
+        flag = rest.pop(0)
+        if flag in ("--shared", "--exclusive") and mode is None:
+            mode = flag[2:]
+        elif flag == "--wait" and command and rest:
+            wait = float(rest.pop(0))
+            if wait < 0:
+                raise ValueError
+        else:
+            raise ValueError
+    if mode is None or len(rest) != 1:
+        raise ValueError
+    return mode, wait, rest[0], cmd
+
+
+def cmd_held(argv):
+    try:
+        mode, _, lockfile, _ = maint_args(argv, False)
+    except ValueError:
+        print("usage: rn-engine.py held --shared|--exclusive LOCKFILE", file=sys.stderr)
+        return 2
+    problem = maint_problem(lockfile, mode)
+    if problem:
+        print(f"rn-engine: {problem}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
+def cmd_hold(argv):
+    try:
+        mode, wait, lockfile, cmd = maint_args(argv, True)
+    except ValueError:
+        print("usage: rn-engine.py hold --shared|--exclusive [--wait SECONDS] LOCKFILE -- COMMAND...",
+              file=sys.stderr)
+        return 2
+    env = dict(os.environ)
+    if "RN_MAINT_FD" in env:
+        problem = maint_problem(lockfile, mode)
+        if problem:
+            print(f"rn-engine: {problem}", file=sys.stderr, flush=True)
+            return 1
+    else:
+        fd = maint_acquire(lockfile, mode, wait)
+        if fd is None:
+            print(MAINT_STOP, flush=True)
+            return 1
+        if fd != MAINT_FD:
+            os.dup2(fd, MAINT_FD)
+            os.close(fd)
+        os.set_inheritable(MAINT_FD, True)
+        env.update(RN_MAINT_FD=str(MAINT_FD), RN_MAINT_MODE=mode)
+    try:
+        child = subprocess.Popen(cmd, env=env, pass_fds=(MAINT_FD,), close_fds=True)
+    except OSError as error:
+        print(f"rn-engine: cannot run {cmd[0]}: {error}", file=sys.stderr, flush=True)
+        return 127
+    def forward(signum, _frame):
+        try:
+            child.send_signal(signum)
+        except OSError:
+            pass
+    for s in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(s, forward)
+    rc = child.wait()
+    return 128 - rc if rc < 0 else rc
+
+
 def backup_state(src, dest):
     src, dest = Path(src), Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -800,6 +1023,11 @@ def backup_state(src, dest):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["hold"]:
+        sys.exit(cmd_hold(argv[1:]))
+    if argv[:1] == ["held"]:
+        sys.exit(cmd_held(argv[1:]))
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("compare")
@@ -827,19 +1055,30 @@ def main(argv=None):
     s.set_defaults(run=cmd_registered)
     s = sub.add_parser("others")
     s.add_argument("--bin", required=True)
-    s.add_argument("--skip-parent", type=int)
+    s.add_argument("--skip-parent", type=int, action="append", default=[])
     s.set_defaults(run=cmd_others)
+    s = sub.add_parser("prepare")
+    for flag in ("--txn", "--home", "--bin"):
+        s.add_argument(flag, required=True)
+    s.add_argument("--kind", choices=("upgrade", "restart"), default="upgrade")
+    s.add_argument("--keep", action="append", default=[], type=keep_pair)
+    s.set_defaults(run=cmd_prepare)
+    s = sub.add_parser("phase")
+    s.add_argument("--txn", required=True)
+    s.add_argument("phase", choices=("stopped", "switched", "committed"))
+    s.set_defaults(run=cmd_phase)
     s = sub.add_parser("switch")
     for flag in ("--home", "--bin", "--new", "--pinned", "--backup"):
         s.add_argument(flag, required=True)
     s.add_argument("--txn")
-    s.add_argument("--keep", action="append", default=[])
+    s.add_argument("--keep", action="append", default=[], type=keep_pair)
     s.add_argument("--old-bin")
     s.add_argument("--untrusted-old", action="store_true")
     s.set_defaults(run=cmd_switch)
     s = sub.add_parser("restart")
     s.add_argument("--home", required=True)
     s.add_argument("--bin", required=True)
+    s.add_argument("--txn")
     s.set_defaults(run=cmd_restart)
     s = sub.add_parser("rollback")
     s.add_argument("--txn", required=True)
@@ -870,6 +1109,10 @@ def main(argv=None):
     s.add_argument("--home", required=True)
     s.add_argument("--to", required=True)
     s.set_defaults(run=lambda a: backup_state(a.home, a.to))
+    s = sub.add_parser("team-facts")
+    s.add_argument("--home", required=True)
+    s.add_argument("--bin", required=True)
+    s.set_defaults(run=cmd_team_facts)
     a = p.parse_args(argv)
     try:
         sys.exit(a.run(a) or 0)

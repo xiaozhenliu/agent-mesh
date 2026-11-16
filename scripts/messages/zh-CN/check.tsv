@@ -99,3 +99,29 @@ check.cloud_engine_pending	安装程序打印的云端设置还没有确认；./
 check.cloud_engine_none	没有记录已确认的云端引擎版本；./update.sh 的云端引擎步骤会记录它
 check.cloud_engine_unreadable	无法读取 %s：%s
 check.result_fail	请修复上面的 FAIL 行
+check.upgrade_committed	之前的引擎升级已完成；遗留的记录无害，下次 ./update.sh 会删除它
+check.upgrade_not_switched	引擎升级在替换引擎之前停下；引擎没有改变
+check.upgrade_not_switched_fix	在终端运行 ./update.sh 完成或撤销它
+check.roster_unreadable	无法读取这台 Mac 上的 Bot 名单
+check.roster_unreadable_fix	%s；修复或恢复 ~/.local/lib/agent-mesh/deployed.json 后再运行 ./check.sh
+check.lock_ok	管理锁文件只有你能写
+check.lock	管理锁文件
+check.lock_absent	尚未创建；下次运行 ./install.sh 或 ./update.sh 时创建
+check.lock_writable	其他用户可以写管理锁文件 %s
+check.lock_link	管理锁文件 %s 是符号链接
+check.lock_other	管理锁文件 %s 不是普通文件
+check.lock_owner	管理锁文件 %s 属于其他用户
+check.lock_fix	在没有 install.sh、update.sh 或 uninstall.sh 运行时删除 %s；下一个命令会重新创建它
+check.lock_unreadable	无法检查管理锁文件 %s：%s
+check.bot_removing	Bot %s 正在卸载，收不到信
+check.env_names_ok	env 中的 relay 名字由 %s 推导
+check.service	relay 服务
+check.service_configured	云端登记这个 Bot 之前不会启动；%s 会请 Bot 完成登记
+check.cloud_reg_ok	云端登记已确认
+check.cloud_reg_reply	Bot 的回信确认了云端登记；下次 ./update.sh 会记录
+check.cloud_reg_mismatch	Bot 的回信没有确认云端登记：%s
+check.cloud_reg	云端登记
+check.cloud_reg_unknown	无法检查：%s
+check.cloud_reg_sessions	云端会话已出现，但 Bot 还没有回信；%s 会再次唤醒它
+check.cloud_reg_none	云端尚未登记；%s 会请 Bot 完成登记
+check.not_registered_fix_bot	查看 tail -n 30 %s，再运行 ./install.sh --restart-relay；如果还没为这个检出运行过 ./update.sh，先运行它（README：Troubleshooting）；Bot %s

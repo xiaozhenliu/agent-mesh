@@ -3,7 +3,10 @@
 
   uninstall.py                          what is installed; in a terminal, then offers the levels
   uninstall.py --plan [--level L]       what is installed and what level L would do; never asks, never removes
-  uninstall.py --level program [--yes]  remove the relay program, keep identity, settings and key
+  uninstall.py --level program [--yes]  remove the relay program of every Bot, keep identity, settings and key
+  uninstall.py --level bot --relay-name NAME
+                                        remove one Bot (its relay, settings, state, logs, record entry and cloud
+                                        data); the other Bots, the team and the shared key stay
   uninstall.py --level identity         also leave the team on both computers and remove keys and identity
   uninstall.py --level all              also remove logs, the engine and the cloud's data
   uninstall.py --residual --level identity|all
@@ -27,13 +30,19 @@ import sys
 import time
 from pathlib import Path
 
+import bots
+import mesh_lock
 import relay_names
 from messages import pad, t
 from render_prompt import ROOT, render_prompt
 
-LABEL = "com.local.agent-relay"
-LEVELS = ("program", "identity", "all")
+LABEL = bots.LEGACY_LABEL
+LOCK_FD = 9
+LEVELS = ("program", "bot", "identity", "all")
+PLAN_LEVELS = ("program", "identity", "all")
 DEEP = ("identity", "all")
+BOT_STEPS = ("started", "stopped", "routine", "cloud")
+ADDED_PLIST = re.compile(r"com\.local\.agent-relay\.([a-z0-9]+(?:-[a-z0-9]+)*)\.plist")
 KNOWN_RELAYS = {"02b6a5097a93e66e": "uninstall.known_v011", "1467396a0de8baa4": "uninstall.known_v041",
                 "b034a2293d05274b": "uninstall.known_untagged"}
 TEMP6 = r"[A-Za-z0-9]{6}"
@@ -64,22 +73,44 @@ def source_text(source):
     return t(TEAM_SOURCES[source])
 
 
+class BotPaths:
+    def __init__(self, home, name, kind):
+        d = bots.paths(home, name, kind)
+        self.name, self.kind, self.label = name, kind, d["label"]
+        self.conf, self.env, self.plist = Path(d["conf_dir"]), Path(d["env"]), Path(d["plist"])
+        self.state, self.marker = Path(d["state_dir"]), Path(d["marker"])
+        self.log, self.launchd_log = Path(d["log"]), Path(d["launchd_log"])
+
+    def log_files(self, logs):
+        stem = "agent-relay" if self.kind == bots.LEGACY else "agent-relay-" + re.escape(self.name)
+        return Paths.matching(logs, rf"{stem}\.log(\.[0-9]+)?|{stem}\.launchd\.log(\.[0-9]+)?")
+
+    def temp_plists(self):
+        if self.kind == bots.LEGACY:
+            return []
+        return Paths.matching(self.plist.parent, rf"\.{re.escape(self.label)}\.{TEMP6}")
+
+
 class Paths:
     def __init__(self, home):
         h = Path(home)
         self.home = h
         self.agents = h / "Library/LaunchAgents"
-        self.plist = self.agents / f"{LABEL}.plist"
+        self.legacy = BotPaths(h, None, bots.LEGACY)
+        self.plist = self.legacy.plist
         self.lib = h / ".local/lib/agent-mesh"
         self.relay = self.lib / "agent_relay.py"
         self.record = self.lib / "deployed.json"
         self.lock = self.lib / "update.lock"
+        self.mesh_lock = h / ".local/lib/agent-mesh.lock"
         self.rollback = self.lib / "rollback"
         self.rollback_tmp = self.lib / "rollback.tmp"
         self.conf = h / ".config/agent-relay"
-        self.env = self.conf / "env"
+        self.env = self.legacy.env
         self.key = self.conf / "outbound.key"
-        self.state = h / "Library/Application Support/agent-relay"
+        self.state = self.legacy.state
+        self.bots_conf = bots.added_root(h)
+        self.bots_state = h / "Library/Application Support/agent-relay-bots"
         self.logs = h / "Library/Logs"
         self.rn_bin = h / ".local/bin/reason-network"
         self.rn_home = h / ".reason/network"
@@ -132,7 +163,11 @@ class Paths:
         return found
 
     def log_files(self):
-        return self.matching(self.logs, r"agent-relay\.log(\.[0-9]+)?|agent-relay\.launchd\.log(\.[0-9]+)?")
+        stem = r"agent-relay(-[a-z0-9]+(-[a-z0-9]+)*)?"
+        return self.matching(self.logs, rf"{stem}\.log(\.[0-9]+)?|{stem}\.launchd\.log(\.[0-9]+)?")
+
+    def env_temps(self):
+        return self.matching(self.conf, rf"\.env\.{TEMP6}")
 
     def dsh_log_files(self):
         return self.matching(self.dsh_logs, r"reason-network-bridge\.log(\.[0-9]+)?")
@@ -155,6 +190,16 @@ def run(cmd, env=None, timeout=120):
     except subprocess.TimeoutExpired:
         return 124, t("uninstall.cmd_timeout", cmd[0], timeout)
     except OSError as error:
+        return 126, f"{cmd[0]}: {error}"
+    return r.returncode, r.stdout.decode("utf-8", errors="replace")
+
+
+def run_locked(cmd, timeout=120):
+    env = dict(os.environ, AGENT_MESH_LOCK_FD=str(LOCK_FD))
+    try:
+        r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout,
+                           pass_fds=(LOCK_FD,))
+    except (OSError, subprocess.TimeoutExpired) as error:
         return 126, f"{cmd[0]}: {error}"
     return r.returncode, r.stdout.decode("utf-8", errors="replace")
 
@@ -213,10 +258,31 @@ class Roster:
         return not row[2].startswith("offline")
 
 
+class Member:
+    def __init__(self, paths, stage="relay", cloud="-", removing=False, record="ok", grok=None, orphan=False):
+        self.p = paths
+        self.kind = paths.kind
+        self.name = paths.name
+        self.stage, self.cloud, self.removing, self.record, self.grok = stage, cloud, removing, record, grok
+        self.orphan = orphan
+        self.listed = True
+        self.plist_present, self.loaded, self.running = False, False, False
+        self.loaded_path, self.launchd_note, self.skip = None, "", None
+
+    def label(self, team):
+        name = self.name or relay_names.DEFAULT
+        address = f"{team}/{name}" if team else name
+        return f"{address} → Grok: {self.grok}" if self.grok else address
+
+    def confirmed(self):
+        return self.kind == bots.LEGACY or self.cloud == "confirmed"
+
+
 class Inventory:
-    def __init__(self, paths, here):
+    def __init__(self, paths, here, holds_lock=False):
         self.p = paths
         self.here = Path(here)
+        self.holds_lock = holds_lock
         self.stops = []
         self.notes = []
         self.skips = {}
@@ -226,8 +292,21 @@ class Inventory:
     def stop(self, scope, reason):
         self.stops.append((scope, reason))
 
-    def stops_for(self, level):
-        return [reason for scope, reason in self.stops if scope == "all" or level in DEEP]
+    def stops_for(self, level, target=None):
+        def applies(scope):
+            if isinstance(scope, tuple):
+                return level != "bot" or scope[1] == target
+            return scope == "all" or (scope == "deep" and level in DEEP)
+        return [reason for scope, reason in self.stops if applies(scope)]
+
+    def bots(self):
+        return [m for m in self.members if m.listed and not m.orphan]
+
+    def member(self, name):
+        return next((m for m in self.bots() if m.name == name), None)
+
+    def label_of(self, m):
+        return m.label(self.team)
 
     def rn_env(self):
         env = dict(os.environ)
@@ -252,8 +331,13 @@ class Inventory:
             why = p.unsafe(path)
             if why:
                 self.skips[key] = why
-        self.read_plist()
-        self.read_launchd()
+        self.read_members()
+        for m in self.members:
+            self.read_plist(m)
+            self.read_launchd(m)
+        legacy = self.members[0]
+        self.plist_present, self.loaded, self.running = legacy.plist_present, legacy.loaded, legacy.running
+        self.loaded_path, self.launchd_note = legacy.loaded_path, legacy.launchd_note
         self.scan_foreign()
         self.read_env()
         self.read_record()
@@ -265,54 +349,105 @@ class Inventory:
         self.read_version()
         self.rc_lines = self.read_rc_lines()
 
-    def read_plist(self):
+    def read_members(self):
         p = self.p
-        self.plist_present = p.plist.exists() or p.plist.is_symlink()
-        if not self.plist_present or "service" in self.skips:
-            return
-        problem = None
+        self.data, self.record_bad = {}, None
         try:
-            with open(p.plist, "rb") as stream:
+            self.data = bots.load_record(p.home)
+        except ValueError as error:
+            self.record_bad = str(error)
+        data = self.data
+        self.removing = bots.removing_of(data)
+        self.legacy_removed = data.get("legacy_removed") is True
+        legacy = Member(p.legacy, grok=bots.grok_of(data))
+        try:
+            legacy.name = bots.legacy_name(p.home, data)
+            legacy.listed = legacy.name is not None
+        except ValueError:
+            legacy.listed = True
+        legacy.removing = bool(self.removing and self.removing["kind"] == bots.LEGACY
+                               and self.removing["name"] == legacy.name)
+        self.members = [legacy]
+        why = p.unsafe(p.bots_conf) or p.unsafe(p.bots_state)
+        if why:
+            self.bots_unsafe = why
+            self.stop("all", t("uninstall.bots_unsafe", why))
+            self.multi = True
+            return
+        self.bots_unsafe = None
+        for entry in bots.added_entries(p.home, data, self.removing):
+            self.members.append(Member(BotPaths(p.home, entry["name"], bots.ADDED), entry["stage"], entry["cloud"],
+                                       entry["removing"], entry["record"], entry["grok_name"]))
+        known = {m.p.plist.name for m in self.members}
+        try:
+            names = sorted(os.listdir(p.agents))
+        except OSError:
+            names = []
+        for fname in names:
+            match = ADDED_PLIST.fullmatch(fname)
+            if not match or fname in known or not bots.valid_name(match.group(1)):
+                continue
+            bp = BotPaths(p.home, match.group(1), bots.ADDED)
+            if self.plist_problem(bp) is None:
+                self.members.append(Member(bp, record="missing", orphan=True))
+        self.multi = len(self.members) > 1 or self.legacy_removed
+
+    def plist_problem(self, bp):
+        p = self.p
+        try:
+            with open(bp.plist, "rb") as stream:
                 data = plistlib.load(stream)
         except Exception as error:
-            data, problem = None, t("uninstall.plist_unreadable", type(error).__name__)
-        if problem is None:
-            args = data.get("ProgramArguments") if isinstance(data, dict) else None
-            env = data.get("EnvironmentVariables", {}) if isinstance(data, dict) else None
-            if not isinstance(data, dict) or data.get("Label") != LABEL:
-                problem = t("uninstall.plist_label")
-            elif not isinstance(args, list) or len(args) < 2 or args[-1] != str(p.relay):
-                problem = t("uninstall.plist_program")
-            elif not isinstance(env, dict):
-                problem = t("uninstall.plist_env")
-            elif any(str(k).startswith("AGENT_RELAY_") for k in env):
-                problem = t("uninstall.plist_overrides")
-            elif env.get("REASON_NETWORK_HOME", str(p.rn_home)) != str(p.rn_home):
-                problem = t("uninstall.plist_rn_home")
+            return t("uninstall.plist_unreadable", type(error).__name__)
+        args = data.get("ProgramArguments") if isinstance(data, dict) else None
+        env = data.get("EnvironmentVariables", {}) if isinstance(data, dict) else None
+        if not isinstance(data, dict) or data.get("Label") != bp.label:
+            return t("uninstall.plist_label")
+        if not isinstance(args, list) or len(args) < 2 or args[-1] != str(p.relay):
+            return t("uninstall.plist_program")
+        if not isinstance(env, dict):
+            return t("uninstall.plist_env")
+        overrides = {str(k): v for k, v in env.items() if str(k).startswith("AGENT_RELAY_")}
+        expected = {} if bp.kind == bots.LEGACY else {"AGENT_RELAY_ENV": str(bp.env),
+                                                       "AGENT_RELAY_STATE": str(bp.state),
+                                                       "AGENT_RELAY_LOG": str(bp.log)}
+        if overrides != expected:
+            return t("uninstall.plist_overrides")
+        if env.get("REASON_NETWORK_HOME", str(p.rn_home)) != str(p.rn_home):
+            return t("uninstall.plist_rn_home")
+        return None
+
+    def read_plist(self, m):
+        m.plist_present = m.p.plist.exists() or m.p.plist.is_symlink()
+        if not m.plist_present or "service" in self.skips or m.orphan:
+            return
+        problem = self.plist_problem(m.p)
         if problem:
-            self.stop("all", t("uninstall.plist_foreign", p.plist, problem))
+            self.stop(("member", m.name), t("uninstall.plist_foreign", m.p.plist, problem))
 
-    def read_launchd(self):
-        self.loaded, self.running = False, False
-        self.launchd_note = ""
-        self.loaded_path = None
-        code, out = run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"], timeout=30)
+    def read_launchd(self, m):
+        m.loaded, m.running = False, False
+        m.launchd_note, m.loaded_path = "", None
+        code, out = run(["launchctl", "print", f"gui/{os.getuid()}/{m.p.label}"], timeout=30)
         if code == 0:
-            self.loaded = True
-            self.running = "state = running" in out
-            self.loaded_path = loaded_plist(out)
-            if not self.service_owned(out):
-                self.stop("all", t("uninstall.service_foreign", LABEL,
-                                   self.loaded_path or t("uninstall.unknown_plist"), self.p.plist))
+            m.loaded = True
+            m.running = "state = running" in out
+            m.loaded_path = loaded_plist(out)
+            if not self.service_owned(out, m):
+                self.stop(("member", m.name), t("uninstall.service_foreign", m.p.label,
+                                                m.loaded_path or t("uninstall.unknown_plist"), m.p.plist))
         elif code != 113 and "Could not find service" not in out and "could not find service" not in out:
-            self.launchd_note = short(out, 120)
-            self.loaded = None
-            self.stop("all", t("uninstall.launchd_unknown", LABEL, self.launchd_note))
+            m.launchd_note = short(out, 120)
+            m.loaded = None
+            self.stop(("member", m.name), t("uninstall.launchd_unknown", m.p.label, m.launchd_note))
 
-    def service_owned(self, out):
+    def service_owned(self, out, m=None):
+        m = m or self.members[0]
         path = loaded_plist(out)
         if path:
-            return os.path.realpath(path) == os.path.realpath(self.p.plist)
+            return os.path.realpath(path) == os.path.realpath(m.p.plist)
+        if m.kind != bots.LEGACY:
+            return False
         return bool(re.search(r"(^|\s)" + re.escape(str(self.p.relay)) + r"(\s|$)", out))
 
     def scan_foreign(self):
@@ -325,8 +460,9 @@ class Inventory:
         except OSError as error:
             names = []
             self.stop("deep", t("uninstall.agents_unlisted", p.agents, error.strerror or error))
+        ours = {m.p.plist.name for m in self.members}
         for name in names:
-            if not name.endswith(".plist") or name == f"{LABEL}.plist":
+            if not name.endswith(".plist") or name in ours:
                 continue
             try:
                 with open(p.agents / name, "rb") as stream:
@@ -382,6 +518,19 @@ class Inventory:
                 self.name_default = not any(k in self.cfg for k in relay_names.KEYS)
             except ValueError as error:
                 self.stop("deep", t("uninstall.name_unclear", error))
+        for m in self.members:
+            m.cfg = self.cfg if m.kind == bots.LEGACY else {}
+            if m.kind != bots.LEGACY and self.critical_ok:
+                try:
+                    m.cfg = relay_names.parse_env(m.p.env.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    m.cfg = {}
+            m.webhook = (m.cfg.get("WEBHOOK_URL", "").startswith("https://")
+                         and len(m.cfg.get("WEBHOOK_KEY", "")) >= 8)
+        if not self.env_present:
+            first = next((m for m in self.members[1:] if m.cfg and not m.orphan), None)
+            if first is not None:
+                self.cfg = first.cfg
         self.webhook = (self.cfg.get("WEBHOOK_URL", "").startswith("https://")
                         and len(self.cfg.get("WEBHOOK_KEY", "")) >= 8)
         self.cloud_machine = self.cfg.get("CLOUD_MACHINE") or relay_names.CLOUD_MACHINE
@@ -495,8 +644,8 @@ class Inventory:
                 others.append(row)
         return cloud, own, others
 
-    def queue(self):
-        path = self.p.state / "state.json"
+    def queue(self, m=None):
+        path = (m.p.state if m is not None else self.p.state) / "state.json"
         if not path.exists():
             return None
         try:
@@ -514,9 +663,24 @@ class Inventory:
                 "unknown": states.count("unknown"), "alerts": len(alerts)}
 
     def read_queue(self):
-        self.queue_counts = self.queue()
+        for m in self.members:
+            m.queue = self.queue(m)
+        self.queue_counts = self.merged(self.members)
+
+    def snapshot(self, members=None):
+        return {id(m): self.queue(m) for m in (self.members if members is None else members)}
+
+    def merged(self, members, snap=None):
+        counts = [snap[id(m)] if snap is not None else m.queue for m in members]
+        if not self.multi:
+            return counts[0]
+        found = [q for q in counts if isinstance(q, dict)]
+        if not found:
+            return "unreadable" if "unreadable" in counts else None
+        return {k: sum(q[k] for q in found) for k in found[0]}
 
     def read_lock(self):
+        self.read_mesh_lock()
         lock = self.p.lock
         self.lock_state = None
         if not lock.is_dir():
@@ -542,6 +706,21 @@ class Inventory:
                 return
         self.lock_state = "stale"
         self.notes.append(t("uninstall.stale_lock", lock))
+
+    def read_mesh_lock(self):
+        if self.holds_lock:
+            return
+        try:
+            fd = os.open(self.p.mesh_lock, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            if not mesh_lock.try_lock(fd):
+                self.stop("all", t("lock.busy", mesh_lock.holder(self.p.mesh_lock), self.p.mesh_lock))
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
 
     def read_dsh(self):
         p = self.p
@@ -594,6 +773,44 @@ class Inventory:
                     found.append(f"{path}:{number}")
         return found
 
+    @staticmethod
+    def service_text(m):
+        if m.loaded is None:
+            return t("uninstall.service_unknown", m.launchd_note)
+        if m.loaded:
+            return t("uninstall.service_running" if m.running else "uninstall.service_stopped")
+        return t("uninstall.service_unloaded")
+
+    @staticmethod
+    def queue_text(q):
+        if isinstance(q, dict):
+            return ", ".join(f"{k} {v}" for k, v in q.items())
+        return t("uninstall.none") if q is None else t("uninstall.unreadable")
+
+    def show_bots(self, line, key):
+        listed = self.bots()
+        line("bots", t("uninstall.bots_count", len(listed), key, self.cloud_machine))
+        if self.bots_unsafe:
+            line("note", t("uninstall.bots_unsafe", self.bots_unsafe))
+        for m in self.members:
+            if not (m.listed or m.plist_present or m.loaded):
+                continue
+            if m.orphan:
+                kind = t("uninstall.bot_orphan")
+            elif m.kind == bots.LEGACY:
+                kind = t("uninstall.kind_legacy")
+            else:
+                kind = t("uninstall.kind_added", m.stage, m.cloud)
+            if m.removing:
+                kind = t("uninstall.with_note", kind, t("uninstall.bot_removing", self.removing.get("step", "-")))
+            if m.record == "missing" and not m.orphan:
+                kind = t("uninstall.with_note", kind, t("uninstall.record_missing"))
+            webhook = t("uninstall.webhook_set" if getattr(m, "webhook", False) else "uninstall.webhook_unset")
+            print("    " + t("uninstall.bot_line", self.label_of(m), kind, self.service_text(m), webhook,
+                              self.queue_text(m.queue)))
+        if self.record_bad:
+            line("note", self.record_bad)
+
     def names_line(self):
         name = self.relay_name or relay_names.DEFAULT
         default = self.relay_name is None or self.name_default
@@ -625,21 +842,14 @@ class Inventory:
             line("team", t("uninstall.team_unlisted", r.message))
         else:
             line("team", r.message)
-        line("relay_names", self.names_line())
-        if self.loaded is None:
-            service = t("uninstall.service_unknown", self.launchd_note)
-        elif self.loaded:
-            service = t("uninstall.service_running" if self.running else "uninstall.service_stopped")
-        else:
-            service = t("uninstall.service_unloaded")
         key = t("uninstall.key_present" if self.key_present() else "uninstall.key_absent")
-        webhook = t("uninstall.webhook_set" if self.webhook else "uninstall.webhook_unset")
-        line("relay", t("uninstall.relay_status", service, webhook, key))
-        q = self.queue_counts
-        if isinstance(q, dict):
-            line("queue", ", ".join(f"{k} {v}" for k, v in q.items()))
+        if self.multi:
+            self.show_bots(line, key)
         else:
-            line("queue", none if q is None else t("uninstall.unreadable"))
+            line("relay_names", self.names_line())
+            webhook = t("uninstall.webhook_set" if self.webhook else "uninstall.webhook_unset")
+            line("relay", t("uninstall.relay_status", self.service_text(self.members[0]), webhook, key))
+            line("queue", self.queue_text(self.queue_counts))
         line("dsh_bridge", t("uninstall.present") if (self.dsh_block or self.dsh_plugin) else none)
         members = [f"{row[0]}/{row[1]} ({row[2]})" for row in self.own_other + self.others]
         line("other_members", sep.join(members) or none)
@@ -653,7 +863,7 @@ class Inventory:
 
 
 class Uninstaller:
-    def __init__(self, inv, level, lang, residual=False, yes=False, interactive=False):
+    def __init__(self, inv, level, lang, residual=False, yes=False, interactive=False, name=None):
         self.inv = inv
         self.p = inv.p
         self.level = level
@@ -664,6 +874,9 @@ class Uninstaller:
         self.results = []
         self.team = inv.team
         self.cloud_status = None
+        self.name = name
+        self.target, self.executor = None, None
+        self.finished = True
 
     def ask(self, prompt):
         if not self.interactive:
@@ -682,16 +895,19 @@ class Uninstaller:
         return self.level in DEEP
 
     def plan_rows(self):
+        if self.level == "bot":
+            return self.bot_plan_rows()
         inv, p, deep, everything = self.inv, self.p, self.deep(), self.level == "all"
         keep, remove = "keep", "remove"
         have = lambda present: "present" if present else "absent"
+        multi = "_multi" if inv.multi else ""
         rows = [
-            ("service", have(inv.plist_present or inv.loaded), "stop_remove"),
+            ("service" + multi, have(any(m.plist_present or m.loaded for m in inv.members)), "stop_remove"),
             ("program", have(p.relay.exists() or p.temp_files() or p.rollback.exists() or p.rollback_tmp.exists()),
              remove),
             ("record", have(p.lib.exists()), remove if deep else keep),
-            ("settings", have(p.conf.exists()), remove if deep else keep),
-            ("state", have(p.state.exists()), remove if deep else keep),
+            ("settings" + multi, have(p.conf.exists() or p.bots_conf.exists()), remove if deep else keep),
+            ("state" + multi, have(p.state.exists() or p.bots_state.exists()), remove if deep else keep),
             ("logs", have(p.log_files()), remove if everything else keep),
             ("dsh", have(inv.dsh_block or inv.dsh_plugin), "remove_dsh" if deep else keep),
             ("dsh_backups", have(inv.dsh_backup or inv.dsh_logs), remove if everything else keep),
@@ -701,20 +917,49 @@ class Uninstaller:
             ("wiring", have(inv.engine), "setup_remove" if deep else keep),
             ("identity", have(p.rn_home.exists()), remove if deep else keep),
             ("engine", have(p.rn_bin.exists()), remove if everything else keep),
-            ("routine", "grok_ui", "you_delete" if deep else "you_pause"),
+            ("routine" + multi, "grok_ui", "you_delete" if deep else "you_pause"),
         ]
+        if everything:
+            rows.append(("mesh_lock", have(p.mesh_lock.exists()), remove))
         if self.residual:
             rows = [r for r in rows if r[0] not in ("team", "wiring")]
         return [(t("uninstall.plan_" + what), t("uninstall.now_" + now), t("uninstall.action_" + action))
                 for what, now, action in rows]
 
+    def bot_plan_rows(self):
+        m, p = self.target, self.p
+        have = lambda present: "present" if present else "absent"
+        if m is None:
+            return []
+        if m.kind == bots.LEGACY:
+            settings, logs = [m.p.env] + p.env_temps(), m.p.log_files(p.logs)
+        else:
+            settings, logs = [m.p.conf], m.p.log_files(p.logs)
+        rows = [
+            ("bot_service", have(m.plist_present or m.loaded), "stop_remove"),
+            ("bot_routine", "grok_ui", "you_delete"),
+            ("bot_cloud", "bot", "bot_removes_bot"),
+            ("bot_settings_" + m.kind, have(any(x.exists() for x in settings)), "remove"),
+            ("bot_state", have(m.p.state.exists()), "remove"),
+            ("bot_logs", have(logs), "remove"),
+            ("bot_record", "present" if not self.inv.record_bad else "absent", "bot_record"),
+            ("bot_shared", "present", "keep"),
+        ]
+        return [(t("uninstall.plan_" + what), t("uninstall.now_" + now), t("uninstall.action_" + action))
+                for what, now, action in rows]
+
     def show_plan(self):
+        if self.level == "bot":
+            return self.show_bot_plan()
         title = t("uninstall.level_" + self.level)
         print("\n" + t("uninstall.plan_header_residual" if self.residual else "uninstall.plan_header", title))
         for what, now, action in self.plan_rows():
             print(f"  {pad(what, 58)} {pad(now, 9)} {action}")
         if self.level == "all":
             print("  " + t("uninstall.plan_listed_only"))
+        if self.inv.multi and self.inv.bots():
+            print("  " + t("uninstall.plan_bots", t("uninstall.list_separator").join(
+                self.inv.label_of(m) for m in self.inv.bots())))
         stops = self.inv.stops_for(self.level)
         for reason in stops:
             print(f"  STOP: {reason}")
@@ -723,11 +968,87 @@ class Uninstaller:
                 print("  " + t("uninstall.plan_foreign", fid, what))
         return not stops
 
+    def bot_step(self):
+        m = self.target
+        if m is None or not m.removing:
+            return None
+        step = self.inv.removing.get("step")
+        return step if step in BOT_STEPS else "started"
+
+    def bot_checks(self):
+        inv = self.inv
+        stops = list(inv.stops_for("bot", self.name))
+        if inv.record_bad:
+            stops.append(t("uninstall.bot_record_bad", inv.record_bad))
+        self.target = m = inv.member(self.name)
+        if m is None:
+            names = t("uninstall.list_separator").join(b.name or relay_names.DEFAULT for b in inv.bots())
+            stops.append(t("uninstall.bot_unknown", self.name, names or t("uninstall.none")))
+            return stops
+        if inv.removing and not m.removing:
+            stops.append(t("uninstall.bot_other_removing", inv.removing["name"],
+                           f"./uninstall.sh --level bot --relay-name {inv.removing['name']}"))
+        rest = [b for b in inv.bots() if b is not m and not b.removing]
+        if not rest:
+            stops.append(t("uninstall.bot_last", self.name))
+        step = self.bot_step()
+        self.executor = next((b for b in rest if b.confirmed() and b.stage == "relay"), None)
+        if self.executor is None and rest and step != "cloud":
+            stops.append(t("uninstall.bot_no_executor", self.name))
+        if step in (None, "started"):
+            stops += self.queue_stops(m.queue)
+        if step is None:
+            stops += self.unfinished_stops()
+        if not inv.team:
+            stops.append(t("uninstall.team_not_found"))
+        return stops
+
+    def unfinished_stops(self):
+        p, data = self.p, self.inv.data
+        stops = []
+        if (p.lib / "engine-upgrade.json").exists():
+            stops.append(t("uninstall.bot_engine_unfinished", p.lib / "engine-upgrade.json"))
+        elif p.rollback.exists() or p.rollback_tmp.exists():
+            stops.append(t("uninstall.bot_rollback_unfinished", p.rollback))
+        if isinstance(data, dict) and data.get("txn") is not None:
+            stops.append(t("uninstall.bot_update_unfinished"))
+        return stops
+
+    def queue_stops(self, q):
+        if q == "unreadable":
+            return [t("uninstall.bot_queue_unreadable", self.target.p.state / "state.json")]
+        if isinstance(q, dict) and (q["spool"] or q["pending"]):
+            return [t("uninstall.bot_queue_busy", self.inv.label_of(self.target), q["spool"], q["pending"])]
+        return []
+
+    def show_bot_plan(self):
+        stops = self.bot_checks()
+        m = self.target
+        label = self.inv.label_of(m) if m else self.name
+        print("\n" + t("uninstall.plan_header", t("uninstall.level_bot_named", label)))
+        for what, now, action in self.plan_rows():
+            print(f"  {pad(what, 58)} {pad(now, 9)} {action}")
+        if m is not None:
+            if self.executor is not None:
+                print("  " + t("uninstall.plan_executor", self.inv.label_of(self.executor)))
+            step = self.bot_step()
+            if step:
+                print("  " + t("uninstall.plan_resume", step))
+        for reason in stops:
+            print(f"  STOP: {reason}")
+        return not stops
+
     def confirm_main(self):
+        if self.level == "bot":
+            return self.ask(t("uninstall.ask_phrase", self.name)) == self.name
         if self.level == "program":
             if self.yes:
                 return True
             return self.ask(t("uninstall.ask_program")) == "y"
+        if self.inv.multi:
+            print(t("uninstall.confirm_bots", self.level))
+            for m in self.inv.bots():
+                print("  - " + self.inv.label_of(m))
         phrase = self.team if self.level == "identity" else f"delete {self.team}"
         return self.ask(t("uninstall.ask_phrase", phrase)) == phrase
 
@@ -753,29 +1074,48 @@ class Uninstaller:
         print(t("uninstall.queue_lost", counts, self.level))
         return self.ask(t("uninstall.ask_lose")) == "yes"
 
-    def stop_relay(self):
-        p = self.p
-        was = self.inv.plist_present or self.inv.loaded
-        service = f"gui/{os.getuid()}/{LABEL}"
+    def service_label(self, m):
+        if not self.inv.multi:
+            return t("uninstall.label_service")
+        return t("uninstall.label_service_of", self.inv.label_of(m))
+
+    def bootout(self, m, label):
+        service = f"gui/{os.getuid()}/{m.p.label}"
         code, out = run(["launchctl", "print", service], timeout=30)
-        if code == 0:
-            if not self.inv.service_owned(out):
-                self.result(t("uninstall.label_service"), "skipped", t("uninstall.service_not_ours"))
-                raise Stop(t("uninstall.service_not_stopped", LABEL, p.plist))
-            run(["launchctl", "bootout", service], timeout=60)
-            for _ in range(20):
-                code, out = run(["launchctl", "print", service], timeout=30)
-                if code != 0:
-                    break
-                time.sleep(0.5)
-            else:
-                self.result(t("uninstall.label_service"), "failed", t("uninstall.bootout_failed"))
-                raise Stop(t("uninstall.still_loaded"))
-        if "service" in self.inv.skips:
-            self.result(t("uninstall.label_service"), "skipped", t("uninstall.plist_kept", self.inv.skips["service"]))
+        if code != 0:
             return
-        self.remove_paths(t("uninstall.label_service"), [p.plist] + [t for t in p.temp_files() if t.parent == p.agents],
-                          absent="absent" if not was else None)
+        if not self.inv.service_owned(out, m):
+            self.result(label, "skipped", t("uninstall.service_not_ours"))
+            raise Stop(t("uninstall.service_not_stopped", m.p.label, m.p.plist))
+        run(["launchctl", "bootout", service], timeout=60)
+        for _ in range(20):
+            code, out = run(["launchctl", "print", service], timeout=30)
+            if code != 0:
+                return
+            time.sleep(0.5)
+        self.result(label, "failed", t("uninstall.bootout_failed"))
+        raise Stop(t("uninstall.still_loaded"))
+
+    def remove_plist(self, m, label, was):
+        p = self.p
+        if "service" in self.inv.skips:
+            self.result(label, "skipped", t("uninstall.plist_kept", self.inv.skips["service"]))
+            return False
+        temps = [x for x in p.temp_files() if x.parent == p.agents] if m.kind == bots.LEGACY else m.p.temp_plists()
+        before = len(self.results)
+        self.remove_paths(label, [m.p.plist] + temps, absent="absent" if not was else None)
+        return self.results[before][1] in ("done", "absent")
+
+    def stop_member(self, m):
+        label = self.service_label(m)
+        was = m.plist_present or m.loaded
+        self.bootout(m, label)
+        self.remove_plist(m, label, was)
+
+    def stop_relay(self):
+        for m in self.inv.members:
+            if not self.inv.multi or m.listed or m.plist_present or m.loaded:
+                self.stop_member(m)
 
     def remove_tree(self, path):
         why = self.p.unsafe(path)
@@ -809,18 +1149,40 @@ class Uninstaller:
         p = self.p
         return [p.relay, p.rollback, p.rollback_tmp] + [t for t in p.temp_files() if t.parent == p.lib]
 
+    def prompt_relay_name(self):
+        if self.level == "bot":
+            return self.target.name
+        if self.inv.relay_name or not self.inv.multi:
+            return self.inv.relay_name or relay_names.DEFAULT
+        legacy = self.inv.members[0]
+        if legacy.listed and legacy.name:
+            return legacy.name
+        added = [m for m in self.inv.bots() if m.kind == bots.ADDED]
+        return added[0].name if added else relay_names.DEFAULT
+
+    def prompt_selector(self):
+        if self.level == "bot":
+            m = self.executor
+            return m.name if m is not None and m.kind == bots.ADDED else None
+        name = self.prompt_relay_name()
+        return name if any(m.kind == bots.ADDED and m.name == name for m in self.inv.bots()) else None
+
     def cloud_prompt(self, challenge, mode):
         return render_prompt("cloud-uninstall", self.lang, team_name=self.team,
                              mac_machine=self.inv.mac_machine or "mac",
-                             relay_name=self.inv.relay_name or relay_names.DEFAULT,
-                             level=self.level, mode=mode, challenge=challenge)
+                             relay_name=self.prompt_relay_name(),
+                             level=self.level, mode=mode, challenge=challenge,
+                             bot_selector=self.prompt_selector())
 
     def cloud_step(self):
         mode = "residual" if self.residual else "normal"
         challenge = secrets.token_hex(8)
         text = self.cloud_prompt(challenge, mode)
-        print("\n" + t("uninstall.cloud_pause"))
-        print(t("uninstall.cloud_send"))
+        if self.level == "bot":
+            print("\n" + t("uninstall.cloud_send_bot", self.inv.label_of(self.executor), self.target.name))
+        else:
+            print("\n" + t("uninstall.cloud_pause"))
+            print(t("uninstall.cloud_send"))
         show = lambda: print(f"{RULE}\n{text}{RULE}")
         show()
         key = None if self.residual else self.inv.mac_key()
@@ -845,10 +1207,10 @@ class Uninstaller:
                 break
             print(t("uninstall.not_understood"))
         while True:
-            answer = self.ask(t("uninstall.ask_done"))
+            answer = self.ask(t("uninstall.ask_done_bot" if self.level == "bot" else "uninstall.ask_done"))
             if answer == "done":
                 return "done", t("uninstall.reported_by_bot")
-            if answer == "incomplete":
+            if answer == "incomplete" and self.level != "bot":
                 return "incomplete", t("uninstall.bot_incomplete")
             if answer is None or answer == "skip":
                 return "skipped", t("uninstall.bot_unfinished")
@@ -963,8 +1325,14 @@ class Uninstaller:
             if code != 0:
                 print("    " + t("uninstall.stop_said", short(out)))
 
+    def list_bots(self):
+        if self.inv.multi:
+            for m in self.inv.bots():
+                print("  - " + self.inv.label_of(m))
+
     def routine_step(self):
         print("\n" + t("uninstall.routine_delete"))
+        self.list_bots()
         answer = self.ask(t("uninstall.ask_deleted"))
         if answer == "deleted":
             self.result(t("uninstall.label_routine"), "user-confirmed", t("uninstall.routine_deleted"), True)
@@ -980,16 +1348,21 @@ class Uninstaller:
         print("  " + t("uninstall.manual_inbox"))
         print("  " + t("uninstall.manual_memory"))
 
+    def queue_now(self):
+        inv = self.inv
+        return inv.merged(inv.members, inv.snapshot())
+
     def run_program(self):
         if not self.confirm_queue(self.inv.queue_counts):
             raise Stop(t("uninstall.stopped_unchanged"))
         before = self.inv.queue_counts
         self.stop_relay()
-        after = self.inv.queue()
+        after = self.queue_now()
         if self.grew(before, after) and not self.confirm_queue(after, again=True):
             raise Stop(t("uninstall.stopped_after_relay_restart"))
         self.remove_paths(t("uninstall.label_program"), self.program_paths(), skip_key="program")
         print("\n" + t("uninstall.routine_pause"))
+        self.list_bots()
         print(t("uninstall.reinstall_hint"))
 
     @staticmethod
@@ -1003,7 +1376,7 @@ class Uninstaller:
         inv, p = self.inv, self.p
         before = inv.queue_counts
         self.stop_relay()
-        after = inv.queue()
+        after = self.queue_now()
         if self.grew(before, after):
             print(t("uninstall.queue_grew"))
             if not self.confirm_queue(after, again=True):
@@ -1024,9 +1397,13 @@ class Uninstaller:
         self.remove_paths(t("uninstall.label_program"), self.program_paths(), skip_key="program")
         self.remove_paths(t("uninstall.label_record"), [p.lib], skip_key="program")
         self.remove_paths(t("uninstall.label_settings"), [p.conf], credential=True)
+        if inv.multi or p.bots_conf.exists():
+            self.remove_paths(t("uninstall.label_bots_settings"), [p.bots_conf], credential=True)
         if inv.custom_key:
             self.result(t("uninstall.label_custom_key"), "skipped", t("uninstall.custom_key_kept", inv.custom_key), True)
         self.remove_paths(t("uninstall.label_state"), [p.state], credential=True, skip_key="state")
+        if inv.multi or p.bots_state.exists():
+            self.remove_paths(t("uninstall.label_bots_state"), [p.bots_state], credential=True, skip_key="state")
         self.remove_paths(t("uninstall.label_identity"), [p.rn_home], credential=True)
         if self.level == "all":
             self.remove_paths(t("uninstall.label_logs"), p.log_files(), skip_key="logs")
@@ -1037,10 +1414,90 @@ class Uninstaller:
             self.remove_paths(t("uninstall.label_dsh_backups"), [p.dsh_backup] + p.dsh_log_files(), skip_key="dsh")
             self.manual_items()
         self.routine_step()
+        if self.level == "all":
+            self.remove_paths(t("uninstall.label_mesh_lock"), [p.mesh_lock])
+
+    def state_cmd(self, *args):
+        code, out = run_locked([sys.executable, str(self.inv.here / "scripts/deploy_state.py"), *args])
+        if code != 0:
+            raise Stop(t("uninstall.bot_record_failed", short(out)))
+
+    def set_step(self, step):
+        m = self.target
+        self.state_cmd("removing-set", "--relay-name", m.name, "--kind", m.kind, "--step", step)
+
+    def abandon(self, m):
+        if m.p.plist.is_file():
+            run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(m.p.plist)], timeout=60)
+        self.state_cmd("removing-clear", "--relay-name", m.name)
+
+    def bot_mac_paths(self):
+        m, p = self.target, self.p
+        if m.kind == bots.LEGACY:
+            return [m.p.env] + p.env_temps()
+        return [m.p.conf]
+
+    def run_bot(self):
+        m, inv = self.target, self.inv
+        label = inv.label_of(m)
+        step = self.bot_step()
+        at = BOT_STEPS.index(step) if step else -1
+        if step is None:
+            self.set_step("started")
+            at = 0
+        if at < BOT_STEPS.index("stopped"):
+            service = self.service_label(m)
+            was = m.plist_present or m.loaded
+            self.bootout(m, service)
+            stops = self.queue_stops(inv.queue(m))
+            if stops:
+                self.abandon(m)
+                raise Stop(stops[0] + " " + t("uninstall.bot_restarted"))
+            if not self.remove_plist(m, service, was):
+                raise Stop(t("uninstall.bot_not_finished", f"./uninstall.sh --level bot --relay-name {m.name}"))
+            self.set_step("stopped")
+        if at < BOT_STEPS.index("routine"):
+            print("\n" + t("uninstall.routine_delete_bot", label))
+            answer = self.ask(t("uninstall.ask_deleted_bot"))
+            if answer not in ("deleted", "paused"):
+                self.result(t("uninstall.label_routine"), "user-pending", t("uninstall.routine_pending"), True)
+                raise Stop(t("uninstall.bot_not_finished", f"./uninstall.sh --level bot --relay-name {m.name}"))
+            self.result(t("uninstall.label_routine"), "user-confirmed", t("uninstall.routine_" + answer), True)
+            self.set_step("routine")
+        if at < BOT_STEPS.index("cloud"):
+            status, note = self.cloud_step()
+            self.result(t("uninstall.label_cloud_bot"), "done" if status == "done" else "skipped", note, True)
+            if status != "done":
+                self.finished = False
+                return
+            self.set_step("cloud")
+        settings = t("uninstall.label_bot_settings")
+        self.remove_paths(settings, self.bot_mac_paths(), credential=True)
+        if self.results[-1][1] not in ("done", "absent"):
+            raise Stop(t("uninstall.bot_not_finished", f"./uninstall.sh --level bot --relay-name {m.name}"))
+        self.remove_paths(t("uninstall.label_state"), [m.p.state], credential=True, skip_key="state")
+        state_ok = self.results[-1][1] in ("done", "absent")
+        self.remove_paths(t("uninstall.label_logs"), m.p.log_files(self.p.logs), skip_key="logs")
+        if not state_ok or self.results[-1][1] not in ("done", "absent"):
+            raise Stop(t("uninstall.bot_not_finished", f"./uninstall.sh --level bot --relay-name {m.name}"))
+        self.state_cmd("removing-done", "--relay-name", m.name)
+        self.result(t("uninstall.label_bot_record"), "done")
+        code, out = run_locked([sys.executable, str(inv.here / "scripts/reply_convention.py"), "install"])
+        self.result(t("uninstall.label_convention"), "done" if code == 0 else "skipped",
+                    "" if code == 0 else short(out))
+        print("\n" + t("uninstall.bot_sessions_kept", f"{self.team}/{m.name}"))
+        print(t("uninstall.bot_refresh_convention"))
 
     def summary(self, final=True):
         print("\n" + t("uninstall.result_header", self.level))
         self.result_rows(self.results)
+        if self.level == "bot":
+            again = f"./uninstall.sh --level bot --relay-name {self.name}"
+            if not final or not self.finished:
+                print(t("uninstall.bot_incomplete_summary", self.name, again))
+                return 1
+            print(t("uninstall.bot_complete", self.name))
+            return 0
         if not final:
             print(t("uninstall.stopped_early", f"./uninstall.sh --level {self.level}"))
             return 1
@@ -1075,8 +1532,10 @@ def residual_team(uninstaller):
     return answer
 
 
-def choose_level(ask):
+def choose_level(ask, multi=False):
     print("\n" + t("uninstall.choose_level"))
+    if multi:
+        print(t("uninstall.choose_bot_hint"))
     return {"1": "program", "2": "identity", "3": "all"}.get(ask(t("uninstall.ask_level")) or "")
 
 
@@ -1094,6 +1553,7 @@ def parse(argv):
     parser.add_argument("--cloud-prompt", action="store_true")
     parser.add_argument("--yes", "-y", action="store_true")
     parser.add_argument("--lang", choices=("en", "zh-CN"))
+    parser.add_argument("--relay-name")
     args = parser.parse_args(argv)
     if args.all:
         if args.level not in (None, "all"):
@@ -1103,7 +1563,18 @@ def parse(argv):
         parser.error(t("uninstall.error_yes"))
     if (args.residual or args.cloud_prompt) and args.level not in DEEP:
         parser.error(t("uninstall.error_residual"))
+    if args.level == "bot" and not args.relay_name:
+        parser.error(t("uninstall.error_bot_name"))
+    if args.relay_name is not None and args.level != "bot":
+        parser.error(t("uninstall.error_relay_name"))
+    if args.relay_name is not None and relay_names.problem(args.relay_name):
+        parser.error(relay_names.problem(args.relay_name))
     return args
+
+
+def command_of(args):
+    extra = f" --relay-name {args.relay_name}" if args.level == "bot" else ""
+    return f"./uninstall.sh --level {args.level}{extra}{' --residual' if args.residual else ''}"
 
 
 def recorded_lang(paths):
@@ -1134,18 +1605,22 @@ def main(argv=None):
     interactive = sys.stdin.isatty()
     lang = resolve_lang(args, paths)
     os.environ["AGENT_MESH_LANG"] = lang
-    inv = Inventory(paths, here)
+    changes = not args.plan and (args.level is not None or interactive)
+    if changes and mesh_lock.inherit(LOCK_FD, str(paths.mesh_lock)) != mesh_lock.HELD:
+        return 1
+    inv = Inventory(paths, here, holds_lock=changes)
     inv.show()
     if not args.plan and args.level and (args.level in DEEP or not args.yes) and not interactive:
-        Uninstaller(inv, args.level, lang, residual=args.residual).show_plan()
-        command = f"./uninstall.sh --level {args.level}{' --residual' if args.residual else ''}"
+        Uninstaller(inv, args.level, lang, residual=args.residual, name=args.relay_name).show_plan()
         print("\n" + t("uninstall.no_tty_program" if args.level == "program" else "uninstall.no_tty", args.level,
-                       command))
+                       command_of(args)))
         return 3
     if args.plan:
         ok = True
-        for level in ([args.level] if args.level else LEVELS):
-            ok = Uninstaller(inv, level, lang, residual=args.residual).show_plan() and ok
+        for level in ([args.level] if args.level else PLAN_LEVELS):
+            ok = Uninstaller(inv, level, lang, residual=args.residual, name=args.relay_name).show_plan() and ok
+        if not args.level and inv.multi:
+            print("\n" + t("uninstall.plan_bot_hint"))
         print("\n" + t("uninstall.plan_nothing_removed"))
         return 0
     level = args.level
@@ -1154,11 +1629,12 @@ def main(argv=None):
             print("\n" + t("uninstall.choose_hint"))
             return 0
         u = Uninstaller(inv, "program", lang, interactive=True)
-        level = choose_level(u.ask)
+        level = choose_level(u.ask, inv.multi)
         if level is None:
             print(t("uninstall.nothing_removed"))
             return 0
-    u = Uninstaller(inv, level, lang, residual=args.residual, yes=args.yes, interactive=interactive)
+    u = Uninstaller(inv, level, lang, residual=args.residual, yes=args.yes, interactive=interactive,
+                    name=args.relay_name)
     try:
         return execute(u, args)
     except Stop as stop:
@@ -1170,6 +1646,14 @@ def main(argv=None):
 
 def execute(u, args):
     inv = u.inv
+    if u.level == "bot":
+        if not u.show_plan():
+            raise Stop(t("uninstall.nothing_removed_stops"))
+        if not u.confirm_main():
+            raise Stop(t("uninstall.not_confirmed_unchanged"))
+        print()
+        u.run_bot()
+        return u.summary()
     if args.residual:
         if inv.identity:
             raise Stop(t("uninstall.residual_has_identity"))

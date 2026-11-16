@@ -20,6 +20,7 @@ from pathlib import Path
 
 from tests.cli import install_support as tip
 from tests.cli.install_support import InstallHarness
+from tests.cli.test_install_add import LEGACY_LABEL, AddSupport, m
 from render_prompt import ROOT
 
 OLD, NEW = "0.10.7", "0.12.17"
@@ -73,16 +74,25 @@ def daemon():
     if flag("noexit"):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     with open(ctl / "daemons", "a") as log:
-        log.write(f"{os.getpid()} {VERSION}\n")
+        log.write(f"{os.getpid()} {VERSION} {'fd9' if fd_open(9) else '-'}\n")
     while True:
         time.sleep(1)
+
+
+def fd_open(fd):
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
 
 
 def ensure():
     if held():
         return True
     subprocess.Popen([sys.executable, __file__, "daemon", "--service"], start_new_session=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     pass_fds=(9,) if fd_open(9) else ())
     for _ in range(30):
         if held():
             return True
@@ -221,6 +231,11 @@ class FakeEngineMixin:
 
     def daemon(self, home):
         return rn_engine().daemon_pid(home)
+
+    def daemons_with_fd9(self):
+        path = self.ctl / "daemons"
+        lines = path.read_text().splitlines() if path.exists() else []
+        return [line for line in lines if line.split()[2:] == ["fd9"]]
 
     def daemon_version(self, home):
         pid = self.daemon(home)
@@ -485,6 +500,58 @@ EOF
         self.env["PATH"] = f"{tools}:{self.env['PATH']}"
         out = self.engine("others", "--bin", str(self.bin), "--skip-parent", "500").stdout
         self.assertEqual(out.splitlines(), [f"104 {self.bin} mcp"])
+        out = self.engine("others", "--bin", str(self.bin), "--skip-parent", "500", "--skip-parent", "1").stdout
+        self.assertEqual(out.splitlines(), [])
+
+    def prepare(self, kind="upgrade", *keep):
+        return self.engine("prepare", "--txn", str(self.txn), "--home", str(self.home), "--bin", str(self.bin),
+                           "--kind", kind, *[a for kv in keep for a in ("--keep", kv)])
+
+    def test_switch_keeps_the_participants_of_a_prepared_transaction_and_adds_its_phases(self):
+        self.start(self.bin, self.home)
+        members = json.dumps([{"name": "alpha", "label": "a", "plist": "/p a", "was_loaded": True}])
+        self.assertEqual(self.prepare("upgrade", f"participants={members}").returncode, 0)
+        data = json.loads(self.txn.read_text())
+        self.assertEqual((data["stage"], data["phase"], data["kind"], data["extra"]["participants"]),
+                         ("prepared", "prepared", "upgrade", members))
+        self.assertEqual(self.engine("rollback", "--txn", str(self.txn)).returncode, 0)
+        self.assertEqual(self.engine("phase", "--txn", str(self.txn), "stopped").returncode, 0)
+        result = self.switch("--keep", "note=1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = json.loads(self.txn.read_text())
+        self.assertEqual((data["stage"], data["phase"], data["kind"]), ("verified", "switched", "upgrade"))
+        self.assertEqual(data["extra"], {"participants": members, "note": "1"})
+        self.assertEqual(self.engine("txn-get", "--txn", str(self.txn), "participants").stdout.strip(), members)
+        self.assertEqual(self.engine("phase", "--txn", str(self.txn), "committed").returncode, 0)
+        self.assertEqual(self.engine("rollback", "--txn", str(self.txn)).returncode, 0)
+        self.assertEqual(self.version(self.bin), NEW)
+        self.txn.unlink()
+        self.assertEqual(self.engine("phase", "--txn", str(self.txn), "committed").returncode, 1)
+        self.assertNotEqual(self.prepare("upgrade", "novalue").returncode, 0)
+        self.assertFalse(self.txn.exists())
+
+    def test_a_switch_without_a_prepared_transaction_starts_a_new_record(self):
+        self.start(self.bin, self.home)
+        self.txn.write_text(json.dumps({"stage": "verified", "phase": "committed", "bin": str(self.bin),
+                                        "home": str(self.home), "backup": "", "extra": {"participants": "[]"}}))
+        result = self.switch("--keep", "relay_was_loaded=1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = json.loads(self.txn.read_text())
+        self.assertNotIn("phase", data)
+        self.assertEqual(data["extra"], {"relay_was_loaded": "1"})
+
+    def test_a_daemon_restart_in_a_prepared_transaction_records_its_stage_and_never_rolls_back(self):
+        old_pid = self.start(self.bin, self.home)
+        self.assertEqual(self.prepare("restart", "participants=[]").returncode, 0)
+        self.assertEqual(self.engine("phase", "--txn", str(self.txn), "stopped").returncode, 0)
+        result = self.engine("restart", "--home", str(self.home), "--bin", str(self.bin), "--txn", str(self.txn))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(self.daemon(self.home), old_pid)
+        data = json.loads(self.txn.read_text())
+        self.assertEqual((data["stage"], data["phase"], data["kind"], data["extra"]), ("restarted", "switched",
+                                                                                       "restart", {"participants": "[]"}))
+        self.assertEqual(self.engine("rollback", "--txn", str(self.txn)).returncode, 0)
+        self.assertEqual(self.version(self.bin), OLD)
 
     def test_registration_needs_a_marker_written_after_the_daemon_started(self):
         eng = rn_engine()
@@ -856,11 +923,11 @@ class PinnedChecksums(unittest.TestCase):
             self.assertFalse((base / "curl").exists())
 
 
-class MacUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
-    """update.sh with a real (fake) engine daemon behind the fake launchd."""
-
+class UpgradeSupport(FakeEngineMixin):
     def upgradable(self, version=OLD):
-        repo = self.installed()
+        return self.engine_ready(self.installed(), version)
+
+    def engine_ready(self, repo, version):
         self.setup_ctl(self.base, self.env)
         self.rn = self.home / ".local/bin/reason-network"
         self.rn_home = self.home / ".reason/network"
@@ -896,7 +963,38 @@ class MacUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
     def leftovers(self):
         return sorted((self.home / ".local/lib/agent-mesh").glob(".engine-new.*"))
 
-    def test_engine_only_upgrade_switches_the_relay_first_then_the_engine(self):
+    def interrupt_at(self, repo, stage):
+        master, slave = pty.openpty()
+        try:
+            os.write(master, b"y\n")
+            proc = subprocess.Popen(["/bin/bash", str(repo / "update.sh"), "--no-pull"], env=self.env, stdin=slave,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setpgrp)
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                try:
+                    if json.loads(self.txn().read_text())["stage"] == stage:
+                        break
+                except (OSError, ValueError):
+                    pass
+                time.sleep(0.1)
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate(timeout=30)
+                self.fail(f"the switch never reached {stage}")
+            time.sleep(0.5)
+            os.killpg(proc.pid, signal.SIGTERM)
+            self.unflag("slow", NEW)
+            out, err = proc.communicate(timeout=90)
+            return proc.returncode, out.decode(), err.decode()
+        finally:
+            os.close(slave)
+            os.close(master)
+
+
+class MacUpgrade(UpgradeSupport, InstallHarness, unittest.TestCase):
+    """update.sh with a real (fake) engine daemon behind the fake launchd."""
+
+    def test_engine_only_upgrade_stops_the_relay_switches_the_engine_then_starts_the_relay_once(self):
         repo = self.upgradable()
         old_pid = self.daemon(self.rn_home)
         plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
@@ -925,11 +1023,13 @@ class MacUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
         self.assertTrue((backup / "state/network.db").exists())
         steps = [line.split()[1] for line in self.service_changes()]
         steps = [step for i, step in enumerate(steps) if i == 0 or steps[i - 1] != step]
-        self.assertEqual(steps, ["bootout", "bootstrap", "bootout", "bootstrap"])
+        self.assertEqual(steps, ["bootout", "bootstrap"])
+        self.assertFalse((self.home / ".local/lib/agent-mesh/rollback").exists())
         self.assertIn(f"upgraded {OLD} -> {NEW}", result.stdout)
         self.assertTrue(self.loaded())
         marker = json.loads((self.home / "Library/Application Support/agent-relay/registered").read_text())
         self.assertEqual(marker["name"], "demo/bot")
+        self.assertEqual(self.daemons_with_fd9(), [])
         again = self.run_script("update.sh", "--no-pull", root=repo)
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn("already up to date", again.stdout)
@@ -959,16 +1059,23 @@ class MacUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
         self.assertTrue(self.txn().exists())
         self.assertEqual(self.version(self.rn), OLD)
 
-    def test_relay_failure_before_the_switch_leaves_the_engine_alone(self):
+    def test_a_relay_that_does_not_start_after_the_switch_rolls_back_the_engine_and_the_relay_code(self):
         repo = self.upgradable()
-        old_pid = self.daemon(self.rn_home)
+        relay = self.home / ".local/lib/agent-mesh/agent_relay.py"
+        old_code = relay.read_bytes()
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
         (self.state / "fail-bootstrap").write_text("")
         result = self.run_tty(repo, "--no-pull", answers=["y"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("the relay did not switch, so the engine was not changed", result.stderr)
-        self.assertEqual((self.version(self.rn), self.daemon(self.rn_home)), (OLD, old_pid))
-        self.assertEqual(self.backups(), [])
+        self.assertIn(f"the relay did not register on the new engine; Reason Network {OLD} is back", result.stderr)
+        self.assertEqual((self.version(self.rn), self.daemon_version(self.rn_home)), (OLD, OLD))
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual(relay.read_bytes(), old_code)
+        self.assertFalse(self.txn().exists())
+        self.assertFalse((self.home / ".local/lib/agent-mesh/rollback").exists())
         self.assertTrue(self.loaded())
+        self.assertEqual(self.messages(self.rn_home), {"m1": "kept"})
 
     @unittest.skipUnless(shutil.which("ps"), "needs ps")
     def test_other_sessions_are_listed_and_do_not_block(self):
@@ -1074,33 +1181,6 @@ class MacUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
         self.assertTrue(self.loaded())
         self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
 
-    def interrupt_at(self, repo, stage):
-        master, slave = pty.openpty()
-        try:
-            os.write(master, b"y\n")
-            proc = subprocess.Popen(["/bin/bash", str(repo / "update.sh"), "--no-pull"], env=self.env, stdin=slave,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setpgrp)
-            deadline = time.time() + 60
-            while time.time() < deadline:
-                try:
-                    if json.loads(self.txn().read_text())["stage"] == stage:
-                        break
-                except (OSError, ValueError):
-                    pass
-                time.sleep(0.1)
-            else:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.communicate(timeout=30)
-                self.fail(f"the switch never reached {stage}")
-            time.sleep(0.5)
-            os.killpg(proc.pid, signal.SIGTERM)
-            self.unflag("slow", NEW)
-            out, err = proc.communicate(timeout=90)
-            return proc.returncode, out.decode(), err.decode()
-        finally:
-            os.close(slave)
-            os.close(master)
-
     def test_a_stale_daemon_is_restarted_on_the_installed_binary(self):
         repo = self.upgradable(NEW)
         old_pid = self.daemon(self.rn_home)
@@ -1114,6 +1194,7 @@ class MacUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
         self.assertNotEqual(self.daemon(self.rn_home), old_pid)
         self.assertEqual(self.backups(), [])
         self.assertTrue(self.loaded())
+        self.assertEqual(self.daemons_with_fd9(), [])
 
     def test_an_interrupted_daemon_restart_starts_the_relay_again(self):
         repo = self.upgradable(NEW)
@@ -1174,6 +1255,321 @@ class MacUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):
         self.assertEqual(len(self.sent()), 2)
         self.assertEqual(self.service_changes(), [])
         self.assertTrue(self.loaded())
+
+
+class MultiBotUpgrade(UpgradeSupport, AddSupport, unittest.TestCase):
+    """update.sh on a Mac with two Bots: one engine transaction covers the relays of both."""
+
+    def setUp(self):
+        super().setUp()
+        self.labels = [LEGACY_LABEL, f"{LEGACY_LABEL}.beta"]
+
+    def two_upgradable(self, version=OLD):
+        repo = self.two_ready()
+        self.added(repo)
+        con = sqlite3.connect(self.home / ".reason/network/network.db")
+        con.execute("DROP TABLE IF EXISTS messages")
+        con.commit()
+        con.close()
+        return self.engine_ready(repo, version)
+
+    def lib(self):
+        return self.home / ".local/lib/agent-mesh"
+
+    def plists(self):
+        return [self.legacy_plist().read_bytes(), self.plist("beta").read_bytes()]
+
+    def members(self, beta_loaded=True):
+        return [{"name": "alpha", "label": LEGACY_LABEL, "plist": str(self.legacy_plist()), "was_loaded": True},
+                {"name": "beta", "label": self.labels[1], "plist": str(self.plist("beta")), "was_loaded": beta_loaded}]
+
+    def launchctl(self, *args):
+        subprocess.run([str(self.bin / "launchctl"), *args], env=self.env, check=True)
+
+    def new_code(self, repo):
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        return hashlib.sha256((repo / "agent_relay.py").read_bytes()).hexdigest()
+
+    def assert_registered(self):
+        loaded = self.multi_loaded()
+        for label, state in ((self.labels[0], "agent-relay"), (self.labels[1], "agent-relay-bots/beta")):
+            marker = json.loads((self.home / "Library/Application Support" / state / "registered").read_text())
+            self.assertEqual(marker["pid"], loaded[label]["pid"], label)
+
+    def test_both_relays_stop_before_the_switch_and_each_starts_once_on_the_new_engine(self):
+        repo = self.two_upgradable()
+        new = self.new_code(repo)
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertIn(m("update.plan_bots"), plan.stdout)
+        for name in ("alpha", "beta"):
+            self.assertIn(m("update.plan_bot", name, "changed", "unchanged"), plan.stdout)
+        self.assertIn(m("update.plan_engine_order"), plan.stdout)
+        before = len(self.multi_started())
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.e_stop_relays", "alpha, beta"), result.stdout)
+        self.assertEqual((self.version(self.rn), self.daemon_version(self.rn_home)), (NEW, NEW))
+        self.assertEqual(self.messages(self.rn_home), {"m1": "kept"})
+        changes = self.service_changes()
+        self.assertEqual(changes[:2], [f"launchctl bootout gui/501/{label}" for label in self.labels])
+        starts = [line.split(" ", 3)[3] for line in changes if line.startswith("launchctl bootstrap")]
+        self.assertEqual(starts, [str(self.legacy_plist()), str(self.plist("beta"))])
+        first = next(i for i, line in enumerate(changes) if line.startswith("launchctl bootstrap"))
+        self.assertTrue(all(line.startswith("launchctl bootout") for line in changes[:first]))
+        self.assertEqual(self.multi_started()[before:], [[label, new] for label in self.labels])
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        self.assert_registered()
+        self.assertFalse(self.txn().exists())
+        self.assertFalse((self.lib() / "rollback").exists())
+        self.assertEqual(self.daemons_with_fd9(), [])
+        again = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already up to date", again.stdout)
+
+    def test_a_relay_that_does_not_register_rolls_back_the_engine_and_every_relay(self):
+        repo = self.two_upgradable()
+        relay = self.lib() / "agent_relay.py"
+        old_code, plists = relay.read_bytes(), self.plists()
+        old = hashlib.sha256(old_code).hexdigest()
+        self.new_code(repo)
+        for label in self.labels:
+            with self.subTest(label):
+                (self.state / f"noreg.{label}").write_text("")
+                before = len(self.multi_started())
+                result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"the relay did not register on the new engine; Reason Network {OLD} is back",
+                              result.stderr)
+                self.assertEqual((self.version(self.rn), self.daemon_version(self.rn_home)), (OLD, OLD))
+                self.assertEqual((relay.read_bytes(), self.plists()), (old_code, plists))
+                self.assertFalse(self.txn().exists())
+                self.assertFalse((self.lib() / "rollback").exists())
+                self.assertEqual(sorted(self.multi_loaded()), self.labels)
+                self.assertEqual(self.multi_started()[before:][-2:], [[name, old] for name in self.labels])
+                self.assertFalse((self.state / f"noreg.{label}").exists())
+                self.assert_registered()
+                self.assertEqual(self.messages(self.rn_home), {"m1": "kept"})
+
+    def test_interrupted_during_the_switch_both_relays_come_back_on_the_old_engine(self):
+        repo = self.two_upgradable()
+        self.flag("slow", NEW)
+        code, out, err = self.interrupt_at(repo, "replaced")
+        self.assertEqual(code, 143, out + err)
+        self.assertIn("rolling it back", out)
+        self.assertEqual((self.version(self.rn), self.daemon_version(self.rn_home)), (OLD, OLD))
+        self.assertFalse(self.txn().exists())
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        self.assertIn(m("update.bot_running_again", "alpha"), out)
+        self.assertIn(m("update.bot_running_again", "beta"), out)
+
+    def test_a_transaction_left_in_prepared_starts_only_the_relays_that_were_already_stopped(self):
+        repo = self.two_upgradable()
+        self.txn().write_text(json.dumps({"stage": "prepared", "phase": "prepared", "kind": "upgrade",
+                                          "bin": str(self.rn), "home": str(self.rn_home), "backup": "",
+                                          "extra": {"participants": json.dumps(self.members())}}))
+        self.launchctl("bootout", f"gui/501/{self.labels[1]}")
+        (self.base / "calls").unlink()
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertIn(m("update.plan_etxn", "prepared"), plan.stdout)
+        self.assertEqual(self.service_changes(), [])
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.etxn_first", "prepared"), result.stdout)
+        self.assertIn(m("update.bot_running_again", "beta"), result.stdout)
+        self.assertNotIn(m("update.bot_running_again", "alpha"), result.stdout)
+        self.assertEqual(self.service_changes()[0], f"launchctl bootstrap gui/501 {self.plist('beta')}")
+        self.assertEqual(self.version(self.rn), NEW)
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        self.assertFalse(self.txn().exists())
+
+    def prepared_txn(self, members):
+        self.txn().write_text(json.dumps({"stage": "prepared", "phase": "prepared", "kind": "upgrade",
+                                          "bin": str(self.rn), "home": str(self.rn_home), "backup": "",
+                                          "extra": {"participants": json.dumps(members)}}))
+
+    def test_a_relay_that_does_not_come_back_keeps_the_engine_record_for_the_next_run(self):
+        repo = self.two_upgradable()
+        self.prepared_txn(self.members())
+        self.launchctl("bootout", f"gui/501/{self.labels[1]}")
+        (self.state / f"fail-bootstrap.{self.labels[1]}").write_text("")
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.engine_not_undone", str(self.txn())), result.stdout + result.stderr)
+        self.assertTrue(self.txn().exists())
+        self.assertEqual(sorted(self.multi_loaded()), [LEGACY_LABEL])
+        self.assertEqual(self.version(self.rn), OLD)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.bot_running_again", "beta"), result.stdout)
+        self.assertFalse(self.txn().exists())
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        self.assertEqual(self.version(self.rn), NEW)
+
+    def test_the_saved_relays_stay_until_the_engine_step_is_recorded_as_committed(self):
+        repo = self.two_upgradable()
+        relay = self.lib() / "agent_relay.py"
+        old_code = relay.read_bytes()
+        self.new_code(repo)
+        self.env["MOCK_PY_FAIL"] = "rn-engine.py phase committed"
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        del self.env["MOCK_PY_FAIL"]
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.e_not_committed", str(self.txn())), result.stderr)
+        self.assertIn("rolling it back", result.stdout)
+        self.assertEqual((self.version(self.rn), self.daemon_version(self.rn_home)), (OLD, OLD))
+        self.assertEqual(relay.read_bytes(), old_code)
+        self.assertFalse(self.txn().exists())
+        self.assertFalse((self.lib() / "rollback").exists())
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.version(self.rn), NEW)
+        self.assertNotEqual(relay.read_bytes(), old_code)
+
+    def test_engine_recovery_leaves_out_a_bot_removed_since_the_transaction(self):
+        repo = self.two_upgradable()
+        result = self.run_script("install.sh", "--restart-relay", "--keep-rollback", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.lib() / "rollback/bots/beta/loaded").is_file())
+        self.prepared_txn(self.members())
+        self.launchctl("bootout", f"gui/501/{self.labels[1]}")
+        self.plist("beta").unlink()
+        shutil.rmtree(self.home / ".config/agent-relay-bots/beta")
+        data = self.record()
+        del data["bots"]["beta"]
+        data["removed_bots"] = ["beta"]
+        self.write_record(data)
+        (self.base / "calls").unlink()
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("install.rollback_skipped", "beta"), result.stdout + result.stderr)
+        self.assertNotIn(m("update.bot_running_again", "beta"), result.stdout)
+        self.assertEqual(sorted(self.multi_loaded()), [LEGACY_LABEL])
+        self.assertFalse(self.plist("beta").exists())
+        self.assertNotIn(str(self.plist("beta")), self.calls())
+        self.assertFalse(self.txn().exists())
+        self.assertFalse((self.lib() / "rollback").exists())
+
+    def test_a_committed_transaction_is_only_removed(self):
+        repo = self.two_upgradable(NEW)
+        self.txn().write_text(json.dumps({"stage": "verified", "phase": "committed", "kind": "upgrade",
+                                          "bin": str(self.rn), "home": str(self.rn_home), "backup": "",
+                                          "extra": {"participants": json.dumps(self.members())}}))
+        (self.lib() / "rollback").mkdir()
+        (self.lib() / "rollback/agent_relay.py").write_text("old")
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertIn(m("update.plan_etxn_committed"), plan.stdout)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.etxn_committed"), result.stdout)
+        self.assertNotIn("rolling it back", result.stdout)
+        self.assertFalse(self.txn().exists())
+        self.assertFalse((self.lib() / "rollback").exists())
+        self.assertEqual(self.service_changes(), [])
+        self.assertEqual(self.version(self.rn), NEW)
+
+    def test_an_interrupted_relay_switch_after_the_engine_switch_puts_back_the_old_code_first(self):
+        repo = self.two_upgradable()
+        old = hashlib.sha256((self.lib() / "agent_relay.py").read_bytes()).hexdigest()
+        new = self.new_code(repo)
+        eng = [sys.executable, str(repo / "box/rn-engine.py")]
+        run = lambda *args: subprocess.run(eng + list(args), env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(run("prepare", "--txn", str(self.txn()), "--home", str(self.rn_home), "--bin", str(self.rn),
+                             "--keep", f"participants={json.dumps(self.members())}").returncode, 0)
+        for label in self.labels:
+            self.launchctl("bootout", f"gui/501/{label}")
+        self.assertEqual(run("phase", "--txn", str(self.txn()), "stopped").returncode, 0)
+        self.put_engine(self.base / "new/reason-network", NEW)
+        switched = run("switch", "--home", str(self.rn_home), "--bin", str(self.rn), "--new",
+                       str(self.base / "new/reason-network"), "--pinned", NEW, "--backup", str(self.base / "bk"),
+                       "--txn", str(self.txn()))
+        self.assertEqual(switched.returncode, 0, switched.stdout + switched.stderr)
+        result = self.run_script("install.sh", "--restart-relay", "--keep-rollback", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.lib() / "rollback").exists())
+        self.assertEqual(json.loads(self.txn().read_text())["phase"], "switched")
+        before = len(self.multi_started())
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.etxn_first", "verified"), result.stdout)
+        self.assertEqual(self.multi_started()[before:], [[label, old] for label in self.labels]
+                         + [[label, new] for label in self.labels])
+        self.assertEqual((self.version(self.rn), self.daemon_version(self.rn_home)), (NEW, NEW))
+        self.assertFalse((self.lib() / "rollback").exists())
+        self.assertFalse(self.txn().exists())
+
+    def test_a_relay_that_was_stopped_stays_stopped_on_rollback_and_a_configured_bot_is_never_touched(self):
+        repo = self.two_upgradable()
+        data = self.record()
+        data["bots"]["gamma"] = {"stage": "configured", "added_ms": data["bots"]["beta"]["added_ms"] + 1,
+                                 "cloud": {"state": "pending"}}
+        self.write_record(data)
+        self.launchctl("bootout", f"gui/501/{self.labels[1]}")
+        (self.state / f"noreg.{self.labels[1]}").write_text("")
+        self.new_code(repo)
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertIn(m("update.plan_bot_waiting", "gamma", "gamma"), plan.stdout)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(sorted(self.multi_loaded()), [LEGACY_LABEL])
+        self.assertEqual(self.version(self.rn), OLD)
+        self.assertNotIn(m("update.bot_running_again", "beta"), result.stdout)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        self.assertNotIn("gamma", self.calls())
+
+    def test_a_stale_daemon_restart_records_its_transaction_before_stopping_the_relays(self):
+        repo = self.two_upgradable(NEW)
+        time.sleep(1.1)
+        self.put_engine(self.rn, NEW)
+        self.flag("slowafterstop", NEW)
+        master, slave = pty.openpty()
+        seen = None
+        try:
+            os.write(master, b"y\n")
+            proc = subprocess.Popen(["/bin/bash", str(repo / "update.sh"), "--no-pull"], env=self.env, stdin=slave,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setpgrp)
+            deadline = time.time() + 60
+            while time.time() < deadline and proc.poll() is None:
+                if (self.ctl / "stopped").exists():
+                    seen = json.loads(self.txn().read_text())
+                    break
+                time.sleep(0.01)
+            time.sleep(0.5)
+            unloaded = self.multi_loaded() == {}
+            os.killpg(proc.pid, signal.SIGTERM)
+            self.unflag("slowafterstop", NEW)
+            out, err = proc.communicate(timeout=90)
+        finally:
+            os.close(slave)
+            os.close(master)
+        self.assertIsNotNone(seen, out.decode() + err.decode())
+        self.assertEqual((seen["kind"], seen["phase"], seen["stage"]), ("restart", "stopped", "restarting"))
+        self.assertEqual([p["name"] for p in json.loads(seen["extra"]["participants"])], ["alpha", "beta"])
+        self.assertTrue(unloaded)
+        self.assertEqual(proc.returncode, 143, out.decode() + err.decode())
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        self.assertFalse(self.txn().exists())
+
+    @unittest.skipUnless(shutil.which("ps"), "needs ps")
+    def test_an_unmanaged_relay_is_listed_but_never_stopped(self):
+        repo = self.two_upgradable()
+        managed = self.multi_loaded()[LEGACY_LABEL]["pid"]
+        real = shutil.which("ps")
+        self.tool("ps", f'if [ "$1" = -axo ]; then "{real}" "$@"; echo "  888 {managed} {self.rn} listen --as alpha"; '
+                        f'echo "  777  4242 {self.rn} listen --as helper"; else exec "{real}" "$@"; fi')
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("These processes also use Reason Network", result.stdout)
+        self.assertIn(f"777 {self.rn} listen --as helper", result.stdout)
+        self.assertNotIn(f"888 {self.rn}", result.stdout)
+        touched = {line.split()[2].rsplit("/", 1)[-1] for line in self.service_changes() if "bootout" in line}
+        self.assertEqual(touched, set(self.labels))
+        self.assertNotIn("kill", self.calls())
+        self.assertEqual(self.version(self.rn), NEW)
 
 
 class CloudUpgrade(FakeEngineMixin, InstallHarness, unittest.TestCase):

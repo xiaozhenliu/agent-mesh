@@ -260,5 +260,69 @@ uninstall.bad_home	HOME must be an absolute home directory
 uninstall.no_python	python3 is missing; see README prerequisites
 uninstall.python_broken	python3 cannot start
 uninstall.python_old	Python 3.9+ is required
-uninstall.help	Remove agent-mesh from this Mac and, guided, from the Bot's cloud computer. Without options it only shows\nwhat is installed; nothing is removed until you choose a level and confirm it.\n  ./uninstall.sh --plan [--level L]        what is installed and what a level would do; removes nothing\n  ./uninstall.sh --level program [--yes]   the relay program only; team, settings, key and cloud stay\n  ./uninstall.sh --level identity          also leave the team on both computers, remove keys and identity\n  ./uninstall.sh --level all               also remove logs, the engine and the cloud's data (--all for short)\n  ./uninstall.sh --residual --level identity|all   no identity left on this Mac (e.g. after an older --all)\n  ./uninstall.sh --cloud-prompt --level identity|all   only the cloud step again\n  --lang en|zh-CN                          language of the output and the printed cloud prompt; default: the\n                                           language recorded at install, then AGENT_MESH_LANG, then en\nLevels identity and all run only in your own terminal and ask you to type a confirmation.
+uninstall.help	Remove agent-mesh from this Mac and, guided, from the Bot's cloud computer. Without options it only shows\nwhat is installed; nothing is removed until you choose a level and confirm it.\n  ./uninstall.sh --plan [--level L]        what is installed and what a level would do; removes nothing\n  ./uninstall.sh --level program [--yes]   the relay program of every Bot only; team, settings, key and cloud stay\n  ./uninstall.sh --level bot --relay-name NAME   one Bot only, when another Bot stays; also its cloud data\n  ./uninstall.sh --level identity          also leave the team on both computers, remove keys and identity\n  ./uninstall.sh --level all               also remove logs, the engine and the cloud's data (--all for short)\n  ./uninstall.sh --residual --level identity|all   no identity left on this Mac (e.g. after an older --all)\n  ./uninstall.sh --cloud-prompt --level identity|all   only the cloud step again\n  --lang en|zh-CN                          language of the output and the printed cloud prompt; default: the\n                                           language recorded at install, then AGENT_MESH_LANG, then en\nLevels bot, identity and all run only in your own terminal and ask you to type a confirmation.
 uninstall.bad_option	uninstall: %s (see ./uninstall.sh --help)
+uninstall.bots_unsafe	%s; the added Bots cannot be read safely, so no level runs; fix it by hand
+uninstall.field_bots	Bots
+uninstall.bots_count	%s; %s; cloud machine "%s"
+uninstall.kind_legacy	first Bot
+uninstall.kind_added	added Bot, stage %s, cloud %s
+uninstall.bot_orphan	login service only, its settings are gone
+uninstall.bot_removing	being uninstalled, step %s
+uninstall.record_missing	not in deployed.json
+uninstall.bot_line	%s: %s; %s; webhook %s; queue %s
+uninstall.plan_service_multi	relay login services and plists of every Bot
+uninstall.plan_settings_multi	relay settings of every Bot and the signing key (~/.config/agent-relay, ~/.config/agent-relay-bots)
+uninstall.plan_state_multi	relay state of every Bot: queue, replay protection, kept copies
+uninstall.plan_routine_multi	Grok routine of every Bot (webhook URL and key)
+uninstall.plan_mesh_lock	management lock file (~/.local/lib/agent-mesh.lock), last
+uninstall.plan_bot_service	this Bot's relay login service and plist
+uninstall.plan_bot_routine	this Bot's Grok routine (webhook URL and key)
+uninstall.plan_bot_cloud	cloud: this Bot's inbox, threads and name
+uninstall.plan_bot_settings_legacy	this Bot's settings (~/.config/agent-relay/env)
+uninstall.plan_bot_settings_added	this Bot's settings (~/.config/agent-relay-bots/<name>)
+uninstall.plan_bot_state	this Bot's relay state (queue, replay protection, copies)
+uninstall.plan_bot_logs	this Bot's relay logs
+uninstall.plan_bot_record	this Bot's entry in deployed.json
+uninstall.plan_bot_shared	team, engine, identity, key, relay program, other Bots
+uninstall.action_bot_removes_bot	another Bot (see below) removes them
+uninstall.action_bot_record	remove; the name cannot be added again
+uninstall.plan_bots	Bots on this Mac: %s
+uninstall.level_bot_named	bot: remove the Bot %s; the other Bots, the team and the key stay
+uninstall.plan_executor	The cloud step is sent to the Grok Bot of %s.
+uninstall.plan_resume	An earlier run stopped after step %s; this run goes on from there.
+uninstall.bot_record_bad	%s; a single Bot is removed only with a readable deployment record
+uninstall.bot_unknown	%s is not a Bot on this Mac (Bots: %s)
+uninstall.bot_other_removing	the Bot %s is being uninstalled; finish it first with %s
+uninstall.bot_last	%s is the only Bot left on this Mac; use --level identity or --level all to remove the whole deployment
+uninstall.bot_no_executor	no other Bot has a confirmed cloud registration to run the cloud step for %s; finish one first (./install.sh --relay-name NAME --wake-bot)
+uninstall.bot_queue_unreadable	the queue of this Bot cannot be read (%s); nothing is removed
+uninstall.bot_queue_busy	%s still has mail to pass on (spool %s, pending %s); wait until it is delivered, then run this again
+uninstall.confirm_bots	Level %s removes every Bot on this Mac:
+uninstall.label_service_of	relay login service of %s
+uninstall.cloud_send_bot	[GROK-UI] User: send this to the Grok Bot of %s (not to %s) as one message. It runs it on [BOT-CLOUD] and answers with a check result and a PROOF line:
+uninstall.ask_done_bot	[LOCAL] Type done if the Bot reported DONE, or skip if it could not finish: 
+uninstall.label_bots_settings	settings of the added Bots (~/.config/agent-relay-bots)
+uninstall.label_bots_state	state of the added Bots
+uninstall.label_mesh_lock	management lock file
+uninstall.bot_record_failed	the deployment record could not be updated: %s
+uninstall.bot_restarted	Its relay was started again and the uninstall was cancelled.
+uninstall.bot_not_finished	the Bot is still marked as being uninstalled; run %s again to go on
+uninstall.routine_delete_bot	[GROK-UI] User: in Grok, delete (or pause) the routine of %s and make sure no run of it is in progress.
+uninstall.ask_deleted_bot	Type deleted or paused when that is done, or later: 
+uninstall.routine_paused	paused, as you said; delete it when you no longer need it
+uninstall.label_cloud_bot	this Bot's cloud data
+uninstall.label_bot_settings	this Bot's relay settings
+uninstall.label_bot_record	this Bot's entry in deployed.json
+uninstall.label_convention	reply convention templates
+uninstall.bot_sessions_kept	The engine keeps the old sessions of %s: mail sent to that address waits unread. Tell the agents that use it to write to another Bot.
+uninstall.bot_refresh_convention	Refresh the reply convention block in your repositories: python3 scripts/reply_convention.py refresh <repository>/AGENTS.md
+uninstall.bot_incomplete_summary	The Bot %s is not removed yet. Run %s again to finish.
+uninstall.bot_complete	level bot complete: %s is removed
+uninstall.choose_bot_hint	  To remove one Bot only: ./uninstall.sh --level bot --relay-name NAME
+uninstall.error_bot_name	--level bot needs --relay-name NAME
+uninstall.error_relay_name	--relay-name works only with --level bot
+uninstall.plan_bot_hint	To remove one Bot only: ./uninstall.sh --plan --level bot --relay-name NAME shows what it does.
+uninstall.bot_engine_unfinished	an engine upgrade did not finish (%s); run ./update.sh first, then remove the Bot
+uninstall.bot_rollback_unfinished	an earlier relay switch did not finish (%s exists); run ./install.sh --restart-relay or ./update.sh first, then remove the Bot
+uninstall.bot_update_unfinished	an update did not finish; run ./update.sh first, then remove the Bot

@@ -2,7 +2,7 @@
 
 [English](cloud-uninstall.md) | **简体中文**
 
-`[LOCAL]` 用户本地电脑（Mac）：`./uninstall.sh --level identity` 和 `--level all` 会打印这段提示词，填好团队名、Mac 机器名、Bot 地址名、级别、模式和一次性 challenge，并附上 [`box/rn-cloud-uninstall.sh`](../box/rn-cloud-uninstall.sh) 里的云端脚本。用户在 `[GROK-UI]` Grok Bot 界面把它发给 Bot。Bot 展示检查结果和一个 `PROOF` 值；用户把这个值输入 `[LOCAL]` 上的卸载器，只有它确实由这一套部署的签名密钥算出，卸载器才会显示确认码。卸载器等待时输入 `prompt` 可以再打印一次。下面是未填充的模板，占位符名称在所有翻译中保持一致。
+`[LOCAL]` 用户本地电脑（Mac）：`./uninstall.sh --level identity`、`--level all` 和 `--level bot --relay-name <名字>` 会打印这段提示词，填好团队名、Mac 机器名、Bot 地址名、级别、模式和一次性 challenge，并附上 [`box/rn-cloud-uninstall.sh`](../box/rn-cloud-uninstall.sh) 里的云端脚本。`bot` 级别时，Bot 地址名是要卸载的那一个 Bot，模式总是 `normal`，卸载器会指定这台 Mac 上留下的另一个 Bot 来执行提示词。第 1 步取信的那个 Bot 是添加的 Bot 时（`bot` 级别是执行提示词的 Bot；`identity` 或 `all` 级别是第一个 Bot 已卸载后提示词里写的 Bot），它的 `rn-cloud.sh` 命令前加上 `RN_BOT=<名字>`，与这个 Bot 的 [routine 提示词](routine.zh-CN.md)相同；其他情况提示词不变。用户在 `[GROK-UI]` Grok Bot 界面把它发给 Bot。Bot 展示检查结果和一个 `PROOF` 值；用户把这个值输入 `[LOCAL]` 上的卸载器，只有它确实由这一套部署的签名密钥算出，卸载器才会显示确认码。卸载器等待时输入 `prompt` 可以再打印一次。下面是未填充的模板，占位符名称在所有翻译中保持一致。
 
 ```
 你是 Grok Bot。执行位置标识：[LOCAL] = 用户本地电脑（Mac）；[BOT-CLOUD] = 你的 Bot 云电脑（机器名 cloud）；[GROK-UI] = 用户打开的 Grok Bot 界面。标识不是命令的一部分。

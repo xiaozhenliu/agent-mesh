@@ -7,6 +7,8 @@
 # Records the team name in box/person and the Bot address name in
 # box/relay. Running it again with the same invite and names is safe; the Bot address name cannot be changed.
 # Nothing stays running: the daemon starts on demand while Grok Bot is awake.
+# Both modes hold the cloud maintenance lock (/workspace/agent-mesh/.maint.lock) exclusively, waiting up to
+# RN_MAINT_WAIT seconds (default 600) for running cloud commands to finish; the engine daemon never inherits it.
 #   rn-cloud-setup.sh --upgrade-engine   # after an update: install the pinned engine version on a joined cloud.
 #                                        # Backs up the binary and box/state, replaces the binary, restarts the
 #                                        # daemon and checks it runs the new version; on failure only the old binary
@@ -79,6 +81,11 @@ valid_relay_name "$RELAY_NAME" \
 [ "$MACHINE_NAME" = cloud ] || die "this deployment requires machine name cloud to match the Mac relay"
 [ "$(cd "$(dirname "$0")" && pwd)" = "$BASE" ] \
   || die "clone the public distribution at /workspace/agent-mesh first; cloud prompts require that persistent path"
+if [ -z "${RN_MAINT_FD:-}" ]; then
+  exec python3 -I "$BASE/rn-engine.py" hold --exclusive --wait "${RN_MAINT_WAIT:-600}" "$(dirname "$BASE")/.maint.lock" -- "$BASH" "$0" "$@"
+fi
+engine held --exclusive "$(dirname "$BASE")/.maint.lock" \
+  || die "this needs the exclusive cloud maintenance lock, which the calling command does not hold (see the line above); nothing was changed"
 
 joined_team() {
   python3 -I - "$BASE/state/network.db" <<'PY'
@@ -125,7 +132,7 @@ upgrade_engine() {
       newer|unknown) die "this cloud has Reason Network ${have:-of an unknown version}; this release supports ${VERSION#v} and never downgrades or replaces it (nothing was changed)" ;;
       same)
         if [ -z "$old_bin" ]; then
-          [ -n "$(engine pid --home "$BASE/state")" ] || "$RN" team >/dev/null 2>&1 || true
+          [ -n "$(engine pid --home "$BASE/state")" ] || "$RN" team >/dev/null 2>&1 9>&- || true
           case "$(engine info --home "$BASE/state" --bin "$RN")" in
             *state=stale)
               echo "engine: Reason Network $have is installed, but the running daemon started before the binary was replaced; restarting it"
@@ -225,7 +232,7 @@ else
   mv -f "$BASE/bin/engine/.reason-network.new.$$" "$RN"
 fi
 engine launcher --path "$LAUNCHER" >/dev/null || die "could not write the launcher to $LAUNCHER"
-"$RN" stop >/dev/null 2>&1 || true   # a daemon started without REASON_NETWORK_MACHINE would use the hostname
+"$RN" stop >/dev/null 2>&1 9>&- || true   # a daemon started without REASON_NETWORK_MACHINE would use the hostname
 
 decision="$(python3 -I - "$LINK" "$BASE/state/network.db" <<'PY'
 import base64, binascii, json, sqlite3, sys
@@ -276,7 +283,7 @@ PY
 )" || decision=unknown
 skip_join=""
 if [ "$decision" = same ]; then
-  team_out="$("$RN" team 2>&1)" || team_out=""
+  team_out="$("$RN" team 2>&1 9>&-)" || team_out=""
   team_out="$(printf '%s\n' "$team_out" | sed -E 's/^([[:space:]]+[^[:space:]]+) \(verified\)([[:space:]])/\1\2/')"
   me="$(awk '/this machine$/ { print $1 "/" $2; exit }' <<<"$team_out")"
   if [ "$me" = "$PERSON/$MACHINE_NAME" ]; then
@@ -289,7 +296,7 @@ if [ "$decision" = same ]; then
   fi
 fi
 if [ -z "$skip_join" ]; then
-  if ! out="$("$RN" join "$LINK" --as "$PERSON" --no-setup 2>&1)"; then
+  if ! out="$("$RN" join "$LINK" --as "$PERSON" --no-setup 2>&1 9>&-)"; then
     case "$decision" in
       different) die "this cloud is already in a different team (its team id does not match the invite); see README: Troubleshooting. The engine said: $out" ;;
       unknown) die "this cloud is already in a team and the setup could not confirm it is the team in the invite; run again with the full invite link (the one containing tincan1...) or see README: Troubleshooting. The engine said: $out" ;;
@@ -315,7 +322,7 @@ put_file relay "$RELAY_NAME"
 put_file person "$PERSON"
 engine config-off --path "$BASE/state/config.toml" auto_update lan tray \
   || die "could not write $BASE/state/config.toml"
-"$RN" stop >/dev/null 2>&1 || true
-"$RN" doctor
+"$RN" stop >/dev/null 2>&1 9>&- || true
+"$RN" doctor 9>&-
 echo "Bot address: $PERSON/$RELAY_NAME (this cloud uses $RELAY_NAME-cloud and $RELAY_NAME-inbox)"
 echo "Now copy the Mac's ~/.config/agent-relay/outbound.key to $BASE/outbound.key (CopyToBox) and chmod 600 it."

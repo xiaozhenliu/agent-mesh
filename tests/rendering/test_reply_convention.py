@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import signal
 import tempfile
@@ -97,3 +98,59 @@ class OverwriteInPlace(unittest.TestCase):
                 reply_convention.main(["refresh", str(self.path.parent)])
         self.assertIn("不是普通文件；没有做任何改动", str(caught.exception))
         self.assertEqual(self.path.read_bytes(), self.old)
+
+
+class SeveralBots(unittest.TestCase):
+    TEXT = ("# Rules\nbefore\n<!-- agent-mesh:bot-address lang={lang} -->\n- old line\n"
+            "<!-- /agent-mesh:bot-address -->\nafter\n")
+
+    def block(self, text):
+        start = text.index("-->\n") + 4
+        return text[start:text.index("<!-- /agent-mesh:bot-address -->")]
+
+    def check(self, lang, entries, want):
+        text = reply_convention.fill(self.TEXT.format(lang=lang), "demo", entries)
+        self.assertTrue(text.startswith(f"# Rules\nbefore\n<!-- agent-mesh:bot-address lang={lang} -->\n"))
+        self.assertTrue(text.endswith("<!-- /agent-mesh:bot-address -->\nafter\n"))
+        self.assertEqual(self.block(text), want)
+        again = reply_convention.fill(text, "demo", entries)
+        self.assertEqual(again, text)
+        return text
+
+    def test_the_block_follows_added_renamed_and_removed_bots(self):
+        one = self.check("en", [("alpha", None)], "- This team's Grok Bot address: `demo/alpha`.\n")
+        two = self.check("en", [("alpha", None), ("beta", "Beta")],
+                         "- This team's Grok Bot addresses:\n  - `demo/alpha`\n  - `demo/beta` (called “Beta” in Grok)\n")
+        renamed = reply_convention.fill(two, "demo", [("alpha", "A"), ("beta", "Beta Two")])
+        self.assertEqual(self.block(renamed), "- This team's Grok Bot addresses:\n  - `demo/alpha` (called “A” in Grok)\n"
+                                              "  - `demo/beta` (called “Beta Two” in Grok)\n")
+        self.assertEqual(reply_convention.fill(two, "demo", [("alpha", None)]), one)
+        first_gone = reply_convention.fill(two, "demo", [("beta", "Beta")])
+        self.assertEqual(self.block(first_gone), "- This team's Grok Bot address: `demo/beta` (called “Beta” in Grok).\n")
+        self.check("zh-CN", [("alpha", None), ("beta", "小助手")],
+                   "- 本团队 Grok Bot 的地址：\n  - `demo/alpha`\n  - `demo/beta`（在 Grok 里叫「小助手」）\n")
+        self.check("zh-CN", [("beta", "小助手")], "- 本团队 Grok Bot 的地址：`demo/beta`（在 Grok 里叫「小助手」）。\n")
+
+    def test_the_addresses_are_the_bots_that_can_receive_mail(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        home = Path(temp.name)
+        env = home / ".config/agent-relay/env"
+        env.parent.mkdir(parents=True)
+        env.write_text("RN_BIN=/x\nPERSON=demo\nLISTEN_NAME=alpha\nCLOUD_NAME=alpha-cloud\nINBOX_NAME=alpha-inbox\n")
+        record = home / ".local/lib/agent-mesh/deployed.json"
+        record.parent.mkdir(parents=True)
+        bots = {"beta": {"grok_name": "Beta", "stage": "relay", "cloud": {"state": "confirmed"}, "added_ms": 1},
+                "gamma": {"stage": "configured", "cloud": {"state": "pending"}, "added_ms": 2},
+                "delta": {"stage": "relay", "cloud": {"state": "confirmed"}, "added_ms": 3}}
+        data = {"schema": 1, "relay_name": "alpha", "bots": bots}
+        record.write_text(json.dumps(data))
+        self.assertEqual(reply_convention.addresses(home), [("alpha", None), ("beta", "Beta"), ("delta", None)])
+        data["removing"] = {"name": "delta", "kind": "added", "step": "stopped"}
+        record.write_text(json.dumps(data))
+        self.assertEqual(reply_convention.addresses(home), [("alpha", None), ("beta", "Beta")])
+        env.unlink()
+        data.update(legacy_removed=True)
+        data.pop("relay_name")
+        record.write_text(json.dumps(data))
+        self.assertEqual(reply_convention.addresses(home), [("beta", "Beta")])

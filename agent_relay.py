@@ -121,6 +121,10 @@ def webhook_open(req, timeout):
     return WEBHOOK_OPENER.open(req, timeout=timeout)
 
 
+def webhook_headers(key):
+    return {"Content-Type": "application/json", "Authorization": f"Bearer {key}", "X-Automation-Key": key}
+
+
 def sha256_hex(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -1074,11 +1078,8 @@ class Relay:
             batch = self.next_batch()
         body = json.dumps(self.payload(batch), ensure_ascii=False)
         data = body.encode()
-        req = urllib.request.Request(self.c["WEBHOOK_URL"], data=data, method="POST", headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.c['WEBHOOK_KEY']}",
-            "X-Automation-Key": self.c["WEBHOOK_KEY"],
-        })
+        req = urllib.request.Request(self.c["WEBHOOK_URL"], data=data, method="POST",
+                                     headers=webhook_headers(self.c["WEBHOOK_KEY"]))
         self.s.wakes.append(time.time())
         try:
             with webhook_open(req, timeout=15) as resp:

@@ -6,11 +6,13 @@ import sys
 import time
 import unittest
 
+import messages
 from render_prompt import ROOT
 from tests.cli.install_support import (
     InstallHarness,
     rn_engine,
 )
+from tests.cli.test_install_add import LEGACY_LABEL, TEAM_HASH, AddSupport, m
 
 
 class Update(InstallHarness, unittest.TestCase):
@@ -311,7 +313,8 @@ class Update(InstallHarness, unittest.TestCase):
         c, a = f"{r} sum {cloud}  box/rn-cloud.sh\n", f"{r} commit {'a' * 40}\n"
         f = f"{r} sum {fetch}  box/rn-fetch.py\n"
         rest = (f"{r} sum {self.sha(repo / 'box/rn-cloud-setup.sh')}  box/rn-cloud-setup.sh\n"
-                f"{r} sum {self.sha(repo / 'box/rn-engine.py')}  box/rn-engine.py\n{r} DONE {tag}\n")
+                f"{r} sum {self.sha(repo / 'box/rn-engine.py')}  box/rn-engine.py\n"
+                f"{r} sum {self.sha(repo / 'box/rn-cloud-add-bot.sh')}  box/rn-cloud-add-bot.sh\n{r} DONE {tag}\n")
         good = [
             a + c + f + rest,
             f"Previously HEAD was {'b' * 40}.\n{r} commit {'A' * 40}\n{r} sum {cloud.upper()} *box/rn-cloud.sh\n"
@@ -704,7 +707,8 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertEqual(self.sent(), [])
 
     def test_update_asks_grok_bot_when_only_the_update_or_setup_script_changed(self):
-        for name, label in (("box/rn-cloud-update.sh", "cloud scripts"), ("box/rn-cloud-setup.sh", "cloud setup")):
+        for name, label in (("box/rn-cloud-update.sh", "cloud scripts"), ("box/rn-cloud-add-bot.sh", "cloud scripts"),
+                            ("box/rn-cloud-setup.sh", "cloud setup")):
             with self.subTest(name):
                 self.setUp()
                 repo = self.installed()
@@ -834,3 +838,191 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertIn("does not hold exactly one bridge block", result.stdout)
         self.assertEqual(plugin.read_bytes(), b"previous plugin")
         self.assertEqual(list(plugin.parent.glob(".reason-network-bridge.mjs.*")), [])
+
+
+class MultiBotUpdate(AddSupport, unittest.TestCase):
+    """update.sh with two Bots: one cloud request, per-Bot prompts, guided steps for all of them."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo_dir = self.two_ready()
+        self.added(self.repo_dir)
+        (self.who / "sent").unlink(missing_ok=True)
+        self.labels = [LEGACY_LABEL, f"{LEGACY_LABEL}.beta"]
+
+    def launchctl(self, *args):
+        subprocess.run([str(self.bin / "launchctl"), *args], env=self.env, check=True)
+
+    def update(self, *args, timeout=60):
+        return self.run_script("update.sh", "--no-pull", *args, root=self.repo_dir, timeout=timeout)
+
+    def prompt_hash(self, lang, name=None):
+        args = ["digest", "prompt", "--lang", lang] + (["--relay-name", name] if name else [])
+        return self.state_cmd(*args, root=self.repo_dir).stdout.strip()
+
+    def test_the_cloud_request_goes_to_the_first_bot_and_its_reply_is_read_from_there(self):
+        self.cloud_changed(self.repo_dir)
+        self.bot_replies(self.repo_dir, sender="demo/alpha")
+        plan = self.update("--plan")
+        self.assertIn(m("update.plan_bot", "alpha", "unchanged", "unchanged"), plan.stdout)
+        self.assertIn(m("update.plan_bot", "beta", "unchanged", "unchanged"), plan.stdout)
+        result = self.update("--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [message] = self.sent()
+        self.assertEqual(message["to"], "demo/alpha")
+        self.assertEqual(self.record()["cloud"]["hash"], self.digest(self.repo_dir, "cloud"))
+        self.assertNotIn("request", self.record())
+        self.assertEqual(self.service_changes(), [])
+
+    def test_the_cloud_request_goes_to_the_next_bot_when_the_first_relay_is_stopped(self):
+        self.cloud_changed(self.repo_dir)
+        self.launchctl("bootout", f"gui/501/{LEGACY_LABEL}")
+        self.bot_silent()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        result = self.update("--yes")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        [message] = self.sent()
+        self.assertEqual(message["to"], "demo/beta")
+        self.assertIn(m("update.timeout"), result.stdout)
+        request = self.record()["request"]
+        self.assertEqual(request["address"], "demo/beta")
+        self.put_reply(request["req"], self.good_reply(self.repo_dir), sender="demo/beta")
+        result = self.update("--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.cloud_earlier_reply"), result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.record()["cloud"]["hash"], self.digest(self.repo_dir, "cloud"))
+
+    def test_without_a_bot_that_can_take_the_request_nothing_is_sent(self):
+        self.cloud_changed(self.repo_dir)
+        for label in self.labels:
+            self.launchctl("bootout", f"gui/501/{label}")
+        result = self.update("--yes")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.no_target"), result.stderr)
+        self.assertEqual(self.sent(), [])
+        self.assertNotIn("request", self.record())
+        self.launchctl("bootstrap", "gui/501", str(self.legacy_plist()))
+        (self.home / "Library/Application Support/agent-relay/registered").unlink()
+        result = self.update("--yes")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.no_target"), result.stderr)
+        self.assertEqual(self.sent(), [])
+
+    def test_an_old_request_without_an_address_is_answered_on_the_first_bot(self):
+        self.cloud_changed(self.repo_dir)
+        self.bot_silent()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        self.assertEqual(self.update("--yes").returncode, 1)
+        data = self.record()
+        self.assertEqual(data["request"].pop("address"), "demo/alpha")
+        req = data["request"]["req"]
+        self.write_record(data)
+        self.put_reply(req, self.good_reply(self.repo_dir), sender="demo/alpha")
+        result = self.update("--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.cloud_earlier_reply"), result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+
+    def test_a_reply_to_an_old_request_does_not_confirm_a_moved_checkout(self):
+        self.cloud_changed(self.repo_dir)
+        self.bot_silent()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        self.assertEqual(self.update("--yes").returncode, 1)
+        old = self.record()["request"]["req"]
+        self.put_reply(old, self.good_reply(self.repo_dir), sender="demo/alpha")
+        self.cloud_changed(self.repo_dir)
+        result = self.update("--yes")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(len(self.sent()), 2)
+        self.assertNotEqual(self.record()["request"]["req"], old)
+        self.assertNotEqual(self.record()["cloud"]["hash"], self.digest(self.repo_dir, "cloud"))
+
+    def test_each_bot_confirms_its_own_prompt_and_a_rerun_shows_only_the_unconfirmed_one(self):
+        before = (self.prompt_hash("en"), self.prompt_hash("en", "beta"))
+        result = self.run_tty(self.repo_dir, "--no-pull", "--lang", "zh-CN", answers=["y", "y", "n"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        zh = lambda key, *a: messages.t(key, *a, lang="zh-CN")
+        self.assertIn(zh("update.prompt_replace_bot", "alpha", "zh-CN"), result.stdout)
+        self.assertIn(zh("update.prompt_replace_bot", "beta", "zh-CN"), result.stdout)
+        self.assertIn(zh("update.bot_prompt_not_recorded", "beta"), result.stderr)
+        data = self.record()
+        self.assertEqual(data["prompt"], {"hash": self.prompt_hash("zh-CN"), "state": "confirmed"})
+        self.assertEqual(data["bots"]["beta"]["prompt"]["hash"], before[1])
+        self.assertNotEqual(before[0], self.prompt_hash("zh-CN"))
+        result = self.run_tty(self.repo_dir, "--no-pull", "--lang", "zh-CN", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(zh("update.prompt_replace_bot", "alpha", "zh-CN"), result.stdout)
+        self.assertIn(zh("update.prompt_replace_bot", "beta", "zh-CN"), result.stdout)
+        self.assertEqual(self.record()["bots"]["beta"]["prompt"],
+                         {"hash": self.prompt_hash("zh-CN", "beta"), "state": "confirmed"})
+        self.assertEqual(self.service_changes(), [])
+        again = self.update("--lang", "zh-CN")
+        self.assertIn(zh("update.up_to_date"), again.stdout)
+
+    def test_a_pending_prompt_is_asked_about_for_each_bot(self):
+        data = self.record()
+        data["bots"]["beta"]["prompt"]["state"] = "pending"
+        self.write_record(data)
+        result = self.run_tty(self.repo_dir, "--no-pull", answers=["n", "y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.ask_bot_prompt_saved", "beta", "en"), result.stderr)
+        self.assertNotIn(m("update.ask_bot_prompt_saved", "alpha", "en"), result.stderr)
+        self.assertIn(m("update.prompt_replace_bot", "beta", "en"), result.stdout)
+        self.assertEqual(self.record()["bots"]["beta"]["prompt"]["state"], "confirmed")
+
+    def test_a_pending_add_is_confirmed_from_its_reply_without_asking(self):
+        repo = self.repo_dir
+        self.registers_on_wake("gamma")
+        self.bot_silent()
+        result = self.add(repo, grok="Gamma", address="gamma")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.bot("gamma")["cloud"]["state"], "pending")
+        plan = self.update("--plan")
+        self.assertIn(m("update.plan_bot_waiting", "gamma", "gamma"), plan.stdout)
+        self.assertEqual(self.bot("gamma")["cloud"]["state"], "pending")
+        result = self.update()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.plan_bot_waiting", "gamma", "gamma"), result.stdout)
+        self.assertEqual(self.bot("gamma")["cloud"]["state"], "pending")
+        req = self.bot("gamma")["cloud"]["req"]
+        self.put_reply(req, f"agent-mesh-result add-bot {{req}} ok gamma {TEAM_HASH}\n", sender="demo/gamma")
+        result = self.update()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("state.add_confirmed", "demo/gamma"), result.stdout)
+        self.assertNotIn(m("update.plan_bot_waiting", "gamma", "gamma"), result.stdout)
+        self.assertEqual(self.bot("gamma")["cloud"]["state"], "confirmed")
+        self.assertEqual(self.bot("gamma")["prompt"]["state"], "confirmed")
+
+    def test_a_bot_being_removed_stops_the_update(self):
+        data = self.record()
+        data["removing"] = {"name": "beta", "kind": "added", "step": "stopped"}
+        self.write_record(data)
+        result = self.update("--plan")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.bot_removing", "beta", "beta"), result.stderr)
+        self.assertEqual(self.service_changes(), [])
+
+    def test_the_guided_flow_stops_all_relays_and_pauses_and_resumes_every_routine(self):
+        result = self.run_tty(self.repo_dir, "--no-pull", "--manual", "--lang", "zh-CN", answers=["y", "y", "y", "y", "n"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        zh = lambda key, *a: messages.t(key, *a, lang="zh-CN")
+        self.assertIn(zh("update.g_stop_relays", "alpha, beta"), result.stdout)
+        self.assertIn(zh("update.g_pause_all", "alpha, beta"), result.stderr)
+        self.assertIn(zh("update.exit_paused_bots", "alpha, beta"), result.stdout)
+        self.assertIn(zh("update.bot_running_again", "alpha"), result.stdout)
+        self.assertIn(zh("update.bot_running_again", "beta"), result.stdout)
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        txn = self.record()["txn"]
+        self.assertEqual(txn["stage"], "prompt_done")
+        self.assertEqual([(p["name"], p["label"], p["was_loaded"]) for p in txn["participants"]],
+                         [("alpha", self.labels[0], True), ("beta", self.labels[1], True)])
+        self.assertEqual(self.record()["bots"]["beta"]["prompt"]["state"], "confirmed")
+        before = len(self.multi_started())
+        result = self.run_tty(self.repo_dir, "--no-pull", "--lang", "zh-CN", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(zh("update.g_resume_all", "alpha, beta"), result.stderr)
+        self.assertNotIn(zh("update.prompt_replace_bot", "alpha", "zh-CN"), result.stdout)
+        self.assertEqual([label for label, _ in self.multi_started()[before:]], self.labels)
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        self.assertNotIn("txn", self.record())

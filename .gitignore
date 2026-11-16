@@ -21,6 +21,10 @@ box/person
 box/.person.*
 box/relay
 box/relay.damaged-*
+box/relay.removed
+box/bots-removed/
+/.maint.lock
+/bots/
 box/engine-backup-*/
 box/.relay.*
 *.db

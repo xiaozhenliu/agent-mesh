@@ -35,3 +35,17 @@ request.no_person	%s 里没有 PERSON 行；请重新运行 ./install.sh --webho
 request.no_db	%s 不存在；这台 Mac 装了 Reason Network 吗？
 request.db_error	无法读取 %s：%s
 request.checkout_moved	发出更新请求之后这个 checkout 又变了；会重新发送请求
+state.no_first_bot	%s 不存在，本机没有第一个 Bot（只有添加的 Bot）；请用 --relay-name 指定 Bot
+state.bot_no_team	Bot %s 的 routine 提示词需要 %s 里的团队名（PERSON），但无法读取或没有这一项
+state.bot_no_team_hash	Bot %s 的 routine 提示词需要团队哈希，但 %s 没有记录（bots.%s.team_hash）
+state.bot_unrecorded	Bot %s 没有记录在 %s 中
+state.not_added_bot	%s 不是这台 Mac 上添加的 Bot
+state.add_reply_mismatch	%s 的回信没有确认云端登记：
+state.add_confirmed	%s 的云端登记已确认。
+state.wake_env	无法读取 Bot %s 的配置：%s
+state.wake_failed	发给 %s 的唤醒通知失败（%s）；不显示 webhook URL 和密钥
+state.woke	已向 %s 发送唤醒通知。
+state.bad_participants	update：参与本次更新的 relay 清单缺失或格式不对
+state.removing_other	Bot %s 正在卸载；先完成它，再处理 %s
+state.not_a_bot	%s 不是这台 Mac 上的 Bot
+state.not_removing	%s 不在卸载中

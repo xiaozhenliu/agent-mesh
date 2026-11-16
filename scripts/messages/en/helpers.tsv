@@ -40,3 +40,6 @@ reply.not_utf8	%s is not UTF-8 text; nothing was changed
 reply.refresh_failed	%s: %s; nothing was changed. If it holds an older copy of the reply convention, replace that section with %s (or the zh-CN file)
 reply.up_to_date	%s already shows this Bot's address
 reply.updated	updated the Bot address in %s
+names.add_is_bot	%s is already a Bot on this Mac or was used by one; choose another name
+names.add_removed	%s belonged to a Bot that was uninstalled, and names are not reused; choose another name
+names.add_key_taken	this Mac's engine already has the session key %s (session %s); choose another name

@@ -72,8 +72,18 @@ if [ -x "$RN" ]; then
     *) bad "$(tq check.engine_other "${have:-$(tq check.unknown_version)}" "${pinned#v}")" "$(tq check.engine_other_fix "${pinned#v}")" ;;
   esac
   if [ -f "$LIB/engine-upgrade.json" ]; then
+    phase="$(python3 "$ENGINE" txn-get --txn "$LIB/engine-upgrade.json" phase 2>&1)"
     backup="$(python3 "$ENGINE" txn-get --txn "$LIB/engine-upgrade.json" backup 2>&1)"
-    bad "$(tq check.upgrade_unfinished)" "$(tq check.upgrade_unfinished_fix "${backup:-$(tq check.unknown)}")"
+    case "$phase" in
+      committed) ok "$(tq check.upgrade_committed)" ;;
+      prepared|stopped)
+        if [ -z "$backup" ]; then
+          bad "$(tq check.upgrade_not_switched)" "$(tq check.upgrade_not_switched_fix)"
+        else
+          bad "$(tq check.upgrade_unfinished)" "$(tq check.upgrade_unfinished_fix "$backup")"
+        fi ;;
+      *) bad "$(tq check.upgrade_unfinished)" "$(tq check.upgrade_unfinished_fix "${backup:-$(tq check.unknown)}")" ;;
+    esac
   fi
   if team="$("$RN" team 2>/dev/null)"; then
     team="$(printf '%s\n' "$team" | sed -E 's/^([[:space:]]+[^[:space:]]+) \(verified\)([[:space:]])/\1\2/')"
@@ -107,47 +117,25 @@ fi
 # relay
 env="$HOME/.config/agent-relay/env"; key="$HOME/.config/agent-relay/outbound.key"
 names="$HERE/scripts/relay_names.py"; state="$HERE/scripts/deploy_state.py"
+lockfile="$HOME/.local/lib/agent-mesh.lock"
 NAME=""
-if [ -f "$env" ] && ! name="$(python3 "$names" env "$env" 2>&1)"; then
-  bad "$(tq check.env_names)" "$(tq check.env_names_fix "$name")"
+MULTI=0
+roster_rc=0
+ROSTER="$(python3 "$HERE/scripts/bots.py" list --paths 2>&1)" || roster_rc=$?
+if [ "$roster_rc" = 0 ]; then
+  if printf '%s\n' "$ROSTER" | awk -F '\t' '$2 == "added" { found = 1 } END { exit !found }'; then MULTI=1; fi
+elif ! { [ -f "$env" ] && ! python3 "$names" env "$env" >/dev/null 2>&1; }; then
+  bad "$(tq check.roster_unreadable)" "$(tq check.roster_unreadable_fix "$(printf '%s\n' "$ROSTER" | head -n 1)")"
+  ROSTER=""
 else
-  rc=0
-  if [ -f "$env" ]; then NAME="$name"; else NAME="$(python3 "$state" recorded-name 2>&1)" || rc=$?; fi
-  if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
-    bad "$(tq check.bot_address)" "$NAME"; NAME=""
-  elif [ -z "$NAME" ] || [ "$rc" = 3 ]; then
-    NAME=""
-    skip "$(tq check.bot_address)" "$(tq check.no_address)"
-  elif label="$(python3 "$state" label --person "$PERSON" --relay-name "$NAME" 2>&1)"; then
-    case "$label" in
-      *" → Grok: "*) ok "$(tq check.bot_address_is "$label")" ;;
-      *) ok "$(tq check.bot_address_no_grok "$label")" ;;
-    esac
-  else
-    ok "$(tq check.bot_address_grok_unreadable "$PERSON/$NAME" "$label")"
-  fi
+  ROSTER=""
 fi
-if [ -f "$env" ]; then
-  [ "$(stat -f %Lp "$env" 2>/dev/null)" = "600" ] && ok "$(tq check.env_mode_ok)" || bad "$(tq check.env_mode_bad)" "chmod 600 $env"
-  grep -Eq '^WEBHOOK_URL=https://' "$env" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$env" && ok "$(tq check.webhook_ok)" || bad "$(tq check.webhook_bad)" "$(tq check.run_webhook)"
-else
-  bad "$(tq check.relay_unconfigured)" "$(tq check.run_webhook)"
-fi
-[ -s "$key" ] && ok "$(tq check.key_ok)" || bad "$(tq check.key_bad)" "$(tq check.run_install)"
-installed="$LIB/agent_relay.py"
-if [ ! -f "$installed" ]; then
-  bad "$(tq check.relay_missing)" "$(tq check.run_webhook)"
-elif cmp -s "$installed" "$HERE/agent_relay.py"; then
-  ok "$(tq check.relay_current)"
-elif ! grep -qF '/terminal(-[0-9]+|@' "$installed"; then
-  bad "$(tq check.relay_old)" "$(tq check.relay_old_fix)"
-else
-  skip "$(tq check.relay_version)" "$(tq check.relay_differs)"
-fi
-launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && ok "$(tq check.service_ok)" || bad "$(tq check.service_bad)" "$(tq check.run_webhook)"
-log="$HOME/Library/Logs/agent-relay.log"
-if [ -f "$log" ]; then
+
+log_checks() {
+  local log="$1"
+  [ -f "$log" ] || return 0
   grep -q "agent-relay up" "$log" && ok "$(tq check.log_up)" || bad "$(tq check.log_never_up)" "tail $log"
+  local codes code before
   codes="$(grep -E ' POST [0-9]+ chars [0-9]+ bytes sha256=[0-9a-f]+ code=.* items=' "$log" | tail -n 2 \
     | sed -E 's/.* code=(.*) items=.*/\1/')"
   if [ -n "$codes" ]; then
@@ -165,32 +153,201 @@ if [ -f "$log" ]; then
   elif tail -n 50 "$log" | grep -q "webhook POST failed"; then
     bad "$(tq check.post_failures)" "$(tq check.post_fix)"
   fi
-fi
+}
 
-# sessions
-if [ -z "$NAME" ]; then
-  skip "$(tq check.registration)" "$(tq check.name_unknown)"
-elif [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then
-  registered="$(python3 "$names" registered "$NAME" 2>&1)"; rc=$?
-  relay_pid="$(launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1)"
+registration() {
+  local name="$1" label="$2" marker="$3" fix="$4" registered rc relay_pid reg
+  registered="$(python3 "$names" registered "$name" 2>&1)"; rc=$?
+  relay_pid="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1)"
   if [ -z "$relay_pid" ]; then
     reg="fail $(tq check.no_process)"
   else
     reg="$(python3 "$ENGINE" registered --home "$HOME/.reason/network" \
-      --marker "$HOME/Library/Application Support/agent-relay/registered" --name "$PERSON/$NAME" \
-      --relay-pid "$relay_pid" 2>&1)" || reg="fail $reg"
+      --marker "$marker" --name "$PERSON/$name" --relay-pid "$relay_pid" 2>&1)" || reg="fail $reg"
   fi
-  if [ "$rc" = 0 ] && [ -n "$registered" ] && [ "$registered" != "$NAME" ]; then
-    bad "$(tq check.registered_other "$PERSON/$registered")" "$(tq check.registered_other_fix "$NAME" "$PERSON/$NAME")"
+  if [ "$rc" = 0 ] && [ -n "$registered" ] && [ "$registered" != "$name" ]; then
+    bad "$(tq check.registered_other "$PERSON/$registered")" "$(tq check.registered_other_fix "$name" "$PERSON/$name")"
   else
     case "$reg" in
-      ok\ *) ok "$(tq check.listening "$PERSON/$NAME")" ;;
+      ok\ *) ok "$(tq check.listening "$PERSON/$name")" ;;
       wait\ *) skip "$(tq check.registration)" "${reg#wait }" ;;
-      *) bad "$(tq check.not_registered "${reg#fail }")" "$(tq check.not_registered_fix)" ;;
+      *) bad "$(tq check.not_registered "${reg#fail }")" "$fix" ;;
     esac
   fi
-  n=$(echo "$who" | grep -Ec 'claude-code|codex|pi |dsh')
-  [ "$n" -gt 0 ] && ok "$(tq check.sessions_ok "$n")" || skip "$(tq check.sessions)" "$(tq check.sessions_none)"
+}
+
+shared_checks() {
+  [ -s "$key" ] && ok "$(tq check.key_ok)" || bad "$(tq check.key_bad)" "$(tq check.run_install)"
+  local installed="$LIB/agent_relay.py" lock
+  if [ ! -f "$installed" ]; then
+    bad "$(tq check.relay_missing)" "$(tq check.run_webhook)"
+  elif cmp -s "$installed" "$HERE/agent_relay.py"; then
+    ok "$(tq check.relay_current)"
+  elif ! grep -qF '/terminal(-[0-9]+|@' "$installed"; then
+    bad "$(tq check.relay_old)" "$(tq check.relay_old_fix)"
+  else
+    skip "$(tq check.relay_version)" "$(tq check.relay_differs)"
+  fi
+  lock="$(python3 - "$lockfile" <<'PY' 2>&1
+import os, stat, sys
+try:
+    st = os.lstat(sys.argv[1])
+except FileNotFoundError:
+    print("absent")
+    raise SystemExit
+except OSError as error:
+    print(f"error {error.strerror or error}")
+    raise SystemExit
+if stat.S_ISLNK(st.st_mode):
+    print("link")
+elif not stat.S_ISREG(st.st_mode):
+    print("other")
+elif st.st_uid != os.getuid():
+    print("owner")
+elif st.st_mode & 0o022:
+    print("writable")
+else:
+    print("ok")
+PY
+)"
+  case "$lock" in
+    ok) ok "$(tq check.lock_ok)" ;;
+    absent) skip "$(tq check.lock)" "$(tq check.lock_absent)" ;;
+    writable) bad "$(tq check.lock_writable "$lockfile")" "chmod go-w $lockfile" ;;
+    link) bad "$(tq check.lock_link "$lockfile")" "$(tq check.lock_fix "$lockfile")" ;;
+    other) bad "$(tq check.lock_other "$lockfile")" "$(tq check.lock_fix "$lockfile")" ;;
+    owner) bad "$(tq check.lock_owner "$lockfile")" "$(tq check.lock_fix "$lockfile")" ;;
+    *) bad "$(tq check.lock_unreadable "$lockfile" "$lock")" "$(tq check.lock_fix "$lockfile")" ;;
+  esac
+}
+
+removing_of() {
+  printf '%s\n' "$ROSTER" | awk -F '\t' -v n="$1" '$1 == n { print $5; exit }'
+}
+
+single_bot() {
+  if [ -f "$env" ] && ! name="$(python3 "$names" env "$env" 2>&1)"; then
+    bad "$(tq check.env_names)" "$(tq check.env_names_fix "$name")"
+  else
+    rc=0
+    if [ -f "$env" ]; then NAME="$name"; else NAME="$(python3 "$state" recorded-name 2>&1)" || rc=$?; fi
+    if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
+      bad "$(tq check.bot_address)" "$NAME"; NAME=""
+    elif [ -z "$NAME" ] || [ "$rc" = 3 ]; then
+      NAME=""
+      skip "$(tq check.bot_address)" "$(tq check.no_address)"
+    elif label="$(python3 "$state" label --person "$PERSON" --relay-name "$NAME" 2>&1)"; then
+      case "$label" in
+        *" → Grok: "*) ok "$(tq check.bot_address_is "$label")" ;;
+        *) ok "$(tq check.bot_address_no_grok "$label")" ;;
+      esac
+    else
+      ok "$(tq check.bot_address_grok_unreadable "$PERSON/$NAME" "$label")"
+    fi
+  fi
+  if [ -n "$NAME" ] && [ "$(removing_of "$NAME")" = 1 ]; then
+    bad "$(tq check.bot_removing "$NAME")" "./uninstall.sh --level bot --relay-name $NAME"
+  fi
+  if [ -f "$env" ]; then
+    [ "$(stat -f %Lp "$env" 2>/dev/null)" = "600" ] && ok "$(tq check.env_mode_ok)" || bad "$(tq check.env_mode_bad)" "chmod 600 $env"
+    grep -Eq '^WEBHOOK_URL=https://' "$env" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$env" && ok "$(tq check.webhook_ok)" || bad "$(tq check.webhook_bad)" "$(tq check.run_webhook)"
+  else
+    bad "$(tq check.relay_unconfigured)" "$(tq check.run_webhook)"
+  fi
+  shared_checks
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && ok "$(tq check.service_ok)" || bad "$(tq check.service_bad)" "$(tq check.run_webhook)"
+  log_checks "$HOME/Library/Logs/agent-relay.log"
+
+  # sessions
+  if [ -z "$NAME" ]; then
+    skip "$(tq check.registration)" "$(tq check.name_unknown)"
+  elif [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then
+    registration "$NAME" "$LABEL" "$HOME/Library/Application Support/agent-relay/registered" "$(tq check.not_registered_fix)"
+    n=$(echo "$who" | grep -Ec 'claude-code|codex|pi |dsh')
+    [ "$n" -gt 0 ] && ok "$(tq check.sessions_ok "$n")" || skip "$(tq check.sessions)" "$(tq check.sessions_none)"
+  fi
+}
+
+cloud_registration() {
+  local name="$1" cloud="$2" out rc directory
+  local wake="./install.sh --relay-name $name --wake-bot"
+  if [ "$cloud" = confirmed ]; then
+    ok "$(tq check.cloud_reg_ok)"
+    return
+  fi
+  out="$(python3 "$state" add-reply --relay-name "$name" --check --lang "$CHECK_LANG" 2>&1)"; rc=$?
+  case "$rc" in
+    0) ok "$(tq check.cloud_reg_reply)" ;;
+    1) bad "$(tq check.cloud_reg_mismatch "$(printf '%s\n' "$out" | tr '\n' ' ')")" "$wake" ;;
+    4) skip "$(tq check.cloud_reg)" "$(tq check.cloud_reg_unknown "$out")" ;;
+    *)
+      if [ -x "$RN" ] && directory="$("$RN" who --all --json 2>/dev/null)"; then
+        if printf '%s' "$directory" | python3 "$names" cloud-sessions "$PERSON" "$name" >/dev/null 2>&1; then
+          skip "$(tq check.cloud_reg)" "$(tq check.cloud_reg_sessions "$wake")"
+        else
+          skip "$(tq check.cloud_reg)" "$(tq check.cloud_reg_none "$wake")"
+        fi
+      else
+        skip "$(tq check.cloud_reg)" "$(tq check.cloud_reg_none "$wake")"
+      fi ;;
+  esac
+}
+
+bot_section() {
+  local name="$1" kind="$2" stage="$3" cloud="$4" removing="$5" envf="$6" label="$7" marker="$8" log="$9"
+  local title derived webhook_fix fix
+  echo
+  title="$(python3 "$state" label --person "$PERSON" --relay-name "$name" 2>/dev/null)" || title="$PERSON/$name"
+  printf '== %s\n' "$(tq check.bot_address_is "$title")"
+  if [ "$removing" = 1 ]; then
+    bad "$(tq check.bot_removing "$name")" "./uninstall.sh --level bot --relay-name $name"
+    return
+  fi
+  webhook_fix="./install.sh --webhook --relay-name $name"
+  fix="$(tq check.not_registered_fix_bot "$log" "$name")"
+  if [ -f "$envf" ]; then
+    if derived="$(python3 "$names" env "$envf" 2>&1)" && [ "$derived" = "$name" ]; then
+      ok "$(tq check.env_names_ok "$name")"
+    else
+      bad "$(tq check.env_names)" "$(tq check.env_names_fix "$derived")"
+    fi
+    [ "$(stat -f %Lp "$envf" 2>/dev/null)" = "600" ] && ok "$(tq check.env_mode_ok)" || bad "$(tq check.env_mode_bad)" "chmod 600 $(printf '%q' "$envf")"
+    grep -Eq '^WEBHOOK_URL=https://' "$envf" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$envf" && ok "$(tq check.webhook_ok)" || bad "$(tq check.webhook_bad)" "$webhook_fix"
+  else
+    bad "$(tq check.relay_unconfigured)" "$webhook_fix"
+  fi
+  if [ "$stage" = configured ]; then
+    skip "$(tq check.service)" "$(tq check.service_configured "./install.sh --relay-name $name --wake-bot")"
+  else
+    launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && ok "$(tq check.service_ok)" || bad "$(tq check.service_bad)" "./install.sh --restart-relay"
+    log_checks "$log"
+    if [ -x "$RN" ] && [ -n "$WHO_OK" ]; then
+      registration "$name" "$label" "$marker" "$fix"
+    fi
+  fi
+  [ "$kind" != added ] || cloud_registration "$name" "$cloud"
+}
+
+if [ "$MULTI" = 0 ]; then
+  single_bot
+else
+  shared_checks
+  WHO_OK=""
+  who=""
+  if [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then WHO_OK=1; fi
+  while IFS="$(printf '\t')" read -r b_name b_kind b_stage b_cloud b_removing _ b_label _ b_marker; do
+    [ -n "$b_name" ] || continue
+    b_env="$(python3 "$HERE/scripts/bots.py" paths "$b_name" --lenient 2>/dev/null | awk -F '\t' '$1 == "ENV_FILE" { print $2 }')"
+    b_log="$(python3 "$HERE/scripts/bots.py" paths "$b_name" --lenient 2>/dev/null | awk -F '\t' '$1 == "LOG" { print $2 }')"
+    bot_section "$b_name" "$b_kind" "$b_stage" "$b_cloud" "$b_removing" "$b_env" "$b_label" "$b_marker" "$b_log"
+  done <<EOF_ROSTER
+$ROSTER
+EOF_ROSTER
+  echo
+  if [ -n "$WHO_OK" ]; then
+    n=$(echo "$who" | grep -Ec 'claude-code|codex|pi |dsh')
+    [ "$n" -gt 0 ] && ok "$(tq check.sessions_ok "$n")" || skip "$(tq check.sessions)" "$(tq check.sessions_none)"
+  fi
 fi
 
 # deployment record

@@ -30,12 +30,22 @@
 #   rn-cloud.sh purge <days>             # only when the user asks: stop the engine, then delete received messages
 #                                         # (network.db), inbox/<id>/, inbox/_stray/*.log, inbox/_mismatch/ and
 #                                         # threads/*.md older than <days> (0 = all). Prints one JSON line with the
-#                                         # counts.
+#                                         # counts. Refused while this cloud has more than one Bot (it would
+#                                         # delete the other Bots' mail too).
+#   rn-cloud.sh register-bot             # internal, run by rn-cloud-add-bot.sh: register <name>-cloud and
+#                                         # <name>-inbox of the Bot in RN_BOT (needs bots/<name>/.claim)
 # Environment (optional): RN_CLAIM_LEASE  seconds a claim/working/replying mark holds an id (default 3600)
 #   RN_ORPHANS=0      no orphan scan          RN_ORPHAN_DAYS     orphan scan window in days (default 7)
 #   RN_DONE_LOCK_WAIT seconds working/done/send wait for the inbox lock (default 300)
 #   RN_GOT=0          no receipts (RN-GOT) and no "caps: got1" in RN-REFWD; also set GOT_TIMEOUT_SECONDS=0 on the relay
 #   FETCH_TIMEOUT, FETCH_TIMEOUT_OFFLINE (15 s), REFWD_TIMEOUT, REFWD (see fetch)
+# Bots: RN_BOT=<name> selects a Bot added with rn-cloud-add-bot.sh (bots/<name>/.registered must exist); its mail
+# and thread notes live in /workspace/agent-mesh/bots/<name>/inbox and threads. RN_BOT cannot be combined with
+# AGENT_RELAY_NAME, RN_CLOUD_NAME, RN_INBOX_NAME, RN_INBOX_DIR or RN_THREADS_DIR, and a Bot removed from this cloud
+# (box/bots-removed/<name>) is refused; nothing falls back to the first Bot. Without RN_BOT, those overrides work as
+# before; with none of them the first Bot is used, unless it was removed (box/relay.removed).
+# Every command holds the cloud maintenance lock (/workspace/agent-mesh/.maint.lock) shared; updates, setup, adding
+# and removing Bots hold it exclusively. RN_MAINT_WAIT: seconds to wait for it (default 600).
 # Names: <name> is the Bot address name in box/relay, written by rn-cloud-setup.sh (bot if the file does not exist;
 # an empty or damaged file stops every command). <name>-cloud is SEND-only (registered with `listen --wait 0`, which
 # marks its mail read, so nothing should ever be sent to it); <name>-inbox is RECEIVE-only (rn-fetch reads its mail
@@ -50,23 +60,63 @@ die() { echo "rn-cloud: $*" >&2; exit 1; }
 [ "$(uname -s)" = Linux ] || die "[BOT-CLOUD] run this on the Bot's Linux cloud computer, not the user's Mac"
 command -v python3 >/dev/null || die "Python 3.9+ is required on [BOT-CLOUD]; see README prerequisites"
 BASE="${RN_CLOUD_BASE:-/workspace/agent-mesh/box}"   # override only for tests
+ROOT="$(dirname "$BASE")"
 export REASON_NETWORK_HOME="$BASE/state"
 export REASON_NETWORK_NO_UPDATE=1
 export REASON_NETWORK_NO_PROMPT=1
 export REASON_NETWORK_MACHINE="${MACHINE_NAME:-cloud}"   # same machine name as rn-cloud-setup.sh used to join
-case "${1:-}" in who|init-inbox|fetch|send|working|done|purge) ;; *) sed -n '2,/^# Names:/p' "$0" | sed '$d'; exit 2 ;; esac
+case "${1:-}" in who|init-inbox|fetch|send|working|done|purge|register-bot) ;; *) sed -n '2,/^# Names:/p' "$0" | sed '$d'; exit 2 ;; esac
+if [ -z "${RN_MAINT_FD:-}" ]; then
+  exec python3 -I "$BASE/rn-engine.py" hold --shared --wait "${RN_MAINT_WAIT:-600}" "$ROOT/.maint.lock" -- "$BASH" "$0" "$@"
+fi
+python3 -I "$BASE/rn-engine.py" held --shared "$ROOT/.maint.lock" \
+  || die "the maintenance lock this command inherited is not held (see the line above); nothing was run"
 RN="$(python3 -I "$BASE/rn-engine.py" cloud-bin --base "$BASE")" \
   || die "the engine was not checked, so nothing was run (see the line above)"
+rn() { "$RN" "$@" 9>&-; }
 [ -s "$BASE/person" ] || die "cloud setup is incomplete; run rn-cloud-setup.sh with the Mac invite and team name first"
 PERSON="$(cat "$BASE/person")"            # written by rn-cloud-setup.sh; the same name as the Mac
-BASE_NAME=bot
-if [ -e "$BASE/relay" ]; then
-  BASE_NAME="$(cat "$BASE/relay")" || die "cannot read $BASE/relay"
-  if ! [[ "$BASE_NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#BASE_NAME}" -gt 34 ] \
-     || [[ "$BASE_NAME" =~ ^terminal(-[0-9]+)?$ ]]; then
-    die "$BASE/relay is damaged; it must hold the Bot address name the Mac uses (README: Troubleshooting)"
+valid_name() { [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#1}" -le 34 ] && ! [[ "$1" =~ ^terminal(-[0-9]+)?$ ]]; }
+removed() { [ -e "$BASE/bots-removed/$1" ] || [ -L "$BASE/bots-removed/$1" ]; }
+first_bot() {
+  local name=bot
+  if [ -e "$BASE/relay" ]; then
+    name="$(cat "$BASE/relay")" || die "cannot read $BASE/relay"
+    valid_name "$name" \
+      || die "$BASE/relay is damaged; it must hold the Bot address name the Mac uses (README: Troubleshooting)"
   fi
+  printf '%s' "$name"
+}
+if [ -n "${RN_BOT+set}" ]; then
+  valid_name "$RN_BOT" \
+    || die "invalid RN_BOT '${RN_BOT:0:60}': a Bot address name is 1-34 lowercase letters and digits, groups joined by a single '-', not terminal"
+  for v in AGENT_RELAY_NAME RN_CLOUD_NAME RN_INBOX_NAME RN_INBOX_DIR RN_THREADS_DIR; do
+    [ -z "${!v:-}" ] || die "RN_BOT cannot be combined with $v; unset $v (nothing was run)"
+  done
+  removed "$RN_BOT" && die "the Bot $RN_BOT was removed from this cloud (box/bots-removed/$RN_BOT); nothing was run"
+  BOT_DIR="$ROOT/bots/$RN_BOT"
+  if [ "$1" = register-bot ]; then
+    [ -f "$BOT_DIR/.claim" ] || die "the Bot $RN_BOT has not been claimed on this cloud; run rn-cloud-add-bot.sh"
+  else
+    [ -f "$BOT_DIR/.registered" ] \
+      || die "the Bot $RN_BOT is not registered on this cloud; run rn-cloud-add-bot.sh first (nothing was run)"
+  fi
+  BASE_NAME="$RN_BOT"
+  INBOX_DIR="$BOT_DIR/inbox"; THREADS_DIR="$BOT_DIR/threads"
+  export RN_INBOX_DIR="$INBOX_DIR" RN_THREADS_DIR="$THREADS_DIR"
+elif [ -n "${AGENT_RELAY_NAME:-}${RN_CLOUD_NAME:-}${RN_INBOX_NAME:-}${RN_INBOX_DIR:-}${RN_THREADS_DIR:-}" ]; then
+  BASE_NAME="$(first_bot)" || exit 1
+  INBOX_DIR="${RN_INBOX_DIR:-/workspace/agent-mesh/inbox}"; THREADS_DIR="${RN_THREADS_DIR:-/workspace/agent-mesh/threads}"
+else
+  if [ ! -e "$BASE/relay" ] && { [ -e "$BASE/relay.removed" ] || [ -L "$BASE/relay.removed" ]; }; then
+    die "the first Bot was removed from this cloud (box/relay.removed); select a Bot with RN_BOT=<name>"
+  fi
+  BASE_NAME="$(first_bot)" || exit 1
+  removed "$BASE_NAME" && die "the Bot $BASE_NAME was removed from this cloud (box/bots-removed/$BASE_NAME); nothing was run"
+  INBOX_DIR="$ROOT/inbox"; THREADS_DIR="$ROOT/threads"
+  export RN_INBOX_DIR="$INBOX_DIR" RN_THREADS_DIR="$THREADS_DIR"
 fi
+[ "$1" != register-bot ] || [ -n "${RN_BOT+set}" ] || die "register-bot is run by rn-cloud-add-bot.sh with RN_BOT set"
 RELAY="${AGENT_RELAY_NAME:-$BASE_NAME}"
 CLOUD="${RN_CLOUD_NAME:-$BASE_NAME-cloud}"
 INBOX="${RN_INBOX_NAME:-$BASE_NAME-inbox}"
@@ -74,7 +124,7 @@ for n in "$CLOUD" "$INBOX"; do
   [[ "$n" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#n}" -le 40 ] \
     || die "invalid session name '${n:0:60}' in RN_CLOUD_NAME/RN_INBOX_NAME: lowercase letters and digits joined by single '-', at most 40 characters"
 done
-STRAY="${RN_INBOX_DIR:-/workspace/agent-mesh/inbox}/_stray"
+STRAY="$INBOX_DIR/_stray"
 export RN_BOX="$BASE" RN_PERSON="$PERSON" RN_INBOX_NAME="$INBOX" RN_KEY_FILE="$BASE/outbound.key"
 export RN_BIN="$RN" RN_RELAY_NAME="$RELAY" RN_CLOUD_NAME="$CLOUD"
 KEY_FILE="$BASE/outbound.key"             # same secret as OUTBOUND_KEY on the Mac, mode 0600
@@ -84,7 +134,7 @@ KEY_FILE="$BASE/outbound.key"             # same secret as OUTBOUND_KEY on the M
 
 is_connected() {     # starts the daemon if needed and waits (<=90s) until the Mac is connected
   for _ in $(seq 1 45); do
-    if "$RN" doctor 2>/dev/null | grep -E '[1-9][0-9]* connected' >/dev/null; then return 0; fi
+    if rn doctor 2>/dev/null | grep -E '[1-9][0-9]* connected' >/dev/null; then return 0; fi
     sleep 2
   done
   return 1
@@ -116,7 +166,7 @@ PY
 }
 
 register() {         # makes <team-name>/$CLOUD a live sender here; anything mistakenly sent to it is kept, not dropped
-  local out; out="$("$RN" listen --as "$CLOUD" --wait 0)"
+  local out; out="$(rn listen --as "$CLOUD" --wait 0)"
   case "$out" in
     "No messages."*) ;;
     *) mkdir -p "$STRAY"; { echo "== $(date -Iseconds)"; echo "$out"; } >> "$STRAY/$CLOUD.log"
@@ -125,7 +175,7 @@ register() {         # makes <team-name>/$CLOUD a live sender here; anything mis
   check_registered "$CLOUD"
 }
 register_inbox() {   # bodies stay in network.db for rn-fetch
-  "$RN" listen --as "$INBOX" --wait 0 >/dev/null
+  rn listen --as "$INBOX" --wait 0 >/dev/null
   check_registered "$INBOX"
 }
 
@@ -138,7 +188,7 @@ PY
 
 case "${1:-}" in
   who)
-    wait_connected; register_inbox; "$RN" who ;;
+    wait_connected; register_inbox; rn who ;;
   init-inbox)
     wait_connected; register_inbox; sleep 3
     echo "rn-cloud: $PERSON/$INBOX registered on this box (the Mac learns it from presence)" ;;
@@ -181,7 +231,7 @@ sig = hmac.new(key.encode(), "\n".join(["v1", to, reply_to, ts, nonce, body]).en
 print(f"RN-OUT v1\nto: {to}\nreply_to: {reply_to}\nts: {ts}\nnonce: {nonce}\nsig: {sig}\n---\n{body}", end="")
 PY
 )"
-    out="$(printf '%s' "$envelope" | "$RN" send "$PERSON/$RELAY" --from "$PERSON/$CLOUD" -)" || die "send failed: $out"
+    out="$(printf '%s' "$envelope" | rn send "$PERSON/$RELAY" --from "$PERSON/$CLOUD" -)" || die "send failed: $out"
     echo "$out"
     status="$(python3 -I "$BASE/rn-fetch.py" send-status <<<"$out")" || die "could not classify the engine output: $out"
     case "$status" in *refused*|*held*) die "the engine did not accept the message: $out" ;; esac
@@ -211,10 +261,27 @@ PY
   purge)
     days="${2:-}"
     [[ "$days" =~ ^[0-9]{1,5}$ ]] || die "usage: rn-cloud.sh purge <days>   (whole days; 0 = everything)"
+    bots=0
+    if [ -e "$BASE/relay" ] || ! [ -e "$BASE/relay.removed" ]; then bots=1; fi
+    for f in "$ROOT"/bots/*/.registered; do
+      if [ -e "$f" ]; then bots=$((bots + 1)); fi
+    done
+    [ "$bots" -le 1 ] \
+      || die "this cloud has $bots Bots and purge would delete the other Bots' mail too (it cannot tell them apart); nothing was deleted"
     # rn-fetch takes the inbox lock (no fetch can overlap), then stops the engine and refuses if it still runs;
     # the daemon restarts on demand with the next who/fetch/send.
-    RN_BIN="$RN" RN_INBOX_DIR="${RN_INBOX_DIR:-/workspace/agent-mesh/inbox}" \
-      RN_THREADS_DIR="${RN_THREADS_DIR:-/workspace/agent-mesh/threads}" \
+    RN_BIN="$RN" RN_INBOX_DIR="$INBOX_DIR" RN_THREADS_DIR="$THREADS_DIR" \
       python3 -I "$BASE/rn-fetch.py" purge "$days" ;;
+  register-bot)
+    [ "$#" = 1 ] || die "usage: RN_BOT=<name> rn-cloud.sh register-bot"
+    connected=1
+    is_connected || connected=0
+    register; register_inbox
+    if [ "$connected" = 1 ]; then
+      sleep 3
+    else
+      echo "rn-cloud: the Mac is not connected; it sees $PERSON/$CLOUD and $PERSON/$INBOX when it connects" >&2
+    fi
+    echo "rn-cloud: $PERSON/$CLOUD and $PERSON/$INBOX registered on this box" ;;
   *) sed -n '2,/^# Names:/p' "$0" | sed '$d'; exit 2 ;;
 esac

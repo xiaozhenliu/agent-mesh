@@ -141,6 +141,18 @@ def check_docs():
         except (OSError, ValueError) as error:
             errors.append(str(error))
     try:
+        found = lambda text: set(re.findall(r"<[a-z]+(?:-[a-z]+)+>", text))
+        for lang in ("en", "zh-CN"):
+            text = render_prompt("cloud-add-bot", lang)
+            if found(text) != {"<team-name>", "<relay-name>", "<team-hash>"}:
+                errors.append(f"cloud-add-bot ({lang}): expected placeholders <team-name>, <relay-name> and "
+                              "<team-hash>")
+            if not text.startswith("0. ") or sum(line.startswith("0. ") for line in text.splitlines()) != 1:
+                errors.append(f"cloud-add-bot ({lang}): the block must be one step 0")
+            render_prompt("routine", lang, team_name="demo", bot_selector="alice", team_hash="0" * 16)
+    except (OSError, ValueError) as error:
+        errors.append(str(error))
+    try:
         found = lambda text: set(re.findall(r"<(?:team-name|mac-machine|relay-name|level|mode|challenge|"
                                             r"script-sha256|cloud-script)>", text))
         expected = {"<team-name>", "<mac-machine>", "<relay-name>", "<level>", "<mode>", "<challenge>"}
@@ -150,6 +162,10 @@ def check_docs():
                 errors.append(f"cloud-uninstall ({lang}): expected placeholders {sorted(expected)}")
             if text.count("AGENT_MESH_UNINSTALL_EOF") != 2 or "```" in text:
                 errors.append(f"cloud-uninstall ({lang}): the cloud script is not embedded once as a heredoc")
+            selected = render_prompt("cloud-uninstall", lang, bot_selector="alice")
+            if "RN_BOT=alice /workspace/agent-mesh/box/rn-cloud.sh fetch" not in selected \
+                    or selected.replace("RN_BOT=alice ", "") != text:
+                errors.append(f"cloud-uninstall ({lang}): the Bot selector must prefix only the rn-cloud.sh commands")
     except (OSError, ValueError) as error:
         errors.append(str(error))
     for lang, name in (("en", "AGENTS.reason-network.md"), ("zh-CN", "AGENTS.reason-network.zh-CN.md")):

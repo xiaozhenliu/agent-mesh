@@ -8,9 +8,11 @@ usage() { stop "usage: check | apply <code> [force] [accept-shared] | apply-no-p
 case "$TEAM$MAC$RELAY_NAME$LEVEL$MODE$CHALLENGE" in *'<'*|*'>'*) stop "this script was not filled in; print it with ./uninstall.sh on the user's Mac" ;; esac
 name_re='^[a-z0-9]+(-[a-z0-9]+)*$'
 if ! [[ "$TEAM" =~ $name_re ]] || ! [[ "$MAC" =~ $name_re ]] || ! [[ "$RELAY_NAME" =~ $name_re ]]; then stop "invalid names in this script"; fi
-case "$LEVEL" in identity|all) ;; *) stop "invalid level $LEVEL" ;; esac
+case "$LEVEL" in bot|identity|all) ;; *) stop "invalid level $LEVEL" ;; esac
 case "$MODE" in normal|residual) ;; *) stop "invalid mode $MODE" ;; esac
 if ! [[ "$CHALLENGE" =~ ^[0-9a-f]{16}$ ]]; then stop "invalid challenge"; fi
+if [ "$LEVEL" = bot ] && [ "$MODE" != normal ]; then stop "level bot needs mode normal"; fi
+if [ "$LEVEL" = bot ] && { [ "${#RELAY_NAME}" -gt 34 ] || [[ "$RELAY_NAME" =~ ^terminal(-[0-9]+)?$ ]]; }; then stop "invalid Bot address name $RELAY_NAME"; fi
 PHASE="${1:-}"; ARG=""; FORCE=no; SHARED_OK=no
 if [ $# -gt 0 ]; then shift; fi
 if [ "$PHASE" = apply ]; then
@@ -31,7 +33,8 @@ case "$PHASE" in
   *) usage ;;
 esac
 if [ "$(uname -s)" != Linux ]; then stop "this is not the Linux cloud computer; never run it on the user's Mac"; fi
-for p in "$W" "$A" "$B" "$B/state" "$B/bin" "$B/bin/engine" "$B/person" "$B/relay" "$B/outbound.key" "$A/inbox" "$A/threads"; do
+for p in "$W" "$A" "$B" "$B/state" "$B/bin" "$B/bin/engine" "$B/person" "$B/relay" "$B/outbound.key" "$A/inbox" "$A/threads" \
+  "$A/bots" "$A/bots/$RELAY_NAME" "$B/bots-removed" "$B/bots-removed/$RELAY_NAME" "$B/relay.removed" "$A/.maint.lock"; do
   if [ -L "$p" ]; then stop "$p is a symlink; not touching it"; fi
 done
 if [ ! -d "$A" ]; then
@@ -41,6 +44,31 @@ if [ ! -d "$A" ]; then
 fi
 if [ ! -f "$B/rn-cloud.sh" ] || [ ! -f "$B/rn-cloud-setup.sh" ]; then stop "$A is not the agent-mesh distribution"; fi
 cd /
+locked=no
+for _ in 1 2 3; do
+  exec 9>>"$A/.maint.lock" || stop "cannot open $A/.maint.lock"
+  rc=0
+  python3 -I - "$A/.maint.lock" "${RN_MAINT_WAIT:-600}" <<'PY' || rc=$?
+import fcntl, os, sys, time
+end = time.monotonic() + float(sys.argv[2])
+while True:
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() >= end:
+            sys.exit(1)
+        time.sleep(0.2)
+try:
+    same = os.path.samestat(os.fstat(9), os.stat(sys.argv[1]))
+except OSError:
+    same = False
+sys.exit(0 if same else 3)
+PY
+  if [ "$rc" = 0 ]; then locked=yes; break; fi
+  if [ "$rc" != 3 ]; then stop "other cloud commands are still running; nothing was changed"; fi
+done
+if [ "$locked" != yes ]; then stop ".maint.lock keeps being replaced; nothing was changed"; fi
 
 helper() {
   python3 -I - "$@" <<'PY'
@@ -56,7 +84,8 @@ if mode == "tag":
 W, A = sys.argv[2], sys.argv[3]
 B = os.path.join(A, "box")
 RUNTIME = re.compile(r"^box/(bin|state)/|^box/(person|relay|outbound\.key)$|^box/relay\.damaged-|^box/engine-backup-|"
-                     r"^box/\.(relay|person)\.[A-Za-z0-9]{6}$|^inbox/|^threads/|(^|/)__pycache__/|\.pyc$")
+                     r"^box/\.(relay|person)\.[A-Za-z0-9]{6}$|^inbox/|^threads/|(^|/)__pycache__/|\.pyc$|"
+                     r"^bots/|^box/relay\.removed$|^box/bots-removed/|^\.maint\.lock$")
 INSIDE = (b"agent-mesh/box", b"box/state", b"box/bin")
 LIMIT = 20 * 1024 * 1024
 
@@ -193,9 +222,39 @@ else
   for p in "$B/state" "$B/outbound.key" "$B/bin" "$B/relay"; do
     if [ -e "$p" ]; then stop "box/person is missing but $p remains; ask the user"; fi
   done
+  if [ "$LEVEL" = bot ]; then stop "box/person is missing; there is no deployment here to remove a Bot from"; fi
   echo "STATE: cloud identity already removed"
 fi
-if [ -f "$B/relay" ]; then
+CLAIMED=""
+for c in "$A"/bots/*/.claim; do
+  if [ -f "$c" ]; then n="${c%/.claim}"; CLAIMED="$CLAIMED ${n##*/}"; fi
+done
+if [ "$LEVEL" = bot ]; then
+  D="$A/bots/$RELAY_NAME"; T="$B/bots-removed/$RELAY_NAME"
+  if [ -f "$B/relay" ]; then
+    first="$(cat "$B/relay")"
+    if ! [[ "$first" =~ $name_re ]]; then stop "box/relay is damaged; ask the user"; fi
+  elif [ -f "$B/relay.removed" ]; then
+    first="$(cat "$B/relay.removed")"
+  else
+    first=bot
+  fi
+  if [ "$first" = "$RELAY_NAME" ]; then
+    KIND=legacy
+    if [ -e "$D" ]; then stop "both box/relay and bots/$RELAY_NAME name $RELAY_NAME; ask the user"; fi
+    if [ -f "$T" ] && [ ! -e "$B/relay" ] && [ ! -e "$A/inbox" ] && [ ! -e "$A/threads" ]; then GONE=yes; else GONE=no; fi
+    echo "STATE: $RELAY_NAME is the first Bot on this cloud"
+  else
+    KIND=added
+    if [ -e "$D" ] && { [ ! -d "$D" ] || [ ! -f "$D/.claim" ]; }; then
+      stop "bots/$RELAY_NAME was not created by rn-cloud-add-bot.sh (no .claim); not touching it"
+    fi
+    if [ -f "$T" ] && [ ! -e "$D" ]; then GONE=yes; else GONE=no; fi
+    echo "STATE: $RELAY_NAME is a Bot added with rn-cloud-add-bot.sh"
+    if [ ! -e "$D" ] && [ "$GONE" = no ]; then echo "STATE: this cloud never claimed $RELAY_NAME (no bots/$RELAY_NAME)"; fi
+  fi
+  if [ "$GONE" = yes ]; then echo "STATE: $RELAY_NAME was already removed from this cloud"; fi
+elif [ -f "$B/relay" ]; then
   have="$(cat "$B/relay")"
   if [ "$MODE" = residual ]; then
     echo "STATE: box/relay holds ${have:0:60}"
@@ -203,6 +262,14 @@ if [ -f "$B/relay" ]; then
     if [[ "$have" =~ $name_re ]]; then stop "box/relay is $have, not $RELAY_NAME; this cloud belongs to another deployment"; fi
     echo "NOTE: box/relay is damaged"
   fi
+elif [ -n "$CLAIMED" ]; then
+  echo "STATE: box/relay is missing; Bots added with rn-cloud-add-bot.sh:$CLAIMED"
+  if [ "$MODE" = normal ] && [[ " $CLAIMED " != *" $RELAY_NAME "* ]] && [ ! -f "$B/bots-removed/$RELAY_NAME" ] \
+    && { [ ! -f "$B/relay.removed" ] || [ "$(cat "$B/relay.removed")" != "$RELAY_NAME" ]; }; then
+    stop "this cloud has no Bot named $RELAY_NAME; it belongs to another deployment"
+  fi
+elif [ -f "$B/relay.removed" ]; then
+  echo "STATE: the first Bot was removed from this cloud (box/relay.removed)"
 elif [ "$PRESENT" = yes ] && [ "$MODE" = normal ] && [ "$RELAY_NAME" != bot ]; then
   echo "NOTE: box/relay is missing, so this cloud used bot, not $RELAY_NAME"
 fi
@@ -220,7 +287,7 @@ fi
 export REASON_NETWORK_HOME="$B/state" REASON_NETWORK_NO_UPDATE=1 REASON_NETWORK_NO_PROMPT=1 REASON_NETWORK_MACHINE=cloud
 INTEAM=none
 if [ -f "$B/state/machine.key" ] && [ -x "$RN" ]; then
-  if out="$("$RN" team 2>&1)"; then
+  if out="$("$RN" team 2>&1 9>&-)"; then
     out="$(printf '%s\n' "$out" | sed -E 's/^([[:space:]]+[^[:space:]]+) \(verified\)([[:space:]])/\1\2/')"
     INTEAM=yes
     printf '%s\n' "$out"
@@ -229,7 +296,9 @@ if [ -f "$B/state/machine.key" ] && [ -x "$RN" ]; then
     me="$(awk '/this machine$/ {print $1 "/" $2}' <<<"$out")"
     if [ "$me" != "$TEAM/cloud" ]; then stop "this computer is ${me:-not listed} in the team, not $TEAM/cloud"; fi
     others="$(awk -v p="$TEAM" 'NR > 1 && NF >= 3 && $1 != p {n++} END {print n + 0}' <<<"$out")"
-    if [ "$MODE" = normal ]; then
+    if [ "$LEVEL" = bot ]; then
+      :
+    elif [ "$MODE" = normal ]; then
       online="$(awk -v p="$TEAM" -v m="$MAC" 'NR > 1 && !/this machine$/ && $1 == p && $2 == m && $3 != "offline" {n++} END {print n + 0}' <<<"$out")"
       if [ "$online" = 0 ]; then stop "the Mac $TEAM/$MAC is not online in this cloud's team; keep the Mac on and try again"; fi
     elif [ "$others" != 0 ]; then
@@ -248,13 +317,24 @@ elif [ -e "$B/state" ]; then
   echo "STATE: no engine identity in box/state; the engine is not started"
 fi
 SHARED=no
-if ! helper shared "$W" "$A"; then SHARED=yes; fi
+if [ "$LEVEL" != bot ] && ! helper shared "$W" "$A"; then SHARED=yes; fi
 NOUP=no
 if [ "$LEVEL" = all ]; then
   echo "FILES the user added or changed in $A (paths only):"
   if ! helper files "$W" "$A"; then NOUP=yes; fi
 fi
-echo "WILL REMOVE: box/state box/bin box/engine-backup-* box/relay box/outbound.key box/person (the cloud's engine identity and its backups, key and names)"
+if [ "$LEVEL" = bot ]; then
+  echo "WILL WRITE: box/bots-removed/$RELAY_NAME (first, so no command uses $RELAY_NAME again; the name cannot be added again)"
+  if [ "$KIND" = legacy ]; then
+    echo "WILL REMOVE: inbox/ threads/ (received bodies and thread notes of $RELAY_NAME); box/relay becomes box/relay.removed"
+  else
+    echo "WILL REMOVE: bots/$RELAY_NAME/ (received bodies and thread notes of $RELAY_NAME)"
+  fi
+  echo "WILL KEEP: box/state box/bin box/person box/outbound.key, the team membership and the other Bots"
+else
+  echo "WILL REMOVE: box/state box/bin box/engine-backup-* box/relay box/outbound.key box/person (the cloud's engine identity and its backups, key and names)"
+  echo "WILL REMOVE: bots/ box/bots-removed/ box/relay.removed .maint.lock (added Bots' received bodies and thread notes, removed names, the maintenance lock)"
+fi
 if [ "$LEVEL" = all ]; then
   echo "WILL REMOVE: inbox/ threads/ (received bodies and thread notes)"
   if [ "$NOUP" = yes ]; then echo "WILL KEEP: $A (see the KEEP lines)"; else echo "WILL REMOVE: $A"; fi
@@ -274,16 +354,32 @@ fi
 if [ "$SHARED" = yes ] && [ "$SHARED_OK" != yes ]; then
   stop "something else uses box/ (SHARED lines); add accept-shared only after the user confirms it no longer does"
 fi
+if [ "$LEVEL" = bot ]; then
+  if [ ! -d "$B/bots-removed" ]; then mkdir -p "$B/bots-removed"; chmod 700 "$B/bots-removed"; fi
+  if [ ! -f "$T" ]; then date -u +%Y-%m-%dT%H:%M:%SZ > "$T"; fi
+  if [ "$KIND" = legacy ]; then
+    rm -rf "${A:?}/inbox" "${A:?}/threads"
+    if [ -f "$B/relay" ]; then
+      mv -f "$B/relay" "$B/relay.removed"
+    elif [ ! -f "$B/relay.removed" ]; then
+      printf '%s\n' "$RELAY_NAME" > "$B/relay.removed"
+    fi
+  else
+    rm -rf "${D:?}"
+  fi
+  echo "DONE: level bot; $TEAM/$RELAY_NAME is removed from this cloud and cannot be added again; the user must still delete its routine in the Grok UI"
+  exit 0
+fi
 if [ "$INTEAM" = yes ]; then
   if [ "$FORCE" = yes ]; then
-    if ! out="$("$RN" leave --force 2>&1)"; then stop "leave --force failed: $out"; fi
+    if ! out="$("$RN" leave --force 2>&1 9>&-)"; then stop "leave --force failed: $out"; fi
   else
-    if ! out="$("$RN" leave 2>&1)"; then stop "leave failed: $out. Tell the user; only with their consent run the same command again with force added"; fi
+    if ! out="$("$RN" leave 2>&1 9>&-)"; then stop "leave failed: $out. Tell the user; only with their consent run the same command again with force added"; fi
   fi
   printf '%s\n' "$out"
 fi
 if [ -f "$B/state/machine.key" ] && [ -x "$RN" ]; then
-  if ! out="$("$RN" stop 2>&1)"; then echo "NOTE: reason-network stop said: $out"; fi
+  if ! out="$("$RN" stop 2>&1 9>&-)"; then echo "NOTE: reason-network stop said: $out"; fi
 fi
 rm -rf "${B:?}/state" "${B:?}/bin"
 for d in "$B"/engine-backup-*; do
@@ -294,6 +390,8 @@ for f in "$B/relay" "$B"/relay.damaged-* "$B"/.relay.?????? "$B"/.person.??????;
 done
 rm -f "$B/outbound.key"
 rm -f "$B/person"
+rm -rf "${A:?}/bots" "${B:?}/bots-removed"
+rm -f "$B/relay.removed" "$A/.maint.lock"
 if [ "$LEVEL" = all ]; then
   rm -rf "${A:?}/inbox" "${A:?}/threads"
   if [ "$NOUP" = no ]; then

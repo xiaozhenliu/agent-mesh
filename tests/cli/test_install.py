@@ -2,7 +2,7 @@ import hashlib
 import plistlib
 import unittest
 
-from render_prompt import ROOT
+from render_prompt import CLOUD_FILES, ROOT
 from write_launch_agent import write_launch_agent
 from tests.cli.install_support import (
     InstallHarness,
@@ -43,7 +43,7 @@ class Install(InstallHarness, unittest.TestCase):
         self.assertIn(f"git fetch https://github.com/xiaozhenliu/agent-mesh.git refs/tags/{tag}:refs/tags/{tag}",
                       self.calls())
         self.assertIn(f"TAG='{tag}'; COMMIT='{'a' * 40}'", result.stdout)
-        for name in ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py"):
+        for name in CLOUD_FILES:
             digest = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
             self.assertIn(f"{digest}  {name}", result.stdout)
         for placeholder in ("<release-tag>", "<release-commit>", "<cloud-checksums>", "<repo-url>"):

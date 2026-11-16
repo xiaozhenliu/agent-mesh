@@ -12,6 +12,15 @@
   relay_names.py conflicts NAME [--db PATH]
                                        read `reason-network who --all --json` on stdin; exit 1 with the reason if
                                        NAME, NAME-cloud or NAME-inbox is already taken, 2 if it cannot be checked
+  relay_names.py add-check PERSON NAME [--db PATH]
+                                       read `reason-network who --all --json` on stdin; exit 1 with the reasons if a
+                                       Bot named NAME cannot be added: NAME, NAME-cloud or NAME-inbox is a session of
+                                       PERSON on any machine (online or offline) or a cli: key in this Mac's session
+                                       table, or NAME is a Bot here or was removed; 2 if it cannot be checked
+  relay_names.py cloud-sessions PERSON NAME
+                                       read `reason-network who --all --json` on stdin; exit 0 if NAME-cloud and
+                                       NAME-inbox are both sessions of PERSON on the machine cloud, 1 if not, 2 if
+                                       the list cannot be read
   relay_names.py grok-check NAME       exit 0 if NAME can be stored as the Bot's name in Grok, else 1 with the reason
   relay_names.py suggest GROK_NAME     print a Bot address name derived from the Bot's name in Grok; exit 1 if none
                                        can be derived (for example a name without Latin letters or digits)
@@ -174,6 +183,54 @@ def conflicts(directory, name, db):
     return found
 
 
+def sessions_of(directory):
+    if not isinstance(directory, dict) or not isinstance(directory.get("sessions"), list):
+        raise ValueError(t("names.no_sessions"))
+    for s in directory["sessions"]:
+        if not isinstance(s, dict) or not isinstance(s.get("name"), str):
+            raise ValueError(t("names.session_unnamed"))
+    return directory["sessions"]
+
+
+def local_keys(db, names):
+    if not Path(db).exists():
+        return []
+    con = open_ro(db)
+    try:
+        return [(n, row[0]) for n in names
+                for row in con.execute("SELECT name FROM sessions WHERE key = ?", (f"cli:{n}",)).fetchall()]
+    finally:
+        con.close()
+
+
+def add_conflicts(directory, person, name, db, home):
+    import bots
+    why = problem(name)
+    if why:
+        return [why]
+    data = bots.load_record(home)
+    found = []
+    if any(b["name"] == name for b in bots.roster(home, data)):
+        found.append(t("names.add_is_bot", name))
+    removed = data.get("removed_bots")
+    if isinstance(removed, list) and name in removed:
+        found.append(t("names.add_removed", name))
+    wanted = derived(name)
+    for s in sessions_of(directory):
+        if s.get("person") == person and s["name"] in wanted:
+            found.append(t("names.taken", f"{person}/{s['name']}", s.get("machine") or t("names.unknown"),
+                           s.get("status") or t("names.unknown")))
+    for key, session in local_keys(db, wanted):
+        found.append(t("names.add_key_taken", f"cli:{key}", session))
+    return found
+
+
+def cloud_sessions(directory, person, name):
+    have = {s["name"] for s in sessions_of(directory)
+            if s.get("person") == person and s.get("machine") == CLOUD_MACHINE}
+    return set(derived(name)[1:]) <= have
+
+
 def option(args, flag):
     if flag not in args:
         return None
@@ -224,6 +281,24 @@ def main(argv):
         except ValueError as error:
             print(error, file=sys.stderr)
             return 2
+        return 0
+    if cmd in ("add-check", "cloud-sessions"):
+        db = option(args, "--db") or default_db()
+        if len(args) != 2:
+            print(__doc__, file=sys.stderr)
+            return 2
+        person, name = args
+        try:
+            directory = json.loads(sys.stdin.read())
+            if cmd == "cloud-sessions":
+                return 0 if cloud_sessions(directory, person, name) else 1
+            found = add_conflicts(directory, person, name, db, Path(os.environ.get("HOME", "~")).expanduser())
+        except (ValueError, sqlite3.Error) as error:
+            print(t("names.check_failed", error), file=sys.stderr)
+            return 2
+        if found:
+            print("\n".join(found), file=sys.stderr)
+            return 1
         return 0
     if cmd in ("registered", "conflicts"):
         db = option(args, "--db") or default_db()

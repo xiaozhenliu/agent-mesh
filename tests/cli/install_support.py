@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
-from render_prompt import ROOT
+from render_prompt import CLOUD_FILES, ROOT
 
 
 def own_group_with_default_signals():
@@ -79,12 +79,14 @@ class InstallHarness:
         (self.who / "bot.py").write_text(BOT)
         self.env["MOCK_WHO"] = str(self.who)
         self.tool("reason-network", '[ "$1" = --version ] || echo "rn $*" >> "$CALL_LOG"\n'
+                                    '[ ! -e /dev/fd/9 ] || echo "rn $*" >> "$MOCK_WHO/fd9"\n'
                                     'case "$1" in --version) echo "reason-network $MOCK_VERSION" ;; '
                                     'invite) echo "For a cloud agent of yours send it: fake-invite" ;; '
                                     'who) [ ! -f "$MOCK_WHO/fail" ] || exit 1; '
                                     'if [ "$*" = "who --all --json" ]; then cat "$MOCK_WHO/all.json"; '
                                     'elif [ -f "$MOCK_WHO/text" ]; then cat "$MOCK_WHO/text"; fi ;; '
-                                    'team) [ ! -f "$MOCK_WHO/team" ] || cat "$MOCK_WHO/team" ;; '
+                                    'team) if [ "$2" = --json ]; then [ ! -f "$MOCK_WHO/team.json" ] || cat "$MOCK_WHO/team.json"; '
+                                    'elif [ -f "$MOCK_WHO/team" ]; then cat "$MOCK_WHO/team"; fi ;; '
                                     'send) [ "$3" != - ] || exec python3 "$MOCK_WHO/bot.py" "$2" ;; '
                                     '*) exit 0 ;; esac', path)
         cfg = self.home / ".reason/network/config.toml"
@@ -143,6 +145,98 @@ case "$1" in
 esac
 exit 0""")
         self.tool("sleep", "exit 0")
+
+    def multi_launchd(self):
+        self.state = self.base / "launchd"
+        self.state.mkdir(exist_ok=True)
+        self.env["MOCK_LAUNCHD"] = str(self.state)
+        (self.state / "launchctl.py").write_text(MULTI_LAUNCHCTL)
+        self.tool("launchctl", 'exec python3 "$MOCK_LAUNCHD/launchctl.py" "$@"')
+        self.tool("sleep", "exit 0")
+
+    def multi_loaded(self):
+        path = self.state / "loaded.json"
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def multi_started(self):
+        path = self.state / "multi-started"
+        return [line.split() for line in path.read_text().splitlines()] if path.exists() else []
+
+    def webhook_stub(self, code=200):
+        self.hooks = self.base / "hooks"
+        self.hooks.mkdir(exist_ok=True)
+        site = self.base / "site"
+        site.mkdir(exist_ok=True)
+        (site / "sitecustomize.py").write_text(WEBHOOK_STUB)
+        (self.hooks / "code").write_text(str(code))
+        self.env.update(PYTHONPATH=str(site), MOCK_WEBHOOK=str(self.hooks))
+
+    def posts(self):
+        path = self.hooks / "posts"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def two_ready(self, first="alpha"):
+        self.configured(first)
+        self.multi_launchd()
+        self.webhook_stub()
+        repo = self.repo()
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
+            self.mark(repo, field, "confirmed")
+        data = self.record()
+        data["cloud"]["release"] = "0.0.1"
+        self.write_record(data)
+        (self.who / "team.json").write_text(json.dumps({"team_id": TEAM_ID, "person": "demo", "machine": "mac"}))
+        (self.base / "calls").unlink()
+        return repo
+
+    def cloud_listing(self, *names, machine="cloud", status="online"):
+        sessions = [{"person": "demo", "machine": machine, "name": n, "status": status} for n in names]
+        return dict(EMPTY_DIRECTORY, sessions=sessions)
+
+    def registers_on_wake(self, name):
+        (self.hooks / "then.json").write_text(json.dumps(self.cloud_listing(f"{name}-cloud", f"{name}-inbox")))
+
+    def bot_confirms(self, name, team_hash=None, sender=None):
+        team_hash = team_hash or hashlib.sha256(TEAM_ID.encode()).hexdigest()[:16]
+        self.bot_replies(body=f"Done.\nagent-mesh-result add-bot {{req}} ok {name} {team_hash}\n",
+                         sender=sender or f"demo/{name}")
+
+    def run_staged(self, root, *args, steps=(), script="install.sh", timeout=60):
+        master, slave = pty.openpty()
+        try:
+            proc = subprocess.Popen(["/bin/bash", str(root / script), *args], env=self.env, stdin=slave,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out_fd, err_fd = proc.stdout.fileno(), proc.stderr.fileno()
+            got = {out_fd: b"", err_fd: b""}
+            open_fds, pending, deadline = set(got), list(steps), time.time() + timeout
+            seen = 0
+            while open_fds and time.time() < deadline:
+                ready, _, _ = select.select(list(open_fds) + [master], [], [], 0.2)
+                for fd in ready:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except OSError:
+                        chunk = b""
+                    if fd == master:
+                        continue
+                    if not chunk:
+                        open_fds.discard(fd)
+                    got[fd] += chunk
+                text = got[err_fd].decode(errors="replace")
+                if pending and pending[0][0] in text[seen:]:
+                    seen = text.index(pending[0][0], seen) + len(pending[0][0])
+                    os.write(master, (pending.pop(0)[1] + "\n").encode())
+            if open_fds:
+                proc.kill()
+            proc.wait(timeout=10)
+            proc.stdout.close()
+            proc.stderr.close()
+            return subprocess.CompletedProcess(proc.args, proc.returncode, got[out_fd].decode(), got[err_fd].decode())
+        finally:
+            os.close(slave)
+            os.close(master)
 
     def started(self):
         path = self.state / "started"
@@ -323,12 +417,11 @@ exit 0""")
                       "binary replaced 2026-11-12T07:59:58Z)",
                       f"engine: pinned build {build} at box/bin/engine/reason-network", "engine: launcher ok"]
         r = "agent-mesh-result"
-        lines += [f"{r} commit {commit}",
-                  f"{r} sum {self.sha(repo / 'box/rn-cloud.sh')}  box/rn-cloud.sh",
-                  f"{r} sum {fetch_sum or self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py",
-                  f"{r} sum {self.sha(repo / 'box/rn-cloud-setup.sh')}  box/rn-cloud-setup.sh",
-                  f"{r} sum {self.sha(repo / 'box/rn-engine.py')}  box/rn-engine.py",
-                  f"{r} DONE {tag or self.release_tag(repo)}", "```"]
+        lines.append(f"{r} commit {commit}")
+        for name in CLOUD_FILES:
+            digest = fetch_sum if fetch_sum and name == "box/rn-fetch.py" else self.sha(repo / name)
+            lines.append(f"{r} sum {digest}  {name}")
+        lines += [f"{r} DONE {tag or self.release_tag(repo)}", "```"]
         return lines + ["."]
 
     def cloud_reply_check(self, repo, text, *extra):
@@ -526,8 +619,9 @@ conf_path = who / "bot.json"
 if not conf_path.exists():
     sys.exit(0)
 conf = json.loads(conf_path.read_text())
-found = re.search(r"^agent-mesh update \S+ \S+ ([0-9a-f]{16})$|REQ=([0-9a-f]{16})$", body, re.M)
-req = conf.get("req") or found.group(1) or found.group(2)
+found = re.search(r"^agent-mesh update \S+ \S+ ([0-9a-f]{16})$|REQ=([0-9a-f]{16})$|^agent-mesh add-bot \S+ ([0-9a-f]{16})$",
+                  body, re.M)
+req = conf.get("req") or next(g for g in found.groups() if g)
 db = sqlite3.connect(Path(os.environ["HOME"]) / ".reason/network/network.db")
 db.execute(TABLE)
 db.execute("INSERT INTO messages VALUES (?, ?, 'demo/terminal', ?, ?, ?)",
@@ -601,3 +695,111 @@ case "$*" in
     exec /bin/sh "$RELEASE_GIT_STUB" "$@" ;;
   *) echo "unexpected git $*" >> "$CALL_LOG"; exit 99 ;;
 esac'''
+
+
+MULTI_LAUNCHCTL = r'''import hashlib, json, os, plistlib, re, sqlite3, sys, time
+from pathlib import Path
+S = Path(os.environ["MOCK_LAUNCHD"])
+home = Path(os.environ["HOME"])
+with open(os.environ["CALL_LOG"], "a") as stream:
+    stream.write("launchctl " + " ".join(sys.argv[1:]) + "\n")
+book = S / "loaded.json"
+state = json.loads(book.read_text()) if book.exists() else {}
+
+
+def once(name, label):
+    flag = S / f"{name}.{label}"
+    if flag.exists():
+        flag.unlink()
+        return True
+    return False
+
+
+cmd = sys.argv[1]
+if cmd == "print":
+    if sys.argv[2].count("/") == 1:
+        sys.exit(0)
+    item = state.get(sys.argv[2].rsplit("/", 1)[1])
+    if item is None:
+        sys.exit(113)
+    if item.get("path"):
+        print(f"\tpath = {item['path']}")
+    if not item.get("dead"):
+        print("\tstate = running")
+        print(f"\tpid = {item['pid']}")
+    sys.exit(0)
+if cmd == "bootout":
+    state.pop(sys.argv[2].rsplit("/", 1)[1], None)
+    book.write_text(json.dumps(state))
+    sys.exit(0)
+if cmd != "bootstrap":
+    sys.exit(0)
+plist = plistlib.loads(Path(sys.argv[3]).read_bytes())
+label, variables = plist["Label"], plist["EnvironmentVariables"]
+if once("fail-bootstrap", label):
+    sys.exit(5)
+counter = S / "pid-counter"
+pid = int(counter.read_text()) + 1 if counter.exists() else 40000
+counter.write_text(str(pid))
+code = Path(plist["ProgramArguments"][1]).read_bytes()
+with open(S / "multi-started", "a") as stream:
+    stream.write(f"{label} {hashlib.sha256(code).hexdigest()}\n")
+state[label] = {"pid": pid, "dead": once("die", label), "path": sys.argv[3]}
+book.write_text(json.dumps(state))
+if once("no-up", label):
+    sys.exit(0)
+env = Path(variables.get("AGENT_RELAY_ENV", home / ".config/agent-relay/env"))
+state_dir = Path(variables.get("AGENT_RELAY_STATE", home / "Library/Application Support/agent-relay"))
+log = Path(variables.get("AGENT_RELAY_LOG", home / "Library/Logs/agent-relay.log"))
+log.parent.mkdir(parents=True, exist_ok=True)
+with open(log, "a") as stream:
+    stream.write("agent-relay up\n")
+listen = "bot"
+for line in env.read_text().splitlines():
+    if line.startswith("LISTEN_NAME="):
+        listen = line.split("=", 1)[1]
+if once("noreg", label):
+    sys.exit(0)
+db = home / ".reason/network/network.db"
+db.parent.mkdir(parents=True, exist_ok=True)
+con = sqlite3.connect(db)
+con.executescript("""SESSIONS""")
+con.execute("INSERT OR IGNORE INTO sessions VALUES (?, ?, 'cli', '/', NULL, NULL, NULL, 'pull', ?)",
+            (listen, "cli:" + listen, int(time.time() * 1000)))
+con.commit()
+person = re.search(r'^person = "(.*)"', (home / ".reason/network/config.toml").read_text(), re.M).group(1)
+state_dir.mkdir(parents=True, exist_ok=True)
+(state_dir / "registered").write_text(json.dumps({"name": f"{person}/{listen}", "pid": pid, "at": int(time.time())}))
+'''.replace("SESSIONS", SESSIONS)
+
+WEBHOOK_STUB = r'''import os
+if os.environ.get("MOCK_PY_FAIL"):
+    import sys
+    _words = os.environ["MOCK_PY_FAIL"].split()
+    if sys.argv and os.path.basename(sys.argv[0]) == _words[0] and all(w in sys.argv[1:] for w in _words[1:]):
+        os._exit(1)
+if os.environ.get("MOCK_WEBHOOK"):
+    import io, json, shutil, urllib.error, urllib.request
+    from pathlib import Path
+
+    class _Response(io.BytesIO):
+        def __init__(self, status):
+            super().__init__(b"")
+            self.status = status
+
+    def _open(self, request, data=None, timeout=None):
+        hooks = Path(os.environ["MOCK_WEBHOOK"])
+        record = {"url": request.full_url, "headers": dict(request.header_items()),
+                  "body": json.loads(request.data.decode())}
+        with open(hooks / "posts", "a") as stream:
+            stream.write(json.dumps(record) + "\n")
+        then = hooks / "then.json"
+        if then.exists():
+            shutil.copy(then, Path(os.environ["MOCK_WHO"]) / "all.json")
+        code = int((hooks / "code").read_text())
+        if not 200 <= code < 300:
+            raise urllib.error.HTTPError(request.full_url, code, "refused", {}, io.BytesIO(b""))
+        return _Response(code)
+
+    urllib.request.OpenerDirector.open = _open
+'''

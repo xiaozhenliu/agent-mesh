@@ -1,11 +1,14 @@
+import json
 import os
 import time
 import unittest
 
 from render_prompt import ROOT
 from tests.cli.install_support import (
+    EMPTY_DIRECTORY,
     InstallHarness,
 )
+from tests.cli.test_install_add import AddSupport
 
 
 class Check(InstallHarness, unittest.TestCase):
@@ -179,3 +182,118 @@ class Check(InstallHarness, unittest.TestCase):
                 if expected:
                     self.assertIn(expected, out)
                 self.assertEqual("webhook POST failed" in out or "webhook POST failures" in out, fails, out)
+
+
+class CheckBots(AddSupport, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.repo_dir = self.two_ready()
+        self.added(self.repo_dir)
+        self.lib = self.home / ".local/lib/agent-mesh"
+
+    def snapshot(self):
+        found = {}
+        for path in sorted(self.home.rglob("*")):
+            if path.is_symlink() or path.is_dir():
+                found[str(path)] = os.readlink(path) if path.is_symlink() else "dir"
+            else:
+                found[str(path)] = (path.stat().st_mtime_ns, path.stat().st_mode, path.read_bytes())
+        return found
+
+    def check(self):
+        before = self.snapshot()
+        result = self.run_script("check.sh", timeout=60)
+        self.assertEqual(self.snapshot(), before, "check.sh changed a file")
+        self.assertEqual(result.stdout.count("RESULT"), 1, result.stdout)
+        return result.stdout
+
+    def section(self, out, name):
+        start = out.index(f"== Bot address: demo/{name}")
+        rest = out[start + 1:]
+        end = min([i for i in (rest.find("\n== "), rest.find("\n\n")) if i >= 0] or [len(rest)])
+        return out[start:start + 1 + end]
+
+    def edit(self, change):
+        data = self.record()
+        change(data)
+        self.write_record(data)
+
+    def test_one_section_per_bot_shared_checks_once_and_cloud_registration(self):
+        out = self.check()
+        alpha, beta = self.section(out, "alpha"), self.section(out, "beta")
+        self.assertTrue(beta.startswith("== Bot address: demo/beta → Grok: Beta\n"), beta)
+        self.assertNotIn("Grok:", alpha.splitlines()[0])
+        for line in ("PASS  signing key present", "PASS  relay installed (this checkout's version)",
+                     "PASS  management lock file is private to you"):
+            self.assertEqual(out.count(line), 1, line)
+            self.assertLess(out.index(line), out.index("== Bot address"))
+        for text in (alpha, beta):
+            self.assertIn("PASS  relay service loaded", text)
+            self.assertIn("PASS  webhook configured", text)
+        self.assertIn("PASS  relay names in env derive from beta", beta)
+        self.assertIn("PASS  cloud registration confirmed", beta)
+        self.assertNotIn("cloud registration", alpha)
+        self.edit(lambda d: d["bots"]["beta"]["cloud"].update(state="pending"))
+        self.assertIn("PASS  the Bot's reply confirms the cloud registration; the next ./update.sh records it",
+                      self.check())
+        self.assertEqual(self.record()["bots"]["beta"]["cloud"]["state"], "pending")
+        self.edit(lambda d: d["bots"]["beta"]["cloud"].update(req="0" * 16))
+        self.assertIn("SKIP  cloud registration (the cloud sessions exist but the Bot has not replied yet; "
+                      "./install.sh --relay-name beta --wake-bot wakes it again)", self.check())
+        (self.who / "all.json").write_text(json.dumps(EMPTY_DIRECTORY))
+        self.assertIn("SKIP  cloud registration (not registered on the cloud yet; ./install.sh --relay-name beta "
+                      "--wake-bot asks the Bot to do it)", self.check())
+        self.put_reply("0" * 16, "agent-mesh-result add-bot {req} failed beta\n", sender="demo/beta")
+        out = self.check()
+        self.assertIn("FAIL  the Bot's reply does not confirm the cloud registration", out)
+        self.assertIn("-> ./install.sh --relay-name beta --wake-bot", out)
+        self.edit(lambda d: d["bots"]["beta"].update(stage="configured"))
+        beta = self.section(self.check(), "beta")
+        self.assertIn("SKIP  relay service (not started until the cloud registers this Bot; "
+                      "./install.sh --relay-name beta --wake-bot asks the Bot to do it)", beta)
+        self.assertNotIn("relay service loaded", beta)
+
+    def test_a_bot_being_removed_and_an_unreadable_roster_fail(self):
+        self.edit(lambda d: d.update(removing={"name": "beta", "kind": "added", "step": "stopped"}))
+        out = self.check()
+        beta = self.section(out, "beta")
+        self.assertIn("FAIL  the Bot beta is being uninstalled and gets no mail\n"
+                      "      -> ./uninstall.sh --level bot --relay-name beta", beta)
+        self.assertNotIn("relay service", beta)
+        self.assertIn("RESULT fix the FAIL lines above", out)
+        self.edit(lambda d: d.update(removing={"name": "alpha", "kind": "legacy", "step": "started"}))
+        self.assertIn("FAIL  the Bot alpha is being uninstalled", self.check())
+        (self.lib / "deployed.json").write_text("{damaged")
+        out = self.check()
+        self.assertIn("FAIL  the list of Bots on this Mac cannot be read", out)
+        self.assertIn("RESULT fix the FAIL lines above", out)
+
+    def test_engine_switch_record_states_and_lock_file(self):
+        record = self.lib / "engine-upgrade.json"
+        base = {"stage": "prepared", "bin": "b", "home": "h", "backup": ""}
+        for values, expected in (({"phase": "committed", "stage": "committed"},
+                                  "PASS  an earlier engine upgrade finished; its leftover record is harmless"),
+                                 ({"phase": "prepared"},
+                                  "FAIL  an engine upgrade stopped before the engine was switched; the engine is "
+                                  "unchanged"),
+                                 ({"phase": "stopped"}, "stopped before the engine was switched"),
+                                 ({"phase": "switched", "backup": "/old/engine"},
+                                  "FAIL  an engine upgrade did not finish\n      -> run ./update.sh in a terminal: it "
+                                  "rolls the switch back first (backup: /old/engine)"),
+                                 ({"phase": "stopped", "backup": "/old/engine"}, "(backup: /old/engine)")):
+            with self.subTest(values=values):
+                record.write_text(json.dumps(dict(base, **values)))
+                self.assertIn(expected, self.check())
+        record.unlink()
+        lock = self.home / ".local/lib/agent-mesh.lock"
+        self.assertTrue(lock.is_file())
+        lock.chmod(0o666)
+        self.assertIn(f"FAIL  others can write the management lock file {lock}\n      -> chmod go-w {lock}",
+                      self.check())
+        lock.unlink()
+        self.assertIn("SKIP  management lock file (not created yet;", self.check())
+        lock.symlink_to(self.home / "elsewhere")
+        self.assertIn(f"FAIL  the management lock file {lock} is a symlink", self.check())
+        lock.unlink()
+        lock.mkdir()
+        self.assertIn(f"FAIL  the management lock file {lock} is not a regular file", self.check())

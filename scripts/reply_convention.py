@@ -9,8 +9,10 @@
                                        owner, group, mode and ACLs stay (a backup of the original sits next to it,
                                        hidden, until the write is done); exit 1 and leave FILE unchanged if it has no
                                        single, complete block
-The address comes from the relay env (or the deployment record), the team name from the engine config, and the
-Bot's name in Grok from the deployment record (install.sh --grok-name).
+The addresses come from the Bots on this Mac (scripts/bots.py: the first Bot from its env or the deployment record,
+and every added Bot whose cloud registration is confirmed; a Bot being removed is left out), the team name from the
+engine config, and each Bot's name in Grok from the deployment record (install.sh --grok-name). With one Bot the
+block is one line; with several, one line per Bot in the order of the roster.
 """
 import argparse
 import os
@@ -20,8 +22,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import bots
 import deploy_state
-import relay_names
 from messages import t
 from render_prompt import ROOT
 
@@ -49,13 +51,21 @@ def person():
     return m.group(1) if m else ""
 
 
+def addresses(home):
+    try:
+        data = bots.load_record(home)
+    except ValueError:
+        data = {}
+    return [(b["name"], b["grok_name"]) for b in bots.roster(home, data)
+            if not b["removing"] and (b["kind"] == bots.LEGACY or b["cloud"] == "confirmed")]
+
+
 def values():
-    data = deploy_state.load(warn=False)
-    name = relay_names.from_env(deploy_state.env_path()) or deploy_state.recorded_name(data)
+    entries = addresses(deploy_state.home())
     team = person()
-    if not name or not team:
+    if not entries or not team:
         raise ValueError(t("reply.no_address"))
-    return team, name, deploy_state.recorded_grok(data)
+    return team, entries
 
 
 def block_line(lang, team, name, grok):
@@ -63,6 +73,20 @@ def block_line(lang, team, name, grok):
     if lang == "en":
         return f"- This team's Grok Bot address: {address}" + (f" (called “{grok}” in Grok)." if grok else ".")
     return f"- 本团队 Grok Bot 的地址：{address}" + (f"（在 Grok 里叫「{grok}」）。" if grok else "。")
+
+
+def block_lines(lang, team, entries):
+    if len(entries) == 1:
+        return [block_line(lang, team, *entries[0])]
+    head = "- This team's Grok Bot addresses:" if lang == "en" else "- 本团队 Grok Bot 的地址："
+    out = [head]
+    for name, grok in entries:
+        address = f"`{team}/{name}`"
+        if lang == "en":
+            out.append(f"  - {address}" + (f" (called “{grok}” in Grok)" if grok else ""))
+        else:
+            out.append(f"  - {address}" + (f"（在 Grok 里叫「{grok}」）" if grok else ""))
+    return out
 
 
 def find_block(lines):
@@ -73,18 +97,18 @@ def find_block(lines):
     return starts[0], ends[0], START.match(lines[starts[0]].rstrip("\r\n")).group(1)
 
 
-def fill(text, team, name, grok):
+def fill(text, team, entries):
     lines = text.splitlines(keepends=True)
     found = find_block(lines)
     if found is None:
         raise ValueError(t("reply.no_block", END))
     start, end, lang = found
     newline = "\r\n" if lines[start].endswith("\r\n") else "\n"
-    return "".join(lines[:start + 1] + [block_line(lang, team, name, grok) + newline] + lines[end:])
+    return "".join(lines[:start + 1] + [line + newline for line in block_lines(lang, team, entries)] + lines[end:])
 
 
-def rendered(lang, team, name, grok):
-    return fill(template_path(lang).read_text(encoding="utf-8"), team, name, grok)
+def rendered(lang, team, entries):
+    return fill(template_path(lang).read_text(encoding="utf-8"), team, entries)
 
 
 def write_new(path, data, mode):
@@ -163,10 +187,10 @@ def overwrite_in_place(path, old, new):
 
 
 def cmd_install(_args):
-    team, name, grok = values()
+    team, entries = values()
     for lang in LANGS:
         path = installed_dir() / template_path(lang).name
-        if write_if_changed(path, rendered(lang, team, name, grok)):
+        if write_if_changed(path, rendered(lang, team, entries)):
             print(t("reply.installed", path))
 
 

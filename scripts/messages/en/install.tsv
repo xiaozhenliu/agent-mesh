@@ -120,6 +120,62 @@ install.reopen_sessions	Sessions of Claude Code / Codex that were already open m
 install.step_key	5/6 signing key and routine webhook
 install.grok_not_recorded	note: the Grok name was not recorded (%s); run ./install.sh --grok-name '<name>' later
 install.step_cloud	6/6 cloud side
-install.help	agent-mesh: install the Mac side in one run.\n  ./install.sh --name <team-name> --relay-name <address> --grok-name <name> [--machine mac] [--yes] [--lang en|zh-CN]\n  ./install.sh --grok-name <name>  record or change the Bot's name in Grok (a label; the address stays)\n  ./install.sh --webhook        enter (or change) the routine's Webhook URL and key, then (re)start the relay\n  ./install.sh --cloud-prompt   print the invite and the text to send to Grok Bot again\n  ./install.sh --rotate-key     replace the signing key, restart the relay, print how to copy it to the cloud\n  ./install.sh --purge-copies   delete the relay's kept copies of forwarded messages (re-forward then says no-copy)\n  --repo-url https://...       public distribution URL accessible from the Bot's cloud computer\n  ./install.sh --version      print agent-mesh and pinned Reason Network versions; no installation\n  ./install.sh --restart-relay  (used by update.sh) install this checkout's relay and restart it; rolls back if it\n                                does not come up or does not register under its name\n  ./install.sh --preflight      (used by update.sh) check this Mac and the existing installation; changes nothing\n  ./install.sh --fetch-engine DIR  (used by update.sh) download the pinned Reason Network for this Mac, verify its\n                                sha256 and version, and unpack it into DIR; changes nothing else\n--lang selects the language of the prompts and of the terminal text in every mode. Default: the language recorded\nat install, then AGENT_MESH_LANG, otherwise en.\nThe team name is also your name inside the team: 1-40 chars, lowercase letters and digits joined by single '-',\nnot your real name. It is fixed once the team exists.\n--relay-name picks the Bot's address <team-name>/<name> (the cloud uses <name>-cloud and <name>-inbox): 1-34\nchars, the same character rules, not terminal. Use the Bot's own name so agents can tell Bots apart. A new\ninstallation needs it; an existing one keeps its name (including bot). It cannot be changed once chosen.\n--grok-name is the Bot's name as Grok shows it, in any language; it is stored as given and not used for routing.\ncheck.sh and the reply convention show <team-name>/<address> → Grok: <name>.\nWhat it does: installs Reason Network, creates your private team, wires your local agents (after showing the\nplan), generates the signing key, asks for the routine's webhook, installs the relay as a login service, then\nprints what to send to Grok Bot. Re-running is safe.
+install.help	agent-mesh: install the Mac side in one run.\n  ./install.sh --name <team-name> --relay-name <address> --grok-name <name> [--machine mac] [--yes] [--lang en|zh-CN]\n  ./install.sh --grok-name <name>  record or change the Bot's name in Grok (a label; the address stays)\n  ./install.sh --webhook        enter (or change) the routine's Webhook URL and key, then (re)start the relay\n  ./install.sh --add-bot [--grok-name <name>] [--relay-name <address>]  add another Bot to this installation:\n                                asks for its name in Grok and its address, shows its routine prompt, waits for its\n                                cloud registration, then starts its relay (always confirmed in a terminal)\n  ./install.sh --relay-name <address> --wake-bot  wake an added Bot again so it finishes its cloud registration\n  ./install.sh --cloud-prompt   print the invite and the text to send to Grok Bot again\n  ./install.sh --rotate-key     replace the signing key, restart the relay, print how to copy it to the cloud\n  ./install.sh --purge-copies   delete the relay's kept copies of forwarded messages (re-forward then says no-copy)\n  --repo-url https://...       public distribution URL accessible from the Bot's cloud computer\n  ./install.sh --version      print agent-mesh and pinned Reason Network versions; no installation\n  ./install.sh --restart-relay  (used by update.sh) install this checkout's relay and restart it; rolls back if it\n                                does not come up or does not register under its name; with --keep-rollback the\n                                previous relay stays saved until ./install.sh --undo-relay or update.sh drops it\n  ./install.sh --undo-relay     (used by update.sh) put back the relay saved by --keep-rollback, if any\n  ./install.sh --preflight      (used by update.sh) check this Mac and the existing installation; changes nothing\n  ./install.sh --fetch-engine DIR  (used by update.sh) download the pinned Reason Network for this Mac, verify its\n                                sha256 and version, and unpack it into DIR; changes nothing else\n--lang selects the language of the prompts and of the terminal text in every mode. Default: the language recorded\nat install, then AGENT_MESH_LANG, otherwise en.\nThe team name is also your name inside the team: 1-40 chars, lowercase letters and digits joined by single '-',\nnot your real name. It is fixed once the team exists.\n--relay-name picks the Bot's address <team-name>/<name> (the cloud uses <name>-cloud and <name>-inbox): 1-34\nchars, the same character rules, not terminal. Use the Bot's own name so agents can tell Bots apart. A new\ninstallation needs it; an existing one keeps its name (including bot). It cannot be changed once chosen.\nWith several Bots, --webhook, --cloud-prompt, --purge-copies, --grok-name and --wake-bot need --relay-name to say\nwhich Bot; --restart-relay and --rotate-key always cover all of them.\n--grok-name is the Bot's name as Grok shows it, in any language; it is stored as given and not used for routing.\ncheck.sh and the reply convention show <team-name>/<address> → Grok: <name>.\nWhat it does: installs Reason Network, creates your private team, wires your local agents (after showing the\nplan), generates the signing key, asks for the routine's webhook, installs the relay as a login service, then\nprints what to send to Grok Bot. Re-running is safe.
 install.option_value	install: %s needs a value
 install.see_help	run ./install.sh --help for the options
+install.add_alone	--add-bot cannot be combined with --webhook, --cloud-prompt, --rotate-key, --purge-copies, --restart-relay, --wake-bot, --preflight or --fetch-engine
+install.add_no_yes	--add-bot does not accept --yes: you confirm the plan yourself, in a terminal
+install.add_hint	To add another Bot, use ./install.sh --add-bot instead.
+install.add_continue	Bot '%s' is still waiting for its cloud registration; the relay starts after it. Continue with: %s
+install.add_done	Bot %s is added: its cloud registration is confirmed.
+install.add_exists	'%s' is already a Bot on this Mac. To enter its webhook again, run ./install.sh --webhook --relay-name %s
+install.add_finish_first	Bot '%s' has no webhook yet; finish it first: %s
+install.add_gave_up	no valid answer after 3 tries; nothing was changed
+install.add_need_grok	this is not a terminal, so the installer cannot ask for the Bot's name in Grok. Run it in a terminal, or give the name: %s
+install.add_no_default	no free address name was found (bot-2 to bot-99 are all taken); choose one with --relay-name
+install.add_no_deployment	--add-bot adds a Bot to an existing installation, and this Mac has none yet. Install the first Bot first: ./install.sh --name <team-name> --relay-name <address> --grok-name '<its name in Grok>'
+install.add_plan	Add Bot %s (called “%s” in Grok); %s stay as they are.
+install.add_plan_no_tty	This is not a terminal, so nobody could confirm the plan; nothing was changed. Run it in a terminal: %s
+install.add_reply_bad	the Bot's reply does not confirm its cloud registration, so it stays pending. Look at the lines above in the Bot's routine, then run %s
+install.add_reply_timeout	No confirmation from %s yet; the Bot stays pending. ./update.sh looks for the reply again later; or wake the Bot with %s
+install.add_reply_unread	could not look for the Bot's reply (see above); it stays pending. Run %s later
+install.add_resume	Continuing the unfinished addition of Bot %s.
+install.add_send_failed	could not send the confirmation request to %s; the Bot stays pending. Run %s later
+install.add_sent	Sent the confirmation request to %s; waiting up to %s minutes for its reply ...
+install.add_start_failed	the new Bot's relay did not start (see above); its service was removed again and the Bot stays pending. Fix the cause, then run %s
+install.add_status_failed	could not read this installation's state (deploy_state.py status, see above); nothing was changed
+install.add_stopped	stopped; nothing was changed
+install.add_team_failed	could not read this Mac's team from Reason Network (%s); nothing was changed
+install.add_team_other	--name %s is not this Mac's team (%s). --add-bot uses the existing team: leave --name out
+install.add_team_person	Reason Network reports the team %s, but its configuration says %s; nothing was changed
+install.add_unfinished	adding Bot '%s' is not finished. Finish it first with %s (or uninstall that Bot), then add another one
+install.add_update_first	this installation is not up to date or not confirmed yet (an update, the cloud setup, a relay or a routine prompt); run ./update.sh first, then add the Bot
+install.add_wait_timeout	The cloud registration of %s has not appeared yet; the Bot stays pending and its relay is not started. Once the Bot has done step 0 of its routine prompt in Grok, run %s
+install.add_waiting	Waiting for the cloud computer to register %s and %s (up to %s minutes) ...
+install.add_wake_failed	the wake notice could not be sent (see above); nothing else was changed. Check the routine's webhook, then run %s
+install.add_who_failed	could not list the team's sessions (reason-network who --all --json failed), so the new Bot's address names were not checked; nothing was changed, run again
+install.all_bots_no_name	--restart-relay and --rotate-key always cover every Bot on this Mac, because the relay code and the signing key are shared; run them without --relay-name
+install.ask_add_apply	OK to apply? [y/N] 
+install.ask_address	Bot address name [%s]: 
+install.ask_grok	What is this Bot called in Grok? 
+install.bot_removing	Bot '%s' is being uninstalled; finish that first: ./uninstall.sh --level bot --relay-name %s
+install.full_added	'%s' is an added Bot; a full install is only for the first Bot. To enter its webhook again, run ./install.sh --webhook --relay-name %s
+install.full_no_first	the first Bot on this Mac was uninstalled, and a full install cannot bring it back. To add a Bot, use ./install.sh --add-bot
+install.no_relays	no Bot on this Mac has a relay to restart
+install.not_a_bot	'%s' is not a Bot on this Mac (to add a Bot, use --add-bot). Choose one of these with --relay-name:
+install.roster_line	  %s%s
+install.roster_pending	(adding not finished)
+install.roster_removing	(being uninstalled)
+install.rotate_bot_down	  %s did not start
+install.rotate_bot_new	  %s runs with the new key
+install.rotate_key_kept	The signing key %s was replaced; a new key is not rolled back:
+install.rotate_restart_failed_all	not every relay restarted: their code, plists and running state were restored, but they need the new key. See the log lines above, then run ./install.sh --restart-relay
+install.try_again	%s; try again
+install.wake_legacy	--wake-bot is only for an added Bot; choose one with --relay-name
+install.wake_not_yet	The cloud registration of %s has not appeared yet. Once the Bot has done step 0 of its routine prompt in Grok, run %s again
+install.which_bot	this Mac has several Bots; choose one with --relay-name:
+install.bot_not_configured	the relay of %s is not configured yet; run %s
+install.bot_no_plist	the relay login service of %s is missing; run %s
+install.keep_rollback_alone	--keep-rollback only works with --restart-relay
+install.rollback_skipped	%s is being removed or was removed since the relay switch; its saved relay is not restored
+install.rollback_first_bot	the first Bot

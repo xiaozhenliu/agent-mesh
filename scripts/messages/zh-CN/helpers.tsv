@@ -40,3 +40,6 @@ reply.not_utf8	%s 不是 UTF-8 文本；没有做任何改动
 reply.refresh_failed	%s：%s；没有做任何改动。如果其中是旧版回复约定，请用 %s（或 zh-CN 版文件）替换那一段
 reply.up_to_date	%s 已显示本 Bot 的地址
 reply.updated	已更新 %s 中的 Bot 地址
+names.add_is_bot	%s 已经是这台 Mac 上的 Bot 或曾被使用；请换一个名字
+names.add_removed	%s 属于一个已卸载的 Bot，名字不能复用；请换一个名字
+names.add_key_taken	这台 Mac 的引擎已有会话键 %s（会话 %s）；请换一个名字

@@ -28,9 +28,31 @@ relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到�
 - 扫描先记下坏消息再输出，两步之间中断的那一轮会丢掉这一条提示。消息仍在引擎数据库里，诊断用的 `scan` 仍能看到。
 - 升级步骤不记录已经存在的坏消息，所以升级后的第一次扫描会把它们各报一次。
 
+## 多个 Bot
+
+同一台 Mac 上的多个 Grok Bot 共用团队、两台电脑上的 Reason Network 引擎、云电脑及其克隆 `/workspace/agent-mesh`，以及签名密钥 `outbound.key`；每个 Bot 有自己的三个名字、relay、webhook、routine、收件和 thread 笔记（见[多个 Grok Bot](README.zh-CN.md#多个-grok-bot)）。
+
+| | 第一个 Bot | 添加的 Bot `<name>` |
+|---|---|---|
+| `[LOCAL]` 上的配置 | `~/.config/agent-relay/env` | `~/.config/agent-relay-bots/<name>/env`（其中 `OUTBOUND_KEY_FILE` 指向共用的密钥） |
+| 登录服务 | `com.local.agent-relay` | `com.local.agent-relay.<name>` |
+| relay 状态 | `~/Library/Application Support/agent-relay/` | `~/Library/Application Support/agent-relay-bots/<name>/` |
+| relay 日志 | `~/Library/Logs/agent-relay.log` | `~/Library/Logs/agent-relay-<name>.log` |
+| `[BOT-CLOUD]` 上的收件和 thread 笔记 | `/workspace/agent-mesh/inbox/`、`threads/`；relay 名字在 `box/relay` | `/workspace/agent-mesh/bots/<name>/inbox/`、`threads/` |
+
+**选择器。** 添加的 Bot 的 routine 提示词把每条 `rn-cloud.sh` 命令写成 `RN_BOT=<name> /workspace/agent-mesh/box/rn-cloud.sh …`。这样命令使用 `<name>-cloud`、`<name>-inbox` 和 `bots/<name>/` 下的路径，并要求 `bots/<name>/.registered` 存在。`RN_BOT` 不能和 `AGENT_RELAY_NAME`、`RN_CLOUD_NAME`、`RN_INBOX_NAME`、`RN_INBOX_DIR` 或 `RN_THREADS_DIR` 同时使用，也不会退回到第一个 Bot。不带 `RN_BOT` 时和以前一样使用第一个 Bot。
+
+**登记。** 添加的 Bot 的 routine 提示词有第 0 步：只要 `bots/<name>/.registered` 不存在，这一轮就运行 `bash /workspace/agent-mesh/box/rn-cloud-add-bot.sh '<name>' '<team-name>' '<team-hash>'`，它核对团队，登记 `<name>-cloud` 和 `<name>-inbox`，并打印 `Bot address: <team-name>/<name> (this cloud uses <name>-cloud and <name>-inbox)`。团队哈希是引擎团队 id 的 SHA-256 的前 16 个十六进制数字。随后 `./install.sh --add-bot` 经新 Bot 的 relay 给它发一行 `agent-mesh add-bot <name> <request>`（`<request>` 是小写十六进制）。Routine 提示词对用户自己的 Mac 发来的这一行有专门规则：运行 `box/rn-cloud-add-bot.sh --check '<name>' '<request>'` 并回复输出；Mac 核对其中的 `agent-mesh-result add-bot <request> ok <name> <team-hash>` 一行，之后才把这个 Bot 的云端登记记为已确认。别人发来同样的一行不会执行。
+
+**已卸载的名字。** 卸载一个 Bot 时最先写 tombstone `box/bots-removed/<name>`；任何指定了带 tombstone 的 Bot 的命令都会被拒绝，这个名字也不能再登记。第一个 Bot 卸载时，`box/relay` 改名为 `box/relay.removed`，不带 `RN_BOT` 的命令都会被拒绝。Mac 上的部署记录保存已卸载的名字。
+
+**维护锁。** `rn-cloud.sh` 命令以共享方式持有 `/workspace/agent-mesh/.maint.lock`；云端安装、云端更新、添加 Bot 的登记和云端卸载以独占方式持有它。命令最多等 `RN_MAINT_WAIT` 秒（默认 600），否则以 `STOP: other cloud commands are still running; nothing was changed` 停下。Mac 上的 `install.sh`、`update.sh` 和 `uninstall.sh` 共用锁文件 `~/.local/lib/agent-mesh.lock`，同一时间只能运行其中一个。
+
+云端有多个 Bot 时拒绝 `rn-cloud.sh purge`，因为它会连其他 Bot 的信一起删除。
+
 ## 消息格式
 
-示例使用 Bot 地址名 `bot`（v0.8.0 以前的默认名）。用了其他名字时，把 `bot`、`bot-cloud` 和 `bot-inbox` 依次换成 `<name>`、`<name>-cloud` 和 `<name>-inbox`。
+示例使用 Bot 地址名 `bot`（v0.8.0 以前的默认名）。用了其他名字时，把 `bot`、`bot-cloud` 和 `bot-inbox` 依次换成 `<name>`、`<name>-cloud` 和 `<name>-inbox`。有多个 Bot 时，每个 Bot 用自己的名字，它们都用同一把密钥签名。
 
 ### 签名规则
 
