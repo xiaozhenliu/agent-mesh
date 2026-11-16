@@ -1,4 +1,4 @@
-update.help	agent-mesh：把已安装的 Mac 更新到这个 checkout 的版本。\n  ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--manual] [--repo-url URL]\n  --plan     显示哪些部分不同、将运行什么，然后退出；不改动部署\n  --no-pull  直接使用这个 checkout；否则先运行 git pull --ff-only\n  --yes      跳过开头唯一的一次确认\n  --manual   手动更新云端：暂停 routine，把命令块发给 Grok Bot，再把它的回复粘贴回来\n  --lang     终端提示和 routine 提示词的语言；默认依次取记录中的语言、AGENT_MESH_LANG、en\n  --repo-url 云端安装所用的仓库（默认是公开的 agent-mesh 仓库）；这个 checkout 中的云端脚本必须与该仓库的\n             发布 tag v<VERSION> 一致，改动任何内容之前会在线核对\n先更新这台 Mac（relay、dsh 插件、Reason Network）。routine 提示词有变化时，显示新提示词，请你粘贴进 routine。\n云端有变化时，从这台 Mac 给 Grok Bot 发一条更新请求，最多等 15 分钟，收到回信后核对并记录。从 v0.8.1 或更早\n版本第一次更新时，Grok Bot 不会自己运行：它会在 Grok 里告诉你，你在 Grok 对话里确认一次后它才运行更新。\n同时刷新 ~/.local/lib/agent-mesh/templates 中填好地址的回复约定。\n这台 Mac 上有多个 Bot 时，一次覆盖全部：所有 Bot 的 relay 共用一个引擎步骤，有变化的 routine 提示词逐个处理，\n云端更新请求只发一次，发给第一个能接收它的 Bot。\n退出码：0 完成或已是最新，1 未全部完成（见汇总），2 用法错误，3 需要终端（没有做任何改动）。
+update.help	agent-mesh：把已安装的 Mac 更新到这个 checkout 的版本。\n  ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--manual] [--repo-url URL]\n  --plan     显示哪些部分不同、将运行什么，然后退出；不改动部署\n  --no-pull  直接使用这个 checkout；否则先运行 git pull --ff-only。已跟踪的文件有未提交的改动时，列出这些\n             文件；在终端里且没有 --yes 时询问是否用当前的 checkout 继续，否则停下并给出这样做的命令\n  --yes      跳过开头唯一的一次确认\n  --manual   手动更新云端：暂停 routine，把命令块发给 Grok Bot，再把它的回复粘贴回来\n  --lang     终端提示和 routine 提示词的语言；默认依次取记录中的语言、AGENT_MESH_LANG、en\n  --repo-url 云端安装所用的仓库（默认是公开的 agent-mesh 仓库）；这个 checkout 中的云端脚本必须与该仓库的\n             发布 tag v<VERSION> 一致，改动任何内容之前会在线核对\n先更新这台 Mac（relay、dsh 插件、Reason Network）。relay 沿用它现在使用的 Python，与运行这个脚本的 python3\n无关；要更换请运行 ./install.sh --python <path>。routine 提示词有变化时，显示新提示词，请你粘贴进 routine。\n云端有变化时，从这台 Mac 给 Grok Bot 发一条更新请求，最多等 15 分钟，收到回信后核对并记录。从 v0.8.1 或更早\n版本第一次更新时，Grok Bot 不会自己运行：它会在 Grok 里告诉你，你在 Grok 对话里确认一次后它才运行更新。\n同时刷新 ~/.local/lib/agent-mesh/templates 中填好地址的回复约定。\n这台 Mac 上有多个 Bot 时，一次覆盖全部：所有 Bot 的 relay 共用一个引擎步骤，有变化的 routine 提示词逐个处理，\n云端更新请求只发一次，发给第一个能接收它的 Bot。\n退出码：0 完成或已是最新，1 未全部完成（见汇总），2 用法错误，3 需要终端（没有做任何改动）。
 update.lang_needs	--lang 需要 en 或 zh-CN
 update.url_needs	--repo-url 需要一个 URL
 update.unknown_option	未知选项：%s（见 ./update.sh --help）
@@ -28,7 +28,7 @@ update.relay_running_again	已安装的 relay 重新运行了。
 update.stopped_at	更新停在 '%s'。在终端里重新运行 ./update.sh，从这里继续。
 update.not_git	这个目录不是 git clone；请自行获取新版本，然后运行 ./update.sh --no-pull
 update.no_upstream	这个分支没有上游；请自行拉取，然后运行 ./update.sh --no-pull
-update.dirty_checkout	已跟踪的文件有未提交的改动；请提交或 stash，或运行 ./update.sh --no-pull
+update.dirty_checkout	已跟踪的文件有未提交的改动；请提交或 stash，或直接使用当前的 checkout：%s
 update.pull_failed	git pull --ff-only 失败；没有做任何改动
 update.at_latest	checkout 已是最新提交
 update.pulled	已拉取 %s..%s
@@ -157,3 +157,25 @@ update.bot_prompt_not_recorded	%s 的 routine 提示词没有记录为已更新�
 update.ask_bot_prompt_saved	安装程序给 %s 的 routine 提示词（%s）已保存到它的 routine 了吗？
 update.no_target	没有 Bot 能接收更新请求：需要一个云端登记已确认、relay 在运行并已注册的 Bot。请运行 ./install.sh --restart-relay，然后重新运行 ./update.sh；没有发送任何内容
 update.e_not_committed	无法在 %s 记录引擎步骤已完成；引擎切换会在下面撤销，在此之前保存的副本保留
+update.config_no_record	无法写入部署记录 %s；引擎设置没有改动
+update.config_write_failed	无法修正 %s 里的引擎设置；引擎和 relay 已恢复原样
+update.config_not_loaded	引擎设置已修正，但正在运行的引擎守护进程还没有加载；请再次运行 ./update.sh
+update.backlog_waiting	relay 还有 %s 条消息没有交付完；重启引擎前最多等 %s 分钟
+update.backlog_timeout	relay 还有 %s 条消息没有交付完；没有重启引擎。请稍后再次运行 ./update.sh
+update.e_config	== 引擎 1. 安全加固：修正引擎设置并重启守护进程（Reason Network %s）
+update.e_config_upgrade	安全加固：替换之前先修正引擎设置。
+update.no_python	没有找到可以运行 relay 的 Python；请用 ./install.sh --python <path> 指定
+update.python_stale	relay 使用的 Python %s 不存在或已不能用
+update.plan_python_replaced	  relay 的 Python：%s 不存在或已不能用；relay 改用 %s 并重启
+update.plan_python_mixed	  relay 的 Python：各个 Bot 的 relay 用的不是同一个；全部改用 %s 并重启
+update.plan_python_odd	  relay 的 Python：%s 位于虚拟环境或临时目录中；保持不变。要更换请运行 ./install.sh --python <path>
+update.plan_config	  安全加固：修正引擎设置并重启引擎
+update.plan_backlog	  relay 还有 %s 条消息没有交付完；更新会先等它们交付完，再重启引擎
+update.plan_config_unsupported	  引擎设置：%s 无法检查；更新会在改动任何内容之前停下，并说明怎么改
+update.config_unsupported	%s 里的引擎设置无法检查。请手工修改这个文件：在第一个 [table] 行之前只保留一行  auto_update = false  和一行  lan = false ，这一行之前不要有带引号的键和多行字符串；文件的其他位置，给 auto_update 或 lan 设带引号文本值的行可以保留（同名的成员或文件夹）；其余提到它们的行、带点的键和表头都删掉；然后再次运行 ./update.sh（它会重启引擎，让引擎加载改好的文件）
+update.python_not_recorded	注意：无法把 relay 使用的 Python 记录到 %s
+update.config_again	引擎设置的修正还没有完成；请再次运行 ./update.sh
+update.config_cleaned	已删除 %s 行早期版本追加在 %s 某个表里的设置；原文件保留为 %s，引擎加载修正后的设置之后删除。
+update.dirty_list	已跟踪的文件有未提交的改动：
+update.dirty_more	  ……共 %s 个文件
+update.ask_dirty_continue	用当前的 checkout 继续（等同 --no-pull）？

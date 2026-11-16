@@ -24,6 +24,29 @@ def own_group_with_default_signals():
     signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 
 
+BASE_PYTHON = os.path.realpath(getattr(sys, "_base_executable", None) or sys.executable)
+
+LOCKED = r'''set -euo pipefail
+. "$AGENT_MESH_ROOT/scripts/msg.sh"
+. "$AGENT_MESH_ROOT/scripts/lock.sh"
+mesh_lock_take python3 >/dev/null || exit 1
+"$@"
+'''
+
+
+def run_locked(env, *command, root=ROOT, timeout=60):
+    return subprocess.run(["/bin/bash", "-c", LOCKED, "locked", *map(str, command)],
+                          env=dict(env, AGENT_MESH_ROOT=str(root)), capture_output=True, text=True, timeout=timeout)
+
+
+def fake_python(path, target=None):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'#!/bin/sh\nexec "{target or BASE_PYTHON}" "$@"\n')
+    path.chmod(0o755)
+    return path
+
+
 def rn_engine():
     spec = importlib.util.spec_from_file_location("rn_engine", ROOT / "box/rn-engine.py")
     module = importlib.util.module_from_spec(spec)
@@ -49,7 +72,8 @@ class InstallHarness:
         (self.bin / "python3").symlink_to(sys.executable)
         self.env = {"PATH": str(self.bin), "HOME": str(self.home),
                     "MOCK_OS": "Darwin", "MOCK_ARCH": "arm64", "MOCK_VERSION": "0.12.17", "AGENT_MESH_REGISTER_WAIT": "2",
-                    "CALL_LOG": str(self.base / "calls")}
+                    "CALL_LOG": str(self.base / "calls"),
+                    "AGENT_MESH_PYTHON_CANDIDATES": BASE_PYTHON}
         self.tool("uname", 'if [ "$1" = -s ]; then echo "$MOCK_OS"; else echo "$MOCK_ARCH"; fi')
         self.tool("id", "echo 501")
         self.tool("launchctl", 'echo "launchctl $*" >> "$CALL_LOG"; exit 0')
@@ -91,7 +115,7 @@ class InstallHarness:
                                     '*) exit 0 ;; esac', path)
         cfg = self.home / ".reason/network/config.toml"
         cfg.parent.mkdir(parents=True)
-        cfg.write_text('person = "demo"\n')
+        cfg.write_text('auto_update = false\nlan = false\nperson = "demo"\n')
         return path
 
     def run_script(self, script="install.sh", *args, root=ROOT, timeout=60):
@@ -360,8 +384,26 @@ exit 0""")
         if record:
             for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
                 self.mark(repo, field, "confirmed")
+        else:
+            self.forget_python()
         (self.base / "calls").unlink()
         return repo
+
+    def forget_python(self):
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        data = self.record() or {}
+        data.pop("relay_python", None)
+        if set(data) <= {"schema"}:
+            path.unlink(missing_ok=True)
+        else:
+            self.write_record(data)
+
+    def as_v090(self, python):
+        relay, plist = self.relay_files()
+        subprocess.run([sys.executable, str(ROOT / "scripts/write_launch_agent.py"), str(relay), str(plist),
+                        "--python", str(python)], env=self.env, check=True)
+        self.forget_python()
+        return plist.read_bytes()
 
     def call_lines(self):
         return self.calls().splitlines()
@@ -557,6 +599,17 @@ exit 0""")
     def state_cmd(self, *args, root=ROOT):
         return subprocess.run([sys.executable, str(root / "scripts/deploy_state.py"), *args], env=self.env,
                               capture_output=True, text=True)
+
+    def locked_state(self, *args, root=ROOT):
+        return run_locked(self.env, "python3", root / "scripts/deploy_state.py", *args, root=root)
+
+    def relay_python(self, root=ROOT):
+        out = self.state_cmd("relay-python", root=root).stdout
+        return dict(line.split(" ", 1) for line in out.splitlines() if not line.startswith("note "))
+
+    def plist_python(self):
+        import plistlib
+        return plistlib.loads(self.relay_files()[1].read_bytes())["ProgramArguments"][0]
 
     def fake_daemon(self):
         home = self.home / ".reason/network"

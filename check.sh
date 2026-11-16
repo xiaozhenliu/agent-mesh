@@ -108,8 +108,23 @@ if [ -x "$RN" ]; then
     *state=none) skip "$(tq check.daemon)" "$(tq check.daemon_none)" ;;
     *) skip "$(tq check.daemon)" "$(tq check.daemon_unknown "$daemon")" ;;
   esac
-  [ -f "$CFG" ] && grep -q '^auto_update = false' "$CFG" && ok "$(tq check.auto_update_ok)" || bad "$(tq check.auto_update_bad)" "$(tq check.auto_update_fix "$CFG")"
-  [ -f "$CFG" ] && grep -q '^lan = false' "$CFG" && ok "$(tq check.lan_ok)" || bad "$(tq check.lan_bad)" "$(tq check.lan_fix "$CFG")"
+  setting_rc=0
+  python3 "$HERE/scripts/engine_config.py" check --path "$CFG" auto_update >/dev/null 2>&1 || setting_rc=$?
+  case "$setting_rc" in
+    0) ok "$(tq check.auto_update_ok)" ;;
+    1) bad "$(tq check.auto_update_bad)" "$(tq check.auto_update_fix "$CFG")" ;;
+    *) bad "$(tq check.auto_update_unknown)" "$(tq check.settings_unknown_fix "$CFG")" ;;
+  esac
+  setting_rc=0
+  python3 "$HERE/scripts/engine_config.py" check --path "$CFG" lan >/dev/null 2>&1 || setting_rc=$?
+  case "$setting_rc" in
+    0) ok "$(tq check.lan_ok)" ;;
+    1) bad "$(tq check.lan_bad)" "$(tq check.lan_fix "$CFG")" ;;
+    *) bad "$(tq check.lan_unknown)" "$(tq check.settings_unknown_fix "$CFG")" ;;
+  esac
+  if [ "$(python3 "$HERE/scripts/deploy_state.py" config-state 2>/dev/null)" = reload ]; then
+    bad "$(tq check.settings_reload)" "$(tq check.settings_reload_fix)"
+  fi
 else
   bad "$(tq check.no_engine)" "$(tq check.run_install)"
 fi
@@ -187,6 +202,25 @@ shared_checks() {
     bad "$(tq check.relay_old)" "$(tq check.relay_old_fix)"
   else
     skip "$(tq check.relay_version)" "$(tq check.relay_differs)"
+  fi
+  local py_out py="" py_source="" py_stale="" py_odd=0 k v
+  py_out="$(python3 "$state" relay-python 2>/dev/null)" || true
+  while read -r k v; do
+    case "$k" in
+      python) py="$v" ;; source) py_source="$v" ;; stale) py_stale="$v" ;;
+      note) [ "$v" = mixed ] || py_odd=1 ;;
+    esac
+  done <<EOF_PYTHON
+$py_out
+EOF_PYTHON
+  if [ -n "$py_stale" ]; then
+    bad "$(tq check.relay_python_missing "$py_stale")" "$(tq check.relay_python_fix)"
+  elif [ "$py_source" != recorded ] && [ "$py_source" != plist ]; then
+    skip "$(tq check.relay_python)" "$(tq check.relay_python_none)"
+  elif [ "$py_odd" = 1 ]; then
+    ok "$(tq check.relay_python_odd "$py")"
+  else
+    ok "$(tq check.relay_python_ok "$py")"
   fi
   lock="$(python3 - "$lockfile" <<'PY' 2>&1
 import os, stat, sys

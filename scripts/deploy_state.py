@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import plistlib
 import re
 import secrets
 import sqlite3
@@ -18,6 +19,7 @@ import urllib.request
 from pathlib import Path
 
 import bots
+import engine_config
 import relay_names
 from messages import t
 from render_prompt import CLOUD_FILES, ROOT, TEAM, render_prompt
@@ -32,6 +34,10 @@ NEEDS = ("cloud", "prompt", "cloud_engine")
 STATES = ("pending", "confirmed")
 TXN_KEYS = ("stage", "relay_was_loaded", "need", "lang", "commit", "target")
 STAGES = ("stopping", "relay_stopped", "routine_paused", "cloud_done", "prompt_done", "routine_resumed")
+PYTHON_CHECK = "import sys, ssl, sqlite3, plistlib; sys.exit(sys.version_info < (3, 9))"
+PYTHON_PICKS = ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3")
+TEMP_ROOTS = ("/tmp", "/private/tmp", "/var/folders", "/private/var/folders")
+CONFIG_KEYS = ("auto_update", "lan")
 
 
 class NoFirstBot(ValueError):
@@ -273,6 +279,107 @@ def relay_status(python, roster=None):
     return "unchanged" if ok else "changed"
 
 
+def probe(python, code):
+    try:
+        done = subprocess.run([python, "-c", code], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.returncode
+
+
+def developer_tools():
+    try:
+        done = subprocess.run(["/usr/bin/xcode-select", "-p"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+def python_usable(python):
+    if not isinstance(python, str) or not os.path.isabs(python) or any(ord(c) < 32 for c in python):
+        return False
+    if python != python.strip():
+        return False
+    if not os.path.isfile(python) or not os.access(python, os.X_OK):
+        return False
+    if sys.platform == "darwin" and os.path.realpath(python) == "/usr/bin/python3" and not developer_tools():
+        return False
+    return probe(python, PYTHON_CHECK) == 0
+
+
+def python_in_venv(python):
+    path = Path(python)
+    if (path.parent / "pyvenv.cfg").is_file() or (path.parent.parent / "pyvenv.cfg").is_file():
+        return True
+    return probe(python, "import sys; sys.exit(sys.prefix != sys.base_prefix)") == 1
+
+
+def python_in_temp(python):
+    roots = list(TEMP_ROOTS)
+    tmp = os.environ.get("TMPDIR", "").rstrip("/")
+    if tmp:
+        roots += [tmp, os.path.realpath(tmp)]
+    return any(candidate == root or candidate.startswith(root + "/")
+               for candidate in (python, os.path.realpath(python)) for root in roots)
+
+
+def python_notes(python):
+    notes = []
+    if python_in_venv(python):
+        notes.append("venv")
+    if python_in_temp(python):
+        notes.append("temp")
+    return notes
+
+
+def pick_python():
+    given = os.environ.get("AGENT_MESH_PYTHON_CANDIDATES")
+    names = PYTHON_PICKS if given is None else [name for name in given.split(":") if name]
+    for name in names:
+        if python_usable(name) and not python_notes(name):
+            return name
+    return None
+
+
+def relay_members(roster=None):
+    members = cohort(roster if roster is not None else lenient_roster() or [])
+    return members or [bots.paths(home(), None, bots.LEGACY)]
+
+
+def plist_python(bot):
+    try:
+        with open(bot["plist"], "rb") as stream:
+            arguments = plistlib.load(stream).get("ProgramArguments")
+    except Exception:
+        return None
+    if isinstance(arguments, list) and arguments and isinstance(arguments[0], str) and arguments[0]:
+        return arguments[0]
+    return None
+
+
+def recorded_python(data):
+    value = data.get("relay_python")
+    return value if isinstance(value, str) and value else None
+
+
+def resolve_python(data, roster=None):
+    recorded = recorded_python(data)
+    if recorded and python_usable(recorded):
+        return recorded, "recorded", None
+    found = next((p for p in map(plist_python, relay_members(roster)) if p), None)
+    if found and python_usable(found):
+        return found, "plist", None
+    picked = pick_python()
+    return picked, "picked" if picked else "none", recorded or found
+
+
+def python_mixed(python, roster=None):
+    found = [plist_python(bot) for bot in relay_members(roster)]
+    return any(p is not None and p != python for p in found)
+
+
 def has_webhook(env):
     try:
         cfg = relay_names.parse_env(Path(env).read_text(encoding="utf-8", errors="replace"))
@@ -388,10 +495,48 @@ def engine_txn_stage():
     return stage if isinstance(stage, str) and re.fullmatch(r"[a-z_]+", stage) else "damaged"
 
 
+def daemon_start():
+    eng = rn_engine()
+    pid = eng.daemon_pid(home() / ".reason/network")
+    return pid, (eng.started(pid) if pid else None)
+
+
+def config_record(data):
+    value = data.get("engine_config")
+    if value is None:
+        return None
+    return value if isinstance(value, dict) else {}
+
+
+def config_loaded(record):
+    pid, start = daemon_start()
+    if pid is None:
+        return True
+    written = record.get("written_s")
+    if not isinstance(written, int) or isinstance(written, bool) or start is None:
+        return False
+    return int(start) >= written
+
+
+def config_check():
+    return engine_config.check(home() / ".reason/network/config.toml", CONFIG_KEYS)
+
+
+def config_status(data):
+    result = config_check()
+    if result == engine_config.UNSUPPORTED:
+        return "unsupported"
+    if result != engine_config.OFF:
+        return "repair"
+    record = config_record(data)
+    return "ok" if record is None or config_loaded(record) else "reload"
+
+
 def cmd_status(args):
     data = load()
     roster = lenient_roster()
-    print(f"relay {relay_status(args.python, roster)}")
+    python = args.python or resolve_python(data, roster)[0] or sys.executable
+    print(f"relay {relay_status(python, roster)}")
     print(f"dsh {dsh_status()}")
     for field in REMOTE:
         print(f"{field} {remote_status(data, field, args.lang)}")
@@ -405,6 +550,7 @@ def cmd_status(args):
     print(f"cloud_release {cloud_release(data) or '-'}")
     request = request_of(data)
     print(f"request {request['req'] + ' ' + request['mode'] if request else '-'}")
+    print(f"config {config_status(data)}")
     try:
         status = name_status(data)
         current = relay_name()
@@ -414,7 +560,7 @@ def cmd_status(args):
     if roster is None:
         print("bots unreadable")
         return
-    for line in bot_lines(data, roster, args.python, args.lang):
+    for line in bot_lines(data, roster, python, args.lang):
         print(line)
 
 
@@ -1068,6 +1214,109 @@ def held_lock():
         raise SystemExit(5)
 
 
+def need_lock():
+    if os.environ.get("AGENT_MESH_LOCK_FD") is None:
+        raise ValueError(t("state.needs_lock"))
+    held_lock()
+
+
+def print_python(python, source, stale=None, mixed=False):
+    if python:
+        print(f"python {python}")
+    print(f"source {source}")
+    if stale:
+        print(f"stale {stale}")
+    for note in python_notes(python) if python else []:
+        print(f"note {note}")
+    if mixed:
+        print("note mixed")
+
+
+def set_python(data, python):
+    if data.get("relay_python") != python:
+        data["relay_python"] = python
+        save(data)
+
+
+def cmd_relay_python(args):
+    if args.python is not None:
+        if not python_usable(args.python):
+            raise ValueError(t("state.python_unusable", args.python))
+        print_python(args.python, "given")
+        return
+    if args.set is not None:
+        need_lock()
+        if not python_usable(args.set):
+            raise ValueError(t("state.python_unusable", args.set))
+        set_python(load_strict(), args.set)
+        return
+    if args.record:
+        need_lock()
+        data = load_strict()
+    else:
+        data = load(warn=False)
+    roster = lenient_roster()
+    python, source, stale = resolve_python(data, roster)
+    if args.record and source == "plist":
+        set_python(data, python)
+    print_python(python, source, stale, bool(python) and python_mixed(python, roster))
+    if not python:
+        raise SystemExit(3)
+
+
+def cmd_config_pending(_args):
+    need_lock()
+    data = load_strict()
+    data["engine_config"] = {"state": "pending"}
+    save(data)
+
+
+def cmd_config_written(_args):
+    need_lock()
+    data = load_strict()
+    if config_check() != engine_config.OFF:
+        raise ValueError(t("state.config_not_written", home() / ".reason/network/config.toml"))
+    written = int(time.time()) + 2
+    data["engine_config"] = {"state": "pending", "written_s": written}
+    save(data)
+    time.sleep(max(0.0, written - time.time()))
+
+
+def cmd_config_verified(_args):
+    need_lock()
+    data = load_strict()
+    record = config_record(data)
+    path = home() / ".reason/network/config.toml"
+    if record is None:
+        if config_check() == engine_config.OFF:
+            engine_config.drop_backup(path)
+        return
+    if config_check() != engine_config.OFF or not config_loaded(record):
+        raise SystemExit(1)
+    data.pop("engine_config")
+    save(data)
+    engine_config.drop_backup(path)
+
+
+def cmd_config_state(_args):
+    print(config_status(load(warn=False)))
+
+
+def relay_backlog(state_dir):
+    try:
+        data = json.loads((Path(state_dir) / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    spool, pending = data.get("spool"), data.get("pending")
+    return (len(spool) if isinstance(spool, list) else 0) + (len(pending) if isinstance(pending, dict) else 0)
+
+
+def cmd_relay_pending(_args):
+    print(sum(relay_backlog(bot["state_dir"]) for bot in relay_members()))
+
+
 def removing_target(data, args):
     removing = removing_of(data)
     if removing is not None and removing["name"] != args.relay_name:
@@ -1131,8 +1380,18 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("status")
     p.add_argument("--lang", required=True, choices=("en", "zh-CN"))
-    p.add_argument("--python", required=True)
+    p.add_argument("--python")
     p.set_defaults(run=cmd_status)
+    p = sub.add_parser("relay-python")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--record", action="store_true")
+    group.add_argument("--set")
+    group.add_argument("--python")
+    p.set_defaults(run=cmd_relay_python)
+    for name, run in (("config-pending", cmd_config_pending), ("config-written", cmd_config_written),
+                      ("config-verified", cmd_config_verified), ("config-state", cmd_config_state),
+                      ("relay-pending", cmd_relay_pending)):
+        sub.add_parser(name).set_defaults(run=run)
     p = sub.add_parser("digest")
     p.add_argument("field", choices=REMOTE)
     p.add_argument("--lang", default="en", choices=("en", "zh-CN"))

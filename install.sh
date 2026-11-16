@@ -17,6 +17,7 @@ export REASON_NETWORK_NO_PROMPT=1
 . "$HERE/scripts/lock.sh"
 
 NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG=""; RELAY_NAME_ARG=""; GROK_NAME=""; GROK_SET=0; ADD=0; KEEP_ROLLBACK=0
+PYTHON_ARG=""; RELAY_PYTHON=""
 lang_next=0
 for arg in "$@"; do
   [ "$lang_next" = 0 ] || DOC_LANG="$arg"
@@ -50,6 +51,7 @@ while [ $# -gt 0 ]; do
     --preflight) MODE=preflight; shift ;;
     --fetch-engine) value $# "$1" "${2:-}"; MODE=fetch; FETCH_DIR="$2"; shift 2 ;;
     --repo-url) value $# "$1" "${2:-}"; REPO_URL="$2"; shift 2 ;;
+    --python) value $# "$1" "${2:-}"; PYTHON_ARG="$2"; shift 2 ;;
     --version) echo "agent-mesh $PROJECT_VERSION (Reason Network ${VERSION#v})"; exit 0 ;;
     --lang) [ $# -ge 2 ] || { both_langs install.lang_value >&2; exit 2; }; DOC_LANG="$2"; shift 2 ;;
     -h|--help) t install.help; exit 0 ;;
@@ -66,6 +68,13 @@ if [ "$ADD" = 1 ]; then
   [ "$MODE" = full ] || { t install.add_alone >&2; exit 2; }
   [ "$YES" = 0 ] || { t install.add_no_yes >&2; exit 2; }
   MODE=add
+fi
+if [ -n "$PYTHON_ARG" ]; then
+  case "$MODE" in
+    webhook|restart) ;;
+    full) [ -n "$NAME" ] || MODE=restart ;;
+    *) t install.python_mode >&2; exit 2 ;;
+  esac
 fi
 if [ "$GROK_SET" = 1 ]; then
   case "$MODE" in
@@ -101,11 +110,26 @@ use_bot() {   # $1 name (empty: the first Bot), $2 kind for a Bot not on this Ma
 
 launch_agent() {   # $1 relay, $2 destination: the plist of the current Bot
   if [ "$BOT_KIND" = legacy ]; then
-    "$PYTHON" "$HERE/scripts/write_launch_agent.py" "$1" "$2"
+    "$PYTHON" "$HERE/scripts/write_launch_agent.py" "$1" "$2" --python "$RELAY_PYTHON"
   else
-    "$PYTHON" "$HERE/scripts/write_launch_agent.py" "$1" "$2" --label "$LABEL" --env "$ENV_FILE" \
-      --state "$STATE_DIR" --log "$LOG" --launchd-log "$LAUNCHD_LOG"
+    "$PYTHON" "$HERE/scripts/write_launch_agent.py" "$1" "$2" --python "$RELAY_PYTHON" --label "$LABEL" \
+      --env "$ENV_FILE" --state "$STATE_DIR" --log "$LOG" --launchd-log "$LAUNCHD_LOG"
   fi
+}
+
+relay_python() {
+  [ -z "$RELAY_PYTHON" ] || return 0
+  if [ -n "$PYTHON_ARG" ]; then RELAY_PYTHON="$PYTHON_ARG"; return 0; fi
+  local out rc=0 k v stale=""
+  out="$(deploy_state relay-python)" || rc=$?
+  while read -r k v; do
+    case "$k" in python) RELAY_PYTHON="$v" ;; stale) stale="$v" ;; esac
+  done <<< "$out"
+  if [ "$rc" != 0 ] || [ -z "$RELAY_PYTHON" ]; then
+    [ -z "$stale" ] || t install.python_stale "$stale" >&2
+    die "$(tq install.python_none)"
+  fi
+  [ -z "$stale" ] || t install.python_replaced "$stale" "$RELAY_PYTHON"
 }
 
 pinned_sha256() {   # the same table is in box/rn-cloud-setup.sh; change both with VERSION
@@ -374,6 +398,7 @@ drop_new() { rm -f ${NEW_RELAY:+"$NEW_RELAY"} ${NEW_PLISTS[@]+"${NEW_PLISTS[@]}"
 
 start_relay() {
   local i ok=1
+  relay_python
   mkdir -p "$LIB_DIR" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
   if [ -d "$ROLLBACK" ]; then
     t install.unfinished_switch
@@ -422,6 +447,8 @@ start_relay() {
       use_member "${C_NAMES[$i]}" "${C_KINDS[$i]}"
       t install.relay_up "$LOG"
     done
+    deploy_state relay-python --set "$RELAY_PYTHON" || t install.python_not_recorded "$LIB_DIR/deployed.json"
+    [ -z "$PYTHON_ARG" ] || t install.python_set "$RELAY_PYTHON"
     return 0
   fi
   trap '' INT TERM HUP
@@ -643,6 +670,9 @@ PYTHON="$(python3 -c 'import sys; print(sys.executable)')" \
   || die "$(tq install.python_broken)"
 "$PYTHON" -c 'import sys, ssl, sqlite3, plistlib; sys.exit(sys.version_info < (3, 9))' \
   || die "$(tq install.python_old)"
+if [ -n "$PYTHON_ARG" ]; then
+  why="$(deploy_state relay-python --python "$PYTHON_ARG" 2>&1)" || die "--python: $why"
+fi
 if [ "$MODE" = fetch ]; then
   [ -d "$FETCH_DIR" ] && "$PYTHON" -c 'import os, sys; sys.exit(bool(os.listdir(sys.argv[1])))' "$FETCH_DIR" \
     || die "$(tq install.fetch_dir --fetch-engine)"
@@ -750,7 +780,7 @@ wake_cmd() { printf '%s' "./install.sh --relay-name $RELAY_NAME --wake-bot --lan
 
 add_ready() {
   local st line w webhook
-  st="$(deploy_state status --lang "$DOC_LANG" --python "$PYTHON")" || die "$(tq install.add_status_failed)"
+  st="$(deploy_state status --lang "$DOC_LANG" --python "$RELAY_PYTHON")" || die "$(tq install.add_status_failed)"
   while IFS= read -r line; do
     w=(); read -r -a w <<< "$line"
     case "${w[0]:-}" in
@@ -1041,6 +1071,14 @@ if [ -x "$RN" ]; then
   esac
 fi
 
+case "$MODE" in
+  full|webhook)
+    [ -z "$PYTHON_ARG" ] || [ "${#R_NAMES[@]}" -le 1 ] || die "$(tq install.python_alone)"
+    relay_python ;;
+  add|wake|rotate|restart) relay_python ;;
+  cloud) [ "$SEL_KIND" != added ] || relay_python ;;
+esac
+
 preflight_bots() {
   local out n k s _c r i multi=0 names=() kinds=()
   if out="$("$PYTHON" "$HERE/scripts/bots.py" list 2>&1)"; then
@@ -1178,6 +1216,9 @@ seed_env
 if [ "$GROK_SET" = 1 ]; then
   why="$(deploy_state set-grok-name --relay-name "$RELAY_NAME" -- "$GROK_NAME" 2>&1)" \
     || t install.grok_not_recorded "$why"
+fi
+if [ -n "$PYTHON_ARG" ] && [ ! -f "$PLIST" ]; then
+  deploy_state relay-python --set "$PYTHON_ARG" || t install.python_not_recorded "$LIB_DIR/deployed.json"
 fi
 webhook_step
 

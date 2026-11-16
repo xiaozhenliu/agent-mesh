@@ -9,7 +9,9 @@ import unittest
 import messages
 from render_prompt import ROOT
 from tests.cli.install_support import (
+    BASE_PYTHON,
     InstallHarness,
+    fake_python,
     rn_engine,
 )
 from tests.cli.test_install_add import LEGACY_LABEL, TEAM_HASH, AddSupport, m
@@ -787,6 +789,115 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertIn("NEW-SCRIPT [--no-pull]\nNEW-SCRIPT [--lang]\nNEW-SCRIPT [zh-CN]", result.stdout)
         self.assertEqual(self.calls().count("git pull"), 1)
         self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
+
+    def test_update_lists_the_changed_files_and_offers_to_use_the_checkout_as_it_is(self):
+        repo = self.installed()
+        names = [f" M file-{i:02d}.md" for i in range(1, 26)]
+        (self.git / "dirty").write_text("\n".join(names) + "\n")
+        result = self.run_script("update.sh", "--lang", "en", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("tracked files have uncommitted changes:\n   M file-01.md\n", result.stderr)
+        self.assertIn("   M file-20.md\n  ... 25 files in total\n", result.stderr)
+        self.assertNotIn("file-21.md", result.stderr)
+        self.assertIn("or use this checkout as it is: ./update.sh --no-pull --lang en\n", result.stderr)
+        (self.git / "dirty").write_text(" M install.sh\nM  notes/a b.md\n")
+        result = self.run_tty(repo, "--yes", "--plan", "--manual", "--repo-url", "https://example.invalid/fork.git")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("   M install.sh\n  M  notes/a b.md\n", result.stderr)
+        self.assertNotIn("files in total", result.stderr)
+        self.assertIn("./update.sh --no-pull --lang en --yes --plan --manual --repo-url "
+                      "https://example.invalid/fork.git\n", result.stderr)
+        result = self.run_script("update.sh", "--lang", "en", "--repo-url", "https://example.invalid/my fork.git;x",
+                                 root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("./update.sh --no-pull --lang en --repo-url https://example.invalid/my\\ fork.git\\;x\n",
+                      result.stderr)
+        result = self.run_tty(repo, answers=("n",))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Continue with this checkout as it is (the same as --no-pull)?", result.stdout + result.stderr)
+        self.assertIn("stopped; nothing was changed", result.stderr)
+        self.assertEqual(self.service_changes(), [])
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        result = self.run_tty(repo, answers=("y", "y"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"relay\s+updated")
+        self.assertEqual(self.relay_files()[0].read_bytes(), (repo / "agent_relay.py").read_bytes())
+        self.assertNotIn("git pull", self.calls())
+        result = self.run_script("update.sh", "--lang", "zh-CN", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("./update.sh --no-pull --lang zh-CN\n", result.stderr)
+
+    def test_update_from_a_release_without_the_relay_python_changes_nothing_and_records_it(self):
+        repo = self.installed()
+        python = fake_python(self.base / "old tools/python3")
+        before = self.as_v090(python)
+        self.assertNotIn("relay_python", self.record())
+        record = (self.home / ".local/lib/agent-mesh/deployed.json").read_bytes()
+        for args in (("--no-pull", "--plan"), ("--plan",)):
+            plan = self.run_script("update.sh", *args, root=repo)
+            self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+            self.assertRegex(plan.stdout, r"relay\s+unchanged")
+            self.assertIn(f"relay Python: {python} is in a virtual environment or a temporary directory; it is kept. "
+                          "To move the relay: ./install.sh --python <path>", plan.stdout)
+            self.assertEqual((self.home / ".local/lib/agent-mesh/deployed.json").read_bytes(), record)
+        other = self.base / "newer tools"
+        other.mkdir()
+        (other / "python3").symlink_to(BASE_PYTHON)
+        self.env["PATH"] = f"{other}:{self.env['PATH']}"
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("already up to date", result.stdout)
+        self.assertEqual(self.relay_files()[1].read_bytes(), before)
+        self.assertEqual(self.plist_python(), str(python))
+        self.assertEqual(self.service_changes(), [])
+        self.assertNotIn("rn send", self.calls())
+        self.assertNotIn("launchctl kickstart", self.calls())
+        self.assertEqual(self.record()["relay_python"], str(python))
+        self.assertEqual(self.relay_python(), {"python": str(python), "source": "recorded"})
+        with open(repo / "agent_relay.py", "a") as stream:
+            stream.write("\n")
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"relay\s+updated")
+        self.assertEqual(self.relay_files()[1].read_bytes(), before)
+        self.assertEqual(self.record()["relay_python"], str(python))
+
+    def test_update_moves_the_relay_when_its_python_is_gone(self):
+        repo = self.installed()
+        python = fake_python(self.base / "old tools/python3")
+        self.as_v090(python)
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.record()["relay_python"], str(python))
+        python.unlink()
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertRegex(plan.stdout, r"relay\s+changed")
+        self.assertIn(f"relay Python: {python} is missing or no longer works; the relay moves to {BASE_PYTHON} "
+                      "and restarts", plan.stdout)
+        self.assertEqual(self.record()["relay_python"], str(python))
+        self.assertEqual(self.service_changes(), [])
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"relay\s+updated")
+        self.assertEqual(self.plist_python(), BASE_PYTHON)
+        self.assertEqual(self.record()["relay_python"], BASE_PYTHON)
+        self.assertTrue(self.loaded())
+        again = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertIn("already up to date", again.stdout)
+        self.assertNotIn("relay Python", again.stdout)
+        (self.base / "calls").unlink()
+        self.env["AGENT_MESH_PYTHON_CANDIDATES"] = ""
+        before = self.as_v090(python)
+        result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("no Python for the relay was found; choose one with ./install.sh --python <path>", result.stderr)
+        self.assertEqual(self.service_changes(), [])
+        self.assertEqual(self.relay_files()[1].read_bytes(), before)
+        self.assertNotIn("relay_python", self.record())
 
     def test_update_stops_when_the_engine_is_newer_or_unknown(self):
         repo = self.installed()

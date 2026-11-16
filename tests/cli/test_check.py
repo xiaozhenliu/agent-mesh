@@ -5,8 +5,10 @@ import unittest
 
 from render_prompt import ROOT
 from tests.cli.install_support import (
+    BASE_PYTHON,
     EMPTY_DIRECTORY,
     InstallHarness,
+    fake_python,
 )
 from tests.cli.test_install_add import AddSupport
 
@@ -182,6 +184,95 @@ class Check(InstallHarness, unittest.TestCase):
                 if expected:
                     self.assertIn(expected, out)
                 self.assertEqual("webhook POST failed" in out or "webhook POST failures" in out, fails, out)
+
+    def test_check_shows_the_relay_python_and_fails_when_it_is_gone(self):
+        def check():
+            return self.run_script("check.sh").stdout
+
+        self.configured(relay="alice")
+        self.assertIn("SKIP  relay Python (no relay installed yet)", check())
+        result = self.run_script("install.sh", "--restart-relay")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"PASS  relay Python: {BASE_PYTHON}\n", check())
+        python = fake_python(self.base / "old tools/python3")
+        self.as_v090(python)
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        before = path.read_bytes() if path.exists() else None
+        self.assertIn(f"PASS  relay Python: {python} (in a virtual environment or a temporary directory; to move the "
+                      "relay: ./install.sh --python <path>)\n", check())
+        self.assertEqual(path.read_bytes() if path.exists() else None, before)
+        gone = (f"FAIL  the relay's Python {python} is missing or no longer works\n      -> ./update.sh picks another "
+                "one and restarts the relay; or choose it yourself: ./install.sh --python <path>\n")
+        python.unlink()
+        self.assertIn(gone, check())
+        self.assertEqual(path.read_bytes() if path.exists() else None, before)
+        data = self.record() or {"schema": 1}
+        data["relay_python"] = str(python)
+        self.write_record(data)
+        self.env["AGENT_MESH_PYTHON_CANDIDATES"] = ""
+        out = check()
+        self.assertIn(gone, out)
+        self.assertIn("RESULT fix the FAIL lines above", out)
+        fake_python(python)
+        self.assertNotIn("FAIL  the relay's Python", check())
+
+    def test_check_reads_the_engine_settings_the_way_the_engine_does(self):
+        def check():
+            return self.run_script("check.sh").stdout
+
+        self.configured(relay="alice")
+        cfg = self.home / ".reason/network/config.toml"
+        out = check()
+        self.assertIn("PASS  auto_update off\nPASS  lan broadcast off\n", out)
+        cfg.write_text('person = "demo"\n[network]\nauto_update = false\nlan = false\n')
+        out = check()
+        self.assertIn(f"FAIL  auto_update not off\n      -> ./update.sh (it sets  auto_update = false  above the first "
+                      f"[table] line of {cfg}, removes the lines an earlier version appended inside tables, and "
+                      "restarts the engine)\n", out)
+        self.assertIn("FAIL  lan not off\n      -> ./update.sh (it sets  lan = false  above the first [table] line", out)
+        cfg.write_text('auto_update = false\nperson = "demo"\n[network]\nurl = "x"\n')
+        out = check()
+        self.assertIn("PASS  auto_update off\nFAIL  lan not off\n", out)
+        top = 'auto_update = false\nlan = false\nperson = "demo"\n'
+        for table in ('[inbound.people]\nbob = "hold"\nauto_update = false\nlan = false\n',
+                      '[folders]\n"~/personal" = "off"\nlan = false\n'):
+            cfg.write_text(top + table)
+            out = check()
+            self.assertIn("FAIL  auto_update not off\n", out)
+            self.assertIn("FAIL  lan not off\n", out)
+            self.assertNotIn("PASS  auto_update off", out)
+            self.assertNotIn("PASS  lan broadcast off", out)
+        fix = (f"      -> ./update.sh (it stops before changing anything and says what to change in {cfg} by hand; "
+               "after the edit run ./update.sh again, which restarts the engine so that it loads the corrected file)\n")
+        for table in ('[folders]\nlan = true\n', "[inbound.people]\nlan = 1\n", "[folders]\n lan = false\n"):
+            cfg.write_text(top + table)
+            out = check()
+            self.assertIn("FAIL  auto_update cannot be checked\n" + fix, out)
+            self.assertIn("FAIL  lan cannot be checked\n" + fix, out)
+            self.assertNotIn("PASS  auto_update off", out)
+        for table in ('[folders]\n"~/lan" = "vlan"\n', '[inbound.people]\nlan = "accept"\n',
+                      '[folders]\nauto_update = "~/updates"\n'):
+            cfg.write_text(top + table)
+            self.assertIn("PASS  auto_update off\nPASS  lan broadcast off\n", check())
+        cfg.write_text('"auto_update" = false\nlan = false\n')
+        out = check()
+        self.assertIn("FAIL  auto_update cannot be checked\n" + fix, out)
+        self.assertIn("FAIL  lan cannot be checked\n" + fix, out)
+        self.assertNotIn("PASS  auto_update off", out)
+        cfg.write_text('auto_update = false\nlan = false\nperson = "demo"\n')
+        reload = ("FAIL  the engine settings are corrected, but the running engine daemon has not loaded them yet\n"
+                  "      -> ./update.sh (it restarts the engine and the relay)\n")
+        self.write_record({"schema": 1, "engine_config": {"state": "pending", "written_s": int(time.time()) + 3600}})
+        self.assertNotIn(reload, check())
+        self.fake_daemon()
+        self.assertIn(reload, check())
+        self.write_record({"schema": 1, "engine_config": {"state": "pending"}})
+        self.assertIn(reload, check())
+        self.write_record({"schema": 1, "engine_config": {"state": "pending", "written_s": 1}})
+        out = check()
+        self.assertNotIn(reload, out)
+        self.assertIn("PASS  auto_update off\nPASS  lan broadcast off\n", out)
+        self.assertEqual(self.record()["engine_config"], {"state": "pending", "written_s": 1})
 
 
 class CheckBots(AddSupport, unittest.TestCase):

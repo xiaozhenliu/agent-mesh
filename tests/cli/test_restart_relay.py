@@ -1,11 +1,14 @@
 import hashlib
+import plistlib
 import signal
 import subprocess
 import time
 import unittest
 
 from tests.cli.install_support import (
+    BASE_PYTHON,
     InstallHarness,
+    fake_python,
 )
 from tests.cli.test_install_add import LEGACY_LABEL, AddSupport, m
 
@@ -162,6 +165,75 @@ class RestartRelay(InstallHarness, unittest.TestCase):
         self.assertTrue(self.loaded())
         self.assertFalse(rollback.exists())
 
+    def test_python_option_moves_the_relay_and_a_failed_start_keeps_the_previous_one(self):
+        repo = self.installed()
+        relay, plist = self.relay_files()
+        path = self.home / ".local/lib/agent-mesh/deployed.json"
+        self.assertEqual((self.plist_python(), self.record()["relay_python"]), (BASE_PYTHON, BASE_PYTHON))
+        old_plist, old_record = plist.read_bytes(), path.read_bytes()
+        chosen = fake_python(self.base / "chosen tools/python3")
+        broken = self.base / "broken/python3"
+        broken.parent.mkdir()
+        broken.write_text("#!/bin/sh\nexit 1\n")
+        broken.chmod(0o755)
+        for bad in (broken, self.base / "gone/python3", "python3"):
+            result = self.run_script("install.sh", "--python", str(bad), root=repo)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("install: --python: ", result.stderr)
+            self.assertIn("cannot run the relay", result.stderr)
+        for args in (("--add-bot",), ("--rotate-key",), ("--cloud-prompt",), ("--wake-bot",), ("--purge-copies",),
+                     ("--undo-relay",), ("--preflight",)):
+            result = self.run_script("install.sh", "--python", str(chosen), *args, root=repo)
+            self.assertEqual(result.returncode, 2, args)
+            self.assertIn("--python goes with a new installation, --webhook or --restart-relay", result.stderr, args)
+        for flag in ("no-up", "fail-bootstrap"):
+            (self.state / flag).write_text("")
+            result = self.run_script("install.sh", "--python", str(chosen), root=repo)
+            self.assertNotEqual(result.returncode, 0, flag)
+            self.assertIn("previous relay restored", result.stdout, flag + result.stdout + result.stderr)
+            self.assertNotIn("the relay now runs on", result.stdout, flag)
+        self.assertEqual((plist.read_bytes(), path.read_bytes()), (old_plist, old_record))
+        self.assertTrue(self.loaded())
+        (self.base / "calls").unlink()
+        result = self.run_script("install.sh", "--python", str(chosen), root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"the relay now runs on {chosen}", result.stdout)
+        self.assertEqual(plistlib.loads(plist.read_bytes())["ProgramArguments"], [str(chosen), str(relay)])
+        self.assertEqual(self.record()["relay_python"], str(chosen))
+        self.assertEqual([line.split()[1] for line in self.service_changes()], ["bootout", "bootstrap"])
+        self.assertTrue(self.loaded())
+        moved = plist.read_bytes()
+        for args in (("--restart-relay",), ()):
+            result = self.run_script("update.sh" if not args else "install.sh", *(args or ("--no-pull",)), root=repo)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((plist.read_bytes(), self.record()["relay_python"]), (moved, str(chosen)))
+        result = self.run_script("install.sh", "--restart-relay", "--python", BASE_PYTHON, root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.plist_python(), self.record()["relay_python"]), (BASE_PYTHON, BASE_PYTHON))
+        self.assertEqual(plist.read_bytes(), old_plist)
+
+    def test_without_a_usable_python_nothing_is_changed(self):
+        repo = self.installed()
+        _, plist = self.relay_files()
+        gone = self.base / "gone/python3"
+        before = self.as_v090(gone)
+        (self.base / "calls").unlink(missing_ok=True)
+        self.env["AGENT_MESH_PYTHON_CANDIDATES"] = f"{gone}:{self.base / 'missing'}"
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"the relay's Python {gone} is missing or no longer works", result.stderr)
+        self.assertIn("no Python for the relay was found", result.stderr)
+        self.assertIn("choose one with ./install.sh --python <path>", result.stderr)
+        self.assertEqual(plist.read_bytes(), before)
+        self.assertEqual(self.service_changes(), [])
+        self.assertNotIn("relay_python", self.record())
+        self.env["AGENT_MESH_PYTHON_CANDIDATES"] = BASE_PYTHON
+        result = self.run_script("install.sh", "--restart-relay", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"the relay's Python {gone} is missing or no longer works; the relay moves to {BASE_PYTHON}",
+                      result.stdout)
+        self.assertEqual((self.plist_python(), self.record()["relay_python"]), (BASE_PYTHON, BASE_PYTHON))
+
 
 class SeveralBots(AddSupport, unittest.TestCase):
     def setUp(self):
@@ -201,6 +273,53 @@ class SeveralBots(AddSupport, unittest.TestCase):
             self.assertEqual(self.plists(), plists, label)
             self.assertEqual(sorted(self.multi_loaded()), self.labels, label)
             self.assertFalse((self.home / ".local/lib/agent-mesh/rollback").exists(), label)
+
+    def pythons(self):
+        return [plistlib.loads(data)["ProgramArguments"][0] for data in self.plists()]
+
+    def test_python_option_alone_moves_every_relay_together(self):
+        self.assertEqual(self.pythons(), [BASE_PYTHON, BASE_PYTHON])
+        self.assertEqual(self.record()["relay_python"], BASE_PYTHON)
+        chosen = fake_python(self.base / "chosen tools/python3")
+        plists = self.plists()
+        result = self.run_script("install.sh", "--webhook", "--relay-name", "beta", "--python", str(chosen),
+                                 root=self.repo_dir)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("with several Bots, --python covers all of them", result.stderr)
+        (self.state / f"no-up.{LEGACY_LABEL}.beta").write_text("")
+        result = self.run_script("install.sh", "--python", str(chosen), root=self.repo_dir, timeout=60)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("previous relay restored", result.stdout)
+        self.assertEqual(self.plists(), plists)
+        self.assertEqual(self.record()["relay_python"], BASE_PYTHON)
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        before = len(self.multi_started())
+        result = self.run_script("install.sh", "--python", str(chosen), root=self.repo_dir, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"the relay now runs on {chosen}", result.stdout)
+        self.assertEqual(self.pythons(), [str(chosen), str(chosen)])
+        self.assertEqual(self.record()["relay_python"], str(chosen))
+        self.assertEqual([label for label, _ in self.multi_started()[before:]], self.labels)
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+
+    def test_relays_on_different_pythons_are_shown_and_moved_to_one(self):
+        other = fake_python(self.base / "other tools/python3")
+        data = plistlib.loads(self.plist("beta").read_bytes())
+        data["ProgramArguments"][0] = str(other)
+        self.plist("beta").write_bytes(plistlib.dumps(data))
+        self.assertEqual(self.pythons(), [BASE_PYTHON, str(other)])
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=self.repo_dir)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertIn(f"relay Python: the Bots' relays do not all use the same one; all of them move to {BASE_PYTHON} "
+                      "and restart", plan.stdout)
+        self.assertRegex(plan.stdout, r"relay\s+changed")
+        self.assertEqual(self.pythons(), [BASE_PYTHON, str(other)])
+        result = self.run_script("update.sh", "--no-pull", root=self.repo_dir, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.pythons(), [BASE_PYTHON, BASE_PYTHON])
+        self.assertEqual(sorted(self.multi_loaded()), self.labels)
+        again = self.run_script("update.sh", "--no-pull", "--plan", root=self.repo_dir)
+        self.assertNotIn("relay Python", again.stdout)
 
     def test_a_failed_restart_of_the_last_relay_restores_the_code_of_all(self):
         relay = self.home / ".local/lib/agent-mesh/agent_relay.py"

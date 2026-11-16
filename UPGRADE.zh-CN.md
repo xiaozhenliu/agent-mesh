@@ -6,6 +6,17 @@
 
 本机仓库、Bot 云电脑上的仓库和保存的 routine 提示词各自独立，修改 Mac 文件不会自动更新另外两处；已追加到项目 `AGENTS.md` 的回复约定也不会更新：从 `~/.local/lib/agent-mesh/templates/` 重新复制填好的模板；v0.8.0 及以后的副本也可以运行 `python3 scripts/reply_convention.py refresh <仓库>/AGENTS.md`。`./update.sh` 会自己刷新 `~/.local/lib/agent-mesh/templates/` 里的副本。每个版本需要更新哪些组件，见[更新日志](CHANGELOG.zh-CN.md)。
 
+## 从哪个版本来
+
+按你现在的版本找到对应的一行；`./install.sh --version` 会打印版本。每一行最后都运行 `./check.sh`。
+
+| 现在的版本 | 运行 | 除更新这台 Mac 之外 |
+|---|---|---|
+| v0.8.2 – v0.9.0 | `./update.sh` | 已确认的 v0.9.0：不更新云端，也不用粘贴 routine 提示词。v0.8.2 或 v0.8.3：发一次云端更新请求，Grok Bot 不用先问就运行；v0.8.2 还要粘贴一次 routine 提示词。 |
+| v0.8.1 及更早 | `git pull --ff-only && ./update.sh` | 粘贴一次 routine 提示词，第一次云端更新要在 Grok 对话里确认一次（[用这个版本第一次更新云端](#用-updatesh-升级)）。v0.6.0 及更早还会升级两台电脑上的引擎（[Reason Network 引擎](#reason-network-引擎)）。要先拉取：v0.3.0 及更早的 checkout 没有 `update.sh`，v0.4.0 – v0.6.0 的 `update.sh` 在引擎已自行更新时会在拉取前停下。 |
+
+第一次安装在 v0.8.0 及更早的 Mac，`./update.sh` 还可能修正引擎设置，并重启一次引擎和 relay（[引擎设置](#reason-network-引擎)）。
+
 ## 用 update.sh 升级
 
 在 `[LOCAL]` 的仓库里运行：
@@ -14,12 +25,12 @@
 ./update.sh --lang <en|zh-CN>
 ```
 
-它先执行 `git pull --ff-only`（加 `--no-pull` 跳过），再逐项与本机已部署的版本比较：
+它先执行 `git pull --ff-only`（加 `--no-pull` 跳过），再逐项与本机已部署的版本比较。checkout 里已跟踪的文件有未提交的改动时，它不拉取，而是列出这些文件（最多 20 个，超出时给出总数）：在终端里且没有 `--yes` 时问一次是否用当前的 checkout 继续，等同 `--no-pull`；否则停下，并给出这样做的完整命令。改动涉及云端脚本时，下文的发布版核对仍会在动云端之前停止更新。
 
 | 组件 | 比较方式 | 不一致时 |
 |---|---|---|
-| relay | 已安装的 `agent_relay.py` 和登录服务文件与当前仓库比较 | 安装并重启；新 relay 起不来时换回原来的版本 |
-| 引擎 | `~/.local/bin/reason-network` 与本版本固定的版本比较，并看正在运行的守护进程是否在二进制最后一次替换之后启动 | 引擎较旧时升级（[Reason Network 引擎](#reason-network-引擎)）；守护进程还在跑被替换前的二进制时重启；引擎更新或认不出版本时停止更新 |
+| relay | 已安装的 `agent_relay.py` 和登录服务文件与当前仓库比较，登录服务文件按 relay 固定使用的 Python 生成 | 安装并重启；新 relay 起不来时换回原来的版本 |
+| 引擎 | `~/.local/bin/reason-network` 与本版本固定的版本比较，看正在运行的守护进程是否在二进制最后一次替换之后启动，并看 `auto_update` 和 `lan` 是否在引擎读取的位置关闭 | 引擎较旧时升级（[Reason Network 引擎](#reason-network-引擎)）；守护进程还在跑被替换前的二进制时重启；设置没有关闭时修正并重启守护进程；引擎更新或认不出版本时停止更新 |
 | dsh 插件 | 已安装 bridge 时，比较已安装的插件文件 | 只替换插件文件，`~/.dsh/cordis.patch.yml` 和你的 bridge 设置保持不变；之后退出并重开 dsh |
 | 云端脚本 | `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-update.sh` 与上次确认的版本比较 | 云端更新，见下文 |
 | 云端初始化 | `box/rn-cloud-setup.sh` 与上次确认的版本比较 | 云端更新，见下文；它运行 `box/rn-cloud-setup.sh --upgrade-engine`，云端迁移都放在这里 |
@@ -29,6 +40,8 @@
 上次确认的版本记录在 `~/.local/lib/agent-mesh/deployed.json`。计划列出有变化的部分，只问一次 `继续？[Y/n]`；`--yes` 跳过这一问。不在终端运行时，只有不需要回答的情况才会执行：只有 relay 或 dsh 插件变化，或加了 `--yes` 且 routine 提示词没有变化。
 
 顺序是：先更新这台 Mac（回滚未完成的引擎升级、升级引擎、替换 relay 和 dsh 插件），然后在提示词有变化时请你粘贴新提示词（粘贴进 routine 后回答已保存），最后更新云端。
+
+**relay 的 Python。**relay 的登录服务文件里写着它用哪个 Python 运行。从 v0.9.1 起这个 Python 固定下来：它记录在 `~/.local/lib/agent-mesh/deployed.json`（`relay_python`）里，`./update.sh` 和 `./install.sh` 都按它生成登录服务文件，与运行脚本的 `python3` 无关。所以在别的终端或虚拟环境里运行 `./update.sh`，不再改动登录服务文件，也不重启 relay。已有的安装沿用登录服务文件里现在写的 Python，原样不变，即使它在虚拟环境或临时目录里；这时计划和 `./check.sh` 各提醒一行。新安装依次取 `/opt/homebrew/bin/python3`、`/usr/local/bin/python3`、`/usr/bin/python3`（要求已安装 Xcode 命令行工具），不使用虚拟环境和临时目录里的；都没有时停下，请你用 `--python` 指定。`./install.sh --python <path>` 检查给定的 Python（3.9+，带 `ssl` 和 `sqlite3`），重写所有 Bot 的登录服务文件并重启 relay，relay 起来之后才记录这个路径；有 relay 起不来时，登录服务文件和记录都保持原样。不加 `--python` 而更换 Python 并重启 relay，只发生在两种情况：固定的 Python 不存在或已不能用；各个 Bot 的登录服务文件写的不是同一个（以第一个 Bot 为准）。计划里会说明。
 
 **云端更新。**`./update.sh` 经 relay 从这台 Mac 给 Grok Bot 发一条普通消息：`agent-mesh update <tag> <commit> <请求号>`。routine 提示词里有专门针对这条消息的规则：发件人与云端属于同一个人（也就是用户自己的 Mac），且正文恰好是这一行时，Grok Bot 不用先问，运行 `bash /workspace/agent-mesh/box/rn-cloud-update.sh '<tag>' '<commit>' '<请求号>'`，并把完整输出回复过来。别人发来的同样消息不会被执行。`./update.sh` 最多等 15 分钟，按请求号在这台 Mac 的 Reason Network 数据库里找到回信，核对后记录云端已更新。云端更新期间 routine 照常运行，relay 也不停止。
 
@@ -90,6 +103,10 @@ agent-mesh 0.7.0 把固定的引擎从 Reason Network 0.10.7 换成 0.12.17（0.
 云端引擎放在 `box/bin/engine/reason-network`；`box/bin/reason-network` 是手动运行命令用的启动器，没有 `REASON_NETWORK_HOME` 时拒绝运行，并始终关闭自动更新。这一步把仍在 `box/bin/reason-network` 的引擎（v0.8.0 及更早）移到 `box/bin/engine`，并写入启动器。现有引擎是否可信只看字节、不运行它：不属于 `box/rn-engine.py` 固定构建的二进制（例如被自动更新替换过的，或早先固定的 0.10.7，它没有固定构建值）不运行就直接换成固定版本，原二进制留在备份里，永不放回。固定版本已经放好之后才失败时，打印只使用新二进制的手动步骤；固定版本没能放好时，启动引擎的文件都不改动，这一步提示排除原因后重新运行。Grok Bot 的回复必须包含 `engine: reason-network 0.12.17 running (daemon pid …)`、属于固定构建的 `engine: pinned build <sha256> at box/bin/engine/reason-network` 和 `engine: launcher ok` 三行；`./update.sh` 自动比对，一致才记录云端引擎已确认。`engine: note: other engine daemons run from box/bin` 一行列出此前从旧路径启动的守护进程；它们已无法替换引擎，这一步也不会停止它们（[故障排除](README.zh-CN.md#常见问题)）。云端引擎是比 0.12.17 新的固定构建时保持不动，这一步失败。
 
 一边是 0.10.7、另一边是 0.12.17 时（哪边先升级都一样），收发、回执和重投都正常：agent-mesh 0.6.0 起能读懂两个引擎的输出。能在同一次运行里升级 Mac 和云端最好。升级之后适用 Reason Network 0.12 的规则：默认中继在 `compute.reasonmachines.com` 下（[网络](README.zh-CN.md#网络)），离线超过一天的普通会话会连同未读信一起被遗忘（[网络与用量](README.zh-CN.md#网络与用量)）。
+
+**引擎设置。**agent-mesh 在 `~/.reason/network/config.toml` 里关闭引擎的 `auto_update` 和 `lan`。引擎只读取这个文件第一个 `[table]` 行之前的这两个键。第一次安装在 v0.8.0 及更早的 Mac 上，这两行可能落在某个表里，起不到关闭的作用，所以自动更新和局域网发现一直开着，而 `./check.sh` 报告已关闭。从 v0.9.1 起，`./check.sh` 和 `./update.sh` 检查整个文件：这两个键要在第一个表之前关闭，任何表里都不能再出现它们。不符合时，计划里显示 `安全加固：修正引擎设置并重启引擎`，并问那唯一的一次（`--yes` 代为回答）。这一步和重启守护进程一样进行：写入升级记录，删掉早期版本追加在表里的 `auto_update = false` 和 `lan = false` 两行，把这两行放到文件开头，重启守护进程，重新启动每个 relay 并核对它们的注册。本次运行同时要升级引擎时，设置在切换之前修正。
+
+文件改对了，旧的守护进程用的仍是它启动时加载的内容。所以 `./update.sh` 在写文件之前先在 `~/.local/lib/agent-mesh/deployed.json` 里记下这次修正（`engine_config`），只有正在运行的守护进程是在文件写完之后启动的，或者没有守护进程在运行，才去掉这条记录。要从表里删行时，先把原文件保留在旁边，名为 `config.toml.agent-mesh.bak`，和这条记录一起删除。运行在写文件之后、重启之前中断时，记录还在：`./check.sh` 报 FAIL，下一次 `./update.sh` 显示同一行计划并重启守护进程。这一步回滚时不撤销已修正的文件。重启 relay 会让云端尚未确认的消息再响一次门铃，所以 relay 还有这样的消息时，计划里会写明数量，这一步先等它们交付完（最多 15 分钟，超时就停下、不重启；请稍后再次运行 `./update.sh`）。检查只对引擎自己写出的格式负责。第一个表之前有带引号的键或多行字符串，或者文件的其他位置以别的形式出现 `auto_update` 或 `lan`（true/false 的其他写法、不同的空格或引号，既不是 true/false 也不是带引号字符串的值，带点的键，或者同名的表）时不做猜测：`./update.sh` 在改动任何内容之前停下，`./check.sh` 报 FAIL，`./check.sh` 指向 `./update.sh`，由它说明要手工改什么。`./update.sh` 同时记下这次修正，所以你改完之后的下一次运行会重启守护进程，让它加载改好的文件。成员或文件夹的名字正好是 `auto_update` 或 `lan` 时（表里形如 `lan = "hold"` 的行，值是带引号的字符串），这一行保持原样，也不会让更新停下。
 
 用 `./check.sh` 检查结果。它报告引擎版本是否与固定版本一致、正在运行的守护进程是否运行已安装的二进制、有没有未完成的引擎升级、relay 是否已在正在运行的守护进程上注册，以及本机上次确认的云端引擎版本。守护进程或 relay 重启后最多 11 分钟内，relay 正在重新注册，注册这一项报 SKIP。
 

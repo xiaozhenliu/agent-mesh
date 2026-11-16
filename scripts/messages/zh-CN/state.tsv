@@ -49,3 +49,6 @@ state.bad_participants	update：参与本次更新的 relay 清单缺失或格�
 state.removing_other	Bot %s 正在卸载；先完成它，再处理 %s
 state.not_a_bot	%s 不是这台 Mac 上的 Bot
 state.not_removing	%s 不在卸载中
+state.needs_lock	这个命令会改动部署记录，只能在 ./install.sh 或 ./update.sh 里运行
+state.python_unusable	%s 不能用来运行 relay：必须是带 ssl 和 sqlite3 的 Python 3.9+ 的绝对路径
+state.config_not_written	%s 里的引擎设置仍未关闭；没有写入记录

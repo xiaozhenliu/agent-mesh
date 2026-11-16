@@ -4,6 +4,24 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.9.1 — 2026-11-17
+
+升级更省事，并包含安全加固（#38）。用 `./update.sh` 更新；本版不更新云端，routine 提示词不用重贴。
+
+### 新增
+
+- `./install.sh --python <path>` 指定 relay 使用的 Python。
+
+### 变更
+
+- relay 使用的 Python 固定下来，在别的终端或虚拟环境里运行 `./update.sh` 不再改动它；`./check.sh` 会显示它。
+- 检出里有未提交的改动时，`./update.sh` 列出这些文件，并可以选择用当前检出继续。
+- 升级说明新增按来源版本查找的表格。
+
+### 修复
+
+- 安全加固；`./update.sh` 可能因此重启一次引擎和 relay。
+
 ## v0.9.0 — 2026-11-16
 
 一台 Mac 可以接多个 Grok Bot（#32）。用 `./update.sh` 更新；本版云端脚本有变化，它会发一次云端更新请求。已有的安装成为第一个 Bot，路径和 routine 提示词都不变。

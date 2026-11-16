@@ -4,6 +4,8 @@
   write_launch_agent.py RELAY DESTINATION                     the first Bot
   write_launch_agent.py RELAY DESTINATION --label L --env E --state S --log G --launchd-log D
                                                               an added Bot: its own label, env, state and logs
+  --python PATH                                               the interpreter the relay runs on, written as given
+                                                              (default: the one running this script)
 """
 import argparse
 import os
@@ -48,12 +50,13 @@ def main(argv):
     names = ("label", "env", "state", "log", "launchd_log")
     for name in names:
         parser.add_argument("--" + name.replace("_", "-"))
+    parser.add_argument("--python", default=sys.executable)
     args = parser.parse_args(argv)
     bot = {name: getattr(args, name) for name in names}
     given = [name for name in names if bot[name] is not None]
     if given and len(given) != len(names):
         parser.error("an added Bot needs --label, --env, --state, --log and --launchd-log together")
-    write_launch_agent(os.environ["HOME"], sys.executable, args.relay, args.destination, **bot)
+    write_launch_agent(os.environ["HOME"], args.python, args.relay, args.destination, **bot)
 
 
 if __name__ == "__main__":

@@ -224,15 +224,41 @@ on_exit() {
     if load_participants txn-participants 2>/dev/null; then start_participants || true; fi
     t update.stopped_at "$stage"
   fi
+  [ "$CONFIG_OPEN" = 0 ] || t update.config_again
   [ "$ACTING" = 0 ] || summary
   exit "$rc"
+}
+
+no_pull_command() {
+  local cmd="./update.sh --no-pull --lang $DOC_LANG"
+  [ "$YES" = 0 ] || cmd="$cmd --yes"
+  [ "$PLAN" = 0 ] || cmd="$cmd --plan"
+  [ "$MANUAL" = 0 ] || cmd="$cmd --manual"
+  [ "$REPO_URL" = "$DEFAULT_REPO_URL" ] || cmd="$cmd --repo-url $(printf '%q' "$REPO_URL")"
+  printf '%s' "$cmd"
+}
+
+dirty_files() {
+  local line n=0
+  t update.dirty_list >&2
+  while IFS= read -r line; do
+    n=$((n + 1))
+    [ "$n" -gt 20 ] || printf '  %s\n' "$line" >&2
+  done <<< "$1"
+  [ "$n" -le 20 ] || t update.dirty_more "$n" >&2
 }
 
 pull_checkout() {
   git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die update.not_git
   git -C "$HERE" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 || die update.no_upstream
-  [ -z "$(git -C "$HERE" status --porcelain --untracked-files=no)" ] || die update.dirty_checkout
-  local old new
+  local old new dirty
+  dirty="$(git -C "$HERE" status --porcelain --untracked-files=no)" || die update.not_git
+  if [ -n "$dirty" ]; then
+    dirty_files "$dirty"
+    if [ "$YES" = 1 ] || [ ! -t 0 ]; then die update.dirty_checkout "$(no_pull_command)"; fi
+    ask update.ask_dirty_continue || die update.stopped_nothing
+    return 1
+  fi
   old="$(git -C "$HERE" rev-parse HEAD)"
   git -C "$HERE" pull --ff-only || die update.pull_failed
   new="$(git -C "$HERE" rev-parse HEAD)"
@@ -300,9 +326,25 @@ read_paths() {
   done <<< "$out"
 }
 
+read_python() {
+  local out rc=0 k v
+  RELAY_PYTHON=""; PY_SOURCE=""; PY_STALE=""; PY_ODD=0; PY_MIXED=0
+  out="$(state relay-python)" || rc=$?
+  while read -r k v; do
+    case "$k" in
+      python) RELAY_PYTHON="$v" ;; source) PY_SOURCE="$v" ;; stale) PY_STALE="$v" ;;
+      note) if [ "$v" = mixed ]; then PY_MIXED=1; else PY_ODD=1; fi ;;
+    esac
+  done <<< "$out"
+  if [ "$rc" != 0 ] || [ -z "$RELAY_PYTHON" ]; then
+    [ -z "$PY_STALE" ] || t update.python_stale "$PY_STALE" >&2
+    die update.no_python
+  fi
+}
+
 read_status() {
   local out k v w i name_value
-  out="$(state status --lang "$DOC_LANG" --python "$PYTHON")" || die update.no_status
+  out="$(state status --lang "$DOC_LANG" --python "$RELAY_PYTHON")" || die update.no_status
   B_NAMES=(); B_KINDS=(); B_STAGES=(); B_RELAY=(); B_PROMPT=(); B_CLOUD=(); B_REMOVING=()
   B_LABELS=(); B_PLISTS=(); B_MARKERS=()
   while read -r k v; do
@@ -310,7 +352,7 @@ read_status() {
       relay) S_RELAY="$v" ;; dsh) S_DSH="$v" ;; cloud) S_CLOUD="$v" ;;
       cloud_setup) S_SETUP="$v" ;; prompt) S_PROMPT="$v" ;; txn) S_TXN="$v" ;; name) S_NAME="$v" ;;
       engine) read -r S_ENGINE S_EVER S_EPIN <<< "$v" ;; etxn) S_ETXN="$v" ;; cloud_engine) S_CENGINE="$v" ;;
-      cloud_release) S_CREL="$v" ;;
+      cloud_release) S_CREL="$v" ;; config) S_CONFIG="$v" ;;
       bot)
         read -r -a w <<< "$v"
         B_NAMES+=("${w[0]}"); B_KINDS+=("${w[2]}"); B_STAGES+=("${w[4]}"); B_RELAY+=("${w[8]}")
@@ -372,6 +414,9 @@ print_plan() {
     failed) plan_line release failed "$(tq update.plan_release_failed "$REL_NOTE")" ;;
   esac
   plan_line relay "$S_RELAY" "$(tq update.plan_relay)"
+  if [ -n "$PY_STALE" ]; then t update.plan_python_replaced "$PY_STALE" "$RELAY_PYTHON"
+  elif [ "$PY_MIXED" = 1 ]; then t update.plan_python_mixed "$RELAY_PYTHON"; fi
+  [ "$PY_ODD" = 0 ] || t update.plan_python_odd "$RELAY_PYTHON"
   case "$S_ETXN" in
     -) ;;
     committed) t update.plan_etxn_committed ;;
@@ -381,6 +426,12 @@ print_plan() {
     older) plan_line engine changed "$(tq update.plan_engine_older "$S_EVER" "$S_EPIN")" ;;
     stale) plan_line engine changed "$(tq update.plan_engine_stale)" ;;
     *) plan_line engine unchanged "-" ;;
+  esac
+  case "$S_CONFIG" in
+    repair|reload)
+      t update.plan_config
+      [ "$BACKLOG" = 0 ] || t update.plan_backlog "$BACKLOG" ;;
+    unsupported) t update.plan_config_unsupported "$CFG" ;;
   esac
   if [ "$S_DSH" = absent ]; then plan_line dsh absent "$(tq update.plan_dsh_absent)"
   else plan_line dsh "$S_DSH" "$(tq update.plan_dsh)"; fi
@@ -399,7 +450,7 @@ print_plan() {
     *) plan_line prompt "$S_PROMPT" "$(tq update.plan_prompt)" ;;
   esac
   [ "$MULTI" = 0 ] || plan_bots
-  [ "$S_ENGINE" = unchanged ] || t update.plan_engine_order
+  if [ "$S_ENGINE" != unchanged ] || config_needed; then t update.plan_engine_order; fi
   if [ "$MANUAL" = 1 ] && { cloud_needed || [ "$S_PROMPT" != unchanged ]; }; then
     if [ "$MULTI" = 1 ]; then t update.plan_manual_order_bots; else t update.plan_manual_order; fi
   fi
@@ -651,14 +702,59 @@ engine_commit() {
   S_RELAY=unchanged
 }
 
+config_needed() { [ "$S_CONFIG" = repair ] || [ "$S_CONFIG" = reload ]; }
+
+config_begin() {
+  state config-pending || die update.config_no_record "$LIB_DIR/deployed.json"
+  CONFIG_OPEN=1
+}
+
+config_write() {
+  local out
+  if out="$("$PYTHON" "$HERE/scripts/engine_config.py" clean --path "$CFG" auto_update lan 9>&-)"; then
+    [ "${out%% *}" = 0 ] || t update.config_cleaned "${out%% *}" "$CFG" "${out#* }"
+    if engine config-off --path "$CFG" auto_update lan && state config-written; then return 0; fi
+  fi
+  R_ENGINE="$(tq r.failed)"
+  engine_recover || { ENGINE_TXN=0; die update.e_not_undone; }
+  die update.config_write_failed "$CFG"
+}
+
+config_done() {
+  if state config-verified; then
+    CONFIG_OPEN=0
+  else
+    t update.config_not_loaded
+    FAILED=1
+  fi
+}
+
+backlog_wait() {
+  local i n waited=0 limit="${AGENT_MESH_PENDING_WAIT:-900}" loaded=0
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    if [ "${B_STAGES[$i]}" = relay ] && label_loaded "${B_LABELS[$i]}"; then loaded=1; fi
+  done
+  [ "$loaded" = 1 ] || return 0
+  while :; do
+    n="$(state relay-pending)" || n=0
+    [ "$n" != 0 ] || return 0
+    [ "$waited" != 0 ] || t update.backlog_waiting "$n" "$((limit / 60))"
+    [ "$waited" -lt "$limit" ] || die update.backlog_timeout "$n"
+    sleep 5; waited=$((waited + 5))
+  done
+}
+
 engine_step() {
-  local tmp rc=0 backup base n
+  local tmp rc=0 backup base n fix=0
+  if config_needed; then fix=1; fi
   echo
   set_participants_now
   engine_others
-  if [ "$S_ENGINE" = stale ]; then
-    t update.e_restart "$S_EVER"
+  if [ "$S_ENGINE" != older ]; then
+    if [ "$fix" = 1 ]; then t update.e_config "$S_EVER"; else t update.e_restart "$S_EVER"; fi
+    [ "$fix" = 0 ] || config_begin
     engine_prepare restart
+    [ "$fix" = 0 ] || config_write
     if ! engine restart --home "$RN_HOME" --bin "$RN" --txn "$ETXN"; then
       R_ENGINE="$(tq r.restart_failed)"
       engine_recover || { ENGINE_TXN=0; die update.e_not_undone; }
@@ -672,17 +768,21 @@ engine_step() {
     fi
     engine_commit
     R_ENGINE="$(tq r.daemon_restarted_on "$S_EVER")"
+    [ "$fix" = 0 ] || config_done
     return 0
   fi
   t update.e_upgrade "$S_EVER" "$S_EPIN"
   t update.e_upgrade_explain "$S_EPIN"
+  [ "$fix" = 0 ] || t update.e_config_upgrade
   tmp="$(mktemp -d "$LIB_DIR/.engine-new.XXXXXX")" || die update.e_no_tmp "$LIB_DIR"
   ENGINE_TMP="$tmp"
   if ! installer --fetch-engine "$tmp" >/dev/null; then
     R_ENGINE="$(tq r.download_failed)"
     die update.e_download_failed
   fi
+  [ "$fix" = 0 ] || config_begin
   engine_prepare upgrade
+  [ "$fix" = 0 ] || config_write
   backup="$LIB_DIR/engine-backup-$(date -u +%Y%m%dT%H%M%SZ)"
   base="$backup"; n=1
   while [ -e "$backup" ]; do n=$((n + 1)); backup="$base-$n"; done
@@ -705,6 +805,7 @@ engine_step() {
   engine_commit
   state set-engine "$S_EPIN" || t update.e_not_recorded "$LIB_DIR/deployed.json"
   R_ENGINE="$(tq r.upgraded "$S_EVER" "$S_EPIN" "$backup")"
+  [ "$fix" = 0 ] || config_done
 }
 
 update_dsh() {
@@ -856,10 +957,11 @@ main() {
   LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
   MARKER="$HOME/Library/Application Support/agent-relay/registered"
   RN="$HOME/.local/bin/reason-network"; RN_HOME="$HOME/.reason/network"; ETXN="$LIB_DIR/engine-upgrade.json"
-  LANG_ARG=""; YES=0; PULL=1; PLAN=0; MANUAL=0; REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
+  CFG="$RN_HOME/config.toml"; DEFAULT_REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
+  LANG_ARG=""; YES=0; PULL=1; PLAN=0; MANUAL=0; REPO_URL="$DEFAULT_REPO_URL"
   REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""; LAST_CHECK=""; TARGET=""
   FAILED=0; NEED=""; SHOWN=""; SHOWN_SETUP=""; SHOWN_ENGINE=""; S_NAME=""; REPLY_TEXT=""; S_CREL=-
-  S_ENGINE=unchanged; S_EVER=""; S_EPIN=""; S_ETXN=-; S_CENGINE=unchanged
+  S_ENGINE=unchanged; S_EVER=""; S_EPIN=""; S_ETXN=-; S_CENGINE=unchanged; S_CONFIG=ok; BACKLOG=0
   pick_lang "$@"
   parse_args "$@"
   R_RELAY="$(tq r.unchanged)"; R_DSH="$R_RELAY"; R_CLOUD="$R_RELAY"; R_SETUP="$R_RELAY"; R_PROMPT="$R_RELAY"
@@ -874,24 +976,34 @@ main() {
     exec "$BASH" "$HERE/update.sh" --no-pull "$@"
   fi
 
+  read_python
   read_status
   [ "$PLAN" = 1 ] || add_pending_step
   local terminal=0 confirm=0
   if [ "$S_TXN" != - ] || [ "$S_PROMPT" != unchanged ] || cloud_pending || { [ "$MANUAL" = 1 ] && cloud_needed; }; then
     terminal=1
   fi
-  if cloud_needed || [ "$S_ENGINE" != unchanged ] || [ "$S_ETXN" != - ]; then
+  if cloud_needed || [ "$S_ENGINE" != unchanged ] || [ "$S_ETXN" != - ] || config_needed; then
     confirm=1
   fi
+  if config_needed; then BACKLOG="$(state relay-pending)" || BACKLOG=0; fi
   if cloud_stale; then
     release_check || [ "$PLAN" = 1 ] || fail "$REL_NOTE"
   fi
   print_plan
   [ "$PLAN" = 0 ] || exit 0
+  if [ "$S_CONFIG" = unsupported ]; then
+    state config-pending || die update.config_no_record "$LIB_DIR/deployed.json"
+    die update.config_unsupported "$CFG"
+  fi
   if { [ "$terminal" = 1 ] || { [ "$confirm" = 1 ] && [ "$YES" != 1 ]; }; } && [ ! -t 0 ]; then
     t update.needs_terminal "$DOC_LANG"
     exit 3
   fi
+  if [ "$PY_SOURCE" = plist ] && [ "$S_RELAY" = unchanged ]; then
+    state relay-python --record >/dev/null || t update.python_not_recorded "$LIB_DIR/deployed.json"
+  fi
+  [ "$S_CONFIG" != ok ] || state config-verified || true
   "$PYTHON" "$HERE/scripts/reply_convention.py" install || t update.convention_failed "$LIB_DIR/templates"
   if [ "$terminal" = 0 ] && [ "$confirm" = 0 ] && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ]; then
     t update.up_to_date
@@ -899,7 +1011,7 @@ main() {
   fi
   pending_step
   if [ "$S_TXN" = - ] && [ "$S_ETXN" = - ] && [ "$S_ENGINE" = unchanged ] && [ "$S_PROMPT" = unchanged ] \
-    && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ] && ! cloud_needed; then
+    && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ] && ! cloud_needed && ! config_needed; then
     summary
     exit 0
   fi
@@ -922,7 +1034,8 @@ main() {
     changed=1
     read_status
   fi
-  if [ "$S_ENGINE" != unchanged ]; then
+  if [ "$S_ENGINE" != unchanged ] || config_needed; then
+    if config_needed; then backlog_wait; fi
     engine_step
     changed=1
   fi
@@ -951,7 +1064,7 @@ main() {
   [ "$FAILED" = 0 ] || exit 1
 }
 
-TXN_ACTIVE=0; ACTING=0; ENGINE_TXN=0; ENGINE_TMP=""; MULTI=0
+TXN_ACTIVE=0; ACTING=0; ENGINE_TXN=0; ENGINE_TMP=""; MULTI=0; CONFIG_OPEN=0
 B_NAMES=(); P_NAMES=(); P_LABELS=(); P_PLISTS=(); P_WAS=(); P_PIDS=()
 trap on_exit EXIT
 trap 'exit 130' INT

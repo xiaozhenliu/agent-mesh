@@ -45,10 +45,10 @@ check.daemon_none	not running
 check.daemon_unknown	could not check: %s
 check.auto_update_ok	auto_update off
 check.auto_update_bad	auto_update not off
-check.auto_update_fix	set  auto_update = false  in %s
+check.auto_update_fix	./update.sh (it sets  auto_update = false  above the first [table] line of %s, removes the lines an earlier version appended inside tables, and restarts the engine)
 check.lan_ok	lan broadcast off
 check.lan_bad	lan not off
-check.lan_fix	set  lan = false  in %s
+check.lan_fix	./update.sh (it sets  lan = false  above the first [table] line of %s, removes the lines an earlier version appended inside tables, and restarts the engine)
 check.no_engine	reason-network not installed
 check.env_names	relay names in env are not derived from one name
 check.env_names_fix	%s; make LISTEN_NAME/CLOUD_NAME/INBOX_NAME <name>, <name>-cloud, <name>-inbox (README: Install)
@@ -125,3 +125,14 @@ check.cloud_reg_unknown	cannot check it: %s
 check.cloud_reg_sessions	the cloud sessions exist but the Bot has not replied yet; %s wakes it again
 check.cloud_reg_none	not registered on the cloud yet; %s asks the Bot to do it
 check.not_registered_fix_bot	see tail -n 30 %s and ./install.sh --restart-relay; if ./update.sh has not run for this checkout, run it (README: Troubleshooting); Bot %s
+check.auto_update_unknown	auto_update cannot be checked
+check.lan_unknown	lan cannot be checked
+check.settings_unknown_fix	./update.sh (it stops before changing anything and says what to change in %s by hand; after the edit run ./update.sh again, which restarts the engine so that it loads the corrected file)
+check.settings_reload	the engine settings are corrected, but the running engine daemon has not loaded them yet
+check.settings_reload_fix	./update.sh (it restarts the engine and the relay)
+check.relay_python	relay Python
+check.relay_python_none	no relay installed yet
+check.relay_python_ok	relay Python: %s
+check.relay_python_odd	relay Python: %s (in a virtual environment or a temporary directory; to move the relay: ./install.sh --python <path>)
+check.relay_python_missing	the relay's Python %s is missing or no longer works
+check.relay_python_fix	./update.sh picks another one and restarts the relay; or choose it yourself: ./install.sh --python <path>

@@ -4,6 +4,24 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.1 — 2026-11-17
+
+Upgrading takes less effort, and this version includes security hardening (#38). Update with `./update.sh`; the cloud is not updated in this version and the routine prompt does not need pasting again.
+
+### Added
+
+- `./install.sh --python <path>` chooses the Python the relay runs on.
+
+### Changed
+
+- The relay's Python is fixed: running `./update.sh` from another terminal or inside a virtual environment no longer changes it; `./check.sh` shows it.
+- When the checkout has uncommitted changes, `./update.sh` lists the files and can continue with the checkout as it is.
+- The upgrade guide has a table to look up by the version you come from.
+
+### Fixed
+
+- Security hardening; `./update.sh` may restart the engine and the relay once for it.
+
 ## v0.9.0 — 2026-11-16
 
 One Mac can connect several Grok Bots (#32). Update with `./update.sh`; the cloud scripts change, so it sends one cloud update request. An existing installation becomes the first Bot and keeps its paths and routine prompt.

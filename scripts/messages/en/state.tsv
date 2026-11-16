@@ -49,3 +49,6 @@ state.bad_participants	update: the list of relays taking part in this update is 
 state.removing_other	Bot %s is being uninstalled; finish that before changing %s
 state.not_a_bot	%s is not a Bot on this Mac
 state.not_removing	%s is not being uninstalled
+state.needs_lock	this command changes the deployment record and only runs inside ./install.sh or ./update.sh
+state.python_unusable	%s cannot run the relay: it must be the absolute path of a Python 3.9+ with ssl and sqlite3
+state.config_not_written	the engine settings in %s are still not off; nothing was recorded

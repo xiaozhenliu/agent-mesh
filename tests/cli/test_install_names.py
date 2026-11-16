@@ -9,12 +9,55 @@ import unittest
 from render_prompt import ROOT, render_prompt
 from tests.helpers.prompts import ROUTINE_V083
 from tests.cli.install_support import (
+    BASE_PYTHON,
     InstallHarness,
     EMPTY_DIRECTORY,
+    fake_python,
 )
 
 
 class InstallNames(InstallHarness, unittest.TestCase):
+    def test_fresh_install_runs_the_relay_on_a_picked_python_not_on_the_callers(self):
+        self.fresh()
+        venv = self.base / "venv"
+        fake_python(venv / "bin/python3")
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        self.env["AGENT_MESH_PYTHON_CANDIDATES"] = f"{venv / 'bin/python3'}:{self.base / 'missing/python3'}"
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "alice", "--yes")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("no Python for the relay was found (tried /opt/homebrew/bin/python3, /usr/local/bin/python3 "
+                      "and /usr/bin/python3; virtual environments and temporary directories are not used); "
+                      "choose one with ./install.sh --python <path>", result.stderr)
+        self.assertFalse(self.env_file().exists())
+        self.assertIsNone(self.record())
+        self.assertEqual([line for line in self.rn_calls() if line.split()[1] in ("init", "setup", "stop")], [])
+        self.env["AGENT_MESH_PYTHON_CANDIDATES"] += f":{BASE_PYTHON}"
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "alice", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("relay_python", self.record())
+        result = self.webhook()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.plist_python(), self.record()["relay_python"]), (BASE_PYTHON, BASE_PYTHON))
+        self.assertNotEqual(self.plist_python(), str(self.bin / "python3"))
+        self.assertEqual(self.relay_python(), {"python": BASE_PYTHON, "source": "recorded"})
+
+    def test_fresh_install_keeps_the_python_chosen_for_the_relay(self):
+        self.fresh()
+        chosen = fake_python(self.base / "chosen tools/python3")
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "alice", "--yes", "--python",
+                                 str(self.base / "missing/python3"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("install: --python: ", result.stderr)
+        self.assertFalse(self.env_file().exists())
+        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "alice", "--yes", "--python",
+                                 str(chosen))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.record()["relay_python"], str(chosen))
+        self.assertFalse(self.relay_files()[1].exists())
+        result = self.webhook()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.plist_python(), self.record()["relay_python"]), (str(chosen), str(chosen)))
+
     def test_relay_name_fresh_install_seeds_the_env_and_records_the_name(self):
         self.fresh()
         result = self.run_script("install.sh", "--name", "demo", "--relay-name", "alice", "--yes")

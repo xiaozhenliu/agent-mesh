@@ -45,10 +45,10 @@ check.daemon_none	没有运行
 check.daemon_unknown	无法检查：%s
 check.auto_update_ok	auto_update 已关闭
 check.auto_update_bad	auto_update 没有关闭
-check.auto_update_fix	在 %s 里设置  auto_update = false
+check.auto_update_fix	./update.sh（它会在 %s 的第一个 [table] 行之前设置  auto_update = false ，删掉早期版本追加在表里的行，并重启引擎）
 check.lan_ok	lan 广播已关闭
 check.lan_bad	lan 没有关闭
-check.lan_fix	在 %s 里设置  lan = false
+check.lan_fix	./update.sh（它会在 %s 的第一个 [table] 行之前设置  lan = false ，删掉早期版本追加在表里的行，并重启引擎）
 check.no_engine	reason-network 没有安装
 check.env_names	env 里的 relay 名字不是由同一个名字派生的
 check.env_names_fix	%s；请把 LISTEN_NAME/CLOUD_NAME/INBOX_NAME 设为 <name>、<name>-cloud、<name>-inbox（README.zh-CN.md「安装」）
@@ -125,3 +125,14 @@ check.cloud_reg_unknown	无法检查：%s
 check.cloud_reg_sessions	云端会话已出现，但 Bot 还没有回信；%s 会再次唤醒它
 check.cloud_reg_none	云端尚未登记；%s 会请 Bot 完成登记
 check.not_registered_fix_bot	查看 tail -n 30 %s，再运行 ./install.sh --restart-relay；如果还没为这个检出运行过 ./update.sh，先运行它（README：Troubleshooting）；Bot %s
+check.auto_update_unknown	auto_update 无法检查
+check.lan_unknown	lan 无法检查
+check.settings_unknown_fix	./update.sh（它会在改动任何内容之前停下，并说明 %s 里要手工改什么；改完之后再次运行 ./update.sh，它会重启引擎，让引擎加载改好的文件）
+check.settings_reload	引擎设置已修正，但正在运行的引擎守护进程还没有加载
+check.settings_reload_fix	./update.sh（它会重启引擎和 relay）
+check.relay_python	relay 的 Python
+check.relay_python_none	还没有安装 relay
+check.relay_python_ok	relay 的 Python：%s
+check.relay_python_odd	relay 的 Python：%s（位于虚拟环境或临时目录中；要更换请运行 ./install.sh --python <path>）
+check.relay_python_missing	relay 使用的 Python %s 不存在或已不能用
+check.relay_python_fix	./update.sh 会另选一个并重启 relay；也可以自己指定：./install.sh --python <path>

@@ -52,6 +52,28 @@ def held():
         return None
 
 
+def effective(text):
+    values, table = {"auto_update": True, "lan": True}, ""
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            table = line.strip("[]").strip()
+            continue
+        key, _, value = (part.strip() for part in line.partition("="))
+        quoted = len(value) > 1 and value[0] == value[-1] == '"'
+        if table == "inbound.people" and value not in ('"accept"', '"hold"', '"refuse"'):
+            return "defaults"
+        if table == "folders" and not quoted:
+            return "defaults"
+        if not table and key in values:
+            if value not in ("true", "false"):
+                return "defaults"
+            values[key] = value == "true"
+    return "auto_update=%s lan=%s" % (str(values["auto_update"]).lower(), str(values["lan"]).lower())
+
+
 def daemon():
     home.mkdir(parents=True, exist_ok=True)
     if flag("nostart"):
@@ -73,6 +95,12 @@ def daemon():
     con.close()
     if flag("noexit"):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        loaded = (home / "config.toml").read_text()
+    except OSError:
+        loaded = ""
+    (ctl / f"config-{os.getpid()}").write_text(loaded)
+    (ctl / f"effective-{os.getpid()}").write_text(effective(loaded))
     with open(ctl / "daemons", "a") as log:
         log.write(f"{os.getpid()} {VERSION} {'fd9' if fd_open(9) else '-'}\n")
     while True:
@@ -112,6 +140,9 @@ if cmd == "daemon":
     daemon()
     sys.exit(0)
 if cmd == "stop":
+    if flag("slowstop"):
+        (ctl / "stopping").write_text("")
+        time.sleep(30)
     if flag("slowafterstop"):
         (ctl / "stopped").write_text("")
     pid = held()
@@ -245,6 +276,12 @@ class FakeEngineMixin:
             if line.split()[0] == str(pid):
                 return line.split()[1]
         return "?"
+
+    def daemon_config(self, home):
+        return (self.ctl / f"config-{self.daemon(home)}").read_text()
+
+    def daemon_settings(self, home):
+        return (self.ctl / f"effective-{self.daemon(home)}").read_text()
 
     def version(self, binary):
         return subprocess.run([str(binary), "--version"], capture_output=True, text=True).stdout.split()[1]
@@ -881,6 +918,259 @@ class CloudEngineCommands(FakeEngineMixin, unittest.TestCase):
         self.assertFalse(self.untrusted_ran())
 
 
+class EngineConfigCheck(unittest.TestCase):
+    KEYS = ("auto_update", "lan")
+    TOP = "auto_update = false\nlan = false\n"
+    SAMPLES = (
+        ("", 1),
+        ("auto_update = false\nlan = false\n", 0),
+        ('auto_update = false\nlan = false\nperson = "demo"\n[relay]\nurl = "x"\nvlan = true\n', 0),
+        ('auto_update = false\nlan = false\nperson = "demo"\n[relay]\nurl = "x"\nlan = true\n', 2),
+        ("  auto_update=false # off\nlan   =   false\n", 0),
+        ('peers = [\n  "a",\n  "b",\n]\nauto_update = false\nlan = false\n', 0),
+        ('person = "demo"\n[network]\nauto_update = false\nlan = false\n', 1),
+        ("auto_update = true\nlan = false\n", 1),
+        ("lan = false\n", 1),
+        ("auto_update = false\nauto_update = false\nlan = false\n", 1),
+        ("auto_update = false\nlan = 0\n", 1),
+        ('"auto_update" = false\nlan = false\n', 2),
+        ("'lan' = false\nauto_update = false\n", 2),
+        ('note = """\nauto_update = false\n"""\nlan = false\n', 2),
+        ("note = '''\nlan = false\n'''\nauto_update = false\n", 2),
+        ('peers = [\n[1, 2],\n]\nauto_update = false\nlan = false\n', 2),
+        ("auto_update = false\nlan =\n", 2),
+        ("auto_update = false\nlan = false\nfolders.lan = false\n", 2),
+        ('auto_update = false\nlan = false\ninbound.people.auto_update = "hold"\n', 2),
+        ("auto_update = false\nlan = false\nfolders = { lan = false }\n", 2),
+        ("auto_update = false\nlan = false\nrules = [\n  { auto_update = false },\n]\n", 2),
+        ("auto_update = false\nlan = false # lan\nvlan.x = 1\nlan-x = 2\n"
+         'note = "folders.lan = false"\npeers = [\n  "lan",\n]\n', 0),
+    )
+    APPENDED = (
+        (TOP + 'person = "demo"\n\n[inbound]\ndefault = "accept"\n\n[inbound.people]\nbob = "hold"\n'
+         "auto_update = false\nlan = false\n",
+         TOP + 'person = "demo"\n\n[inbound]\ndefault = "accept"\n\n[inbound.people]\nbob = "hold"\n', 2),
+        (TOP + '[folders]\n"~/personal" = "off"\nauto_update = false\nlan = false\n',
+         TOP + '[folders]\n"~/personal" = "off"\n', 2),
+        ('person = "demo"\n[inbound.people]\nauto_update = false\n"a b" = "refuse"  # lan\n\n[folders]\n'
+         'lan = false\n"~/lan" = "plan"\n[extra]\nlan = false\nauto_update = false\nvlan = "lan"\n',
+         'person = "demo"\n[inbound.people]\n"a b" = "refuse"  # lan\n\n[folders]\n'
+         '"~/lan" = "plan"\n[extra]\nvlan = "lan"\n', 4),
+        ('[folders]\nx = "y"\nlan = false', '[folders]\nx = "y"', 1),
+        ("lan = true\n[folders]\nlan = false\n", "lan = true\n[folders]\n", 1),
+        (TOP + '[inbound.people]\nlan = "hold"\nauto_update = false\n\n[folders]\nauto_update = "~/updates"\n'
+         "lan = false\n",
+         TOP + '[inbound.people]\nlan = "hold"\n\n[folders]\nauto_update = "~/updates"\n', 2),
+    )
+    STRINGS = (
+        '[inbound.people]\nlan = "hold"\n',
+        '[folders]\nauto_update = "~/updates"\nlan = "~/lan"\n',
+        '[inbound.people]\n"lan" = "accept"\n\'auto_update\' = \'refuse\'\n',
+        '[x]\n  lan="a#b"  # lan = false\nauto_update = ""\n',
+        '[x]\nlan = "say \\"lan = false\\""\n',
+    )
+    OTHER = (
+        "[folders]\nlan = true\n",
+        "[folders]\nlan=false\n",
+        "[folders]\n  lan = false\n",
+        "[folders]\nlan = false \n",
+        "[folders]\nlan = false # off\n",
+        "[folders]\nlan  = false\n",
+        "[folders]\nauto_update = FALSE\n",
+        '[folders]\n"lan" = false\n',
+        "[folders]\n'auto_update' = false\n",
+        '[x]\nlan = "hold" x\n',
+        '[x]\nlan = "a" "b"\n',
+        "[x]\nlan = 1\n",
+        '[x]\nlan = ["a"]\n',
+        '[x]\nlan.y = "a"\n',
+        "[folders]\nlan = false\r\n",
+        "[lan]\nx = 1\n",
+        "[inbound.lan]\nx = 1\n",
+        '[inbound."lan"]\nx = 1\n',
+        "[[auto_update]]\nx = 1\n",
+        "[x]\ny = { lan = false }\n",
+        "[x]\ny.lan = false\n",
+        '[x]\ny."auto_update" = false\n',
+        '[x]\ndefault = "accept"auto_update = false\n',
+        '[x]\nlan = false\ny = """\nz"""\n',
+        '[x]\ny = """\nlan = false\n"""\n',
+        '[x]\nlan = false\ny = "open\n',
+        "[x]\nlan = false\ny = [\n1,\n]\n",
+    )
+    ALIKE = (
+        '[x]\ny = "lan"\n# lan = true\n"~/lan" = "plan"\nvlan = 1\nlan-party = 2\nwlan_x = 3\n',
+        '[x]\ny = "auto_update = false"\nz = \'lan\'\n',
+        "[auto_updates]\nplan = 1\n",
+        '[x]\ny = "open\nz = [\n1,\n]\n',
+    )
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / "config.toml"
+        self.backup = Path(temp.name) / "config.toml.agent-mesh.bak"
+
+    def run_cli(self, cmd):
+        return subprocess.run([sys.executable, str(ROOT / "scripts/engine_config.py"), cmd, "--path",
+                               str(self.path), *self.KEYS], capture_output=True, text=True)
+
+    def check(self):
+        return self.run_cli("check")
+
+    def clean(self):
+        return self.run_cli("clean")
+
+    def test_the_check_agrees_with_the_repair_on_every_sample(self):
+        engine = rn_engine()
+        for text, want in self.SAMPLES:
+            with self.subTest(text=text):
+                self.path.write_text(text)
+                self.backup.unlink(missing_ok=True)
+                result = self.check()
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (want, "", ""))
+                cleaned = self.clean()
+                if want == 2:
+                    self.assertEqual((cleaned.returncode, cleaned.stdout, self.path.read_text()), (2, "", text))
+                    self.assertFalse(self.backup.exists())
+                    engine.config_off(self.path, self.KEYS)
+                    self.assertIn(self.check().returncode, (0, 2))
+                    continue
+                self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
+                engine.config_off(self.path, self.KEYS)
+                after = self.path.read_text()
+                self.assertEqual(self.check().returncode, 0, after)
+                if want == 1:
+                    self.assertNotEqual(after, text)
+                self.assertEqual(self.clean().stdout, f"0 {self.backup}\n")
+                engine.config_off(self.path, self.KEYS)
+                self.assertEqual(self.path.read_text(), after)
+
+    def test_lines_an_old_installer_appended_inside_a_table_are_removed_and_nothing_else(self):
+        engine = rn_engine()
+        self.assertEqual(len(self.APPENDED), 6)
+        for mode, (text, want, count) in zip((0o600, 0o640, 0o644, 0o600, 0o400, 0o600), self.APPENDED):
+            with self.subTest(text=text):
+                self.backup.unlink(missing_ok=True)
+                self.path.unlink(missing_ok=True)
+                self.path.write_bytes(text.encode())
+                self.path.chmod(mode)
+                self.assertEqual(self.check().returncode, 1)
+                result = self.clean()
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (0, f"{count} {self.backup}\n", ""))
+                self.assertEqual(self.path.read_bytes(), want.encode())
+                self.assertEqual(self.backup.read_bytes(), text.encode())
+                self.assertEqual((self.path.stat().st_mode & 0o777, self.backup.stat().st_mode & 0o777), (mode, mode))
+                self.assertEqual(sorted(p.name for p in self.path.parent.iterdir()),
+                                 ["config.toml", "config.toml.agent-mesh.bak"])
+                again = self.clean()
+                self.assertEqual((again.returncode, again.stdout), (0, f"0 {self.backup}\n"))
+                self.assertEqual((self.path.read_bytes(), self.backup.read_bytes()), (want.encode(), text.encode()))
+                self.path.chmod(0o600)
+                engine.config_off(self.path, self.KEYS)
+                self.assertEqual(self.check().returncode, 0, self.path.read_text())
+                if want.startswith(self.TOP):
+                    self.assertEqual(self.path.read_text(), want)
+
+    def test_a_copy_kept_by_an_interrupted_repair_is_not_replaced(self):
+        first = self.TOP + "[folders]\nlan = false\n"
+        self.path.write_text(first)
+        self.assertEqual(self.clean().stdout, f"1 {self.backup}\n")
+        self.path.write_text(self.TOP + "[folders]\nauto_update = false\n")
+        self.assertEqual(self.clean().stdout, f"1 {self.backup}\n")
+        self.assertEqual((self.path.read_text(), self.backup.read_text()), (self.TOP + "[folders]\n", first))
+        import engine_config
+        engine_config.drop_backup(self.path)
+        engine_config.drop_backup(self.path)
+        self.assertFalse(self.backup.exists())
+
+    def test_any_other_mention_of_the_keys_inside_a_table_is_never_repaired(self):
+        for top in (self.TOP, 'person = "demo"\n'):
+            for tail in self.OTHER:
+                text = top + tail
+                with self.subTest(text=text):
+                    self.path.write_bytes(text.encode())
+                    self.assertEqual(self.check().returncode, 2)
+                    result = self.clean()
+                    self.assertEqual((result.returncode, result.stdout), (2, ""))
+                    self.assertEqual(self.path.read_bytes(), text.encode())
+                    self.assertFalse(self.backup.exists())
+                    self.path.write_bytes((text + "[last]\nlan = false\n").encode())
+                    self.assertEqual((self.check().returncode, self.clean().returncode), (2, 2))
+                    self.assertFalse(self.backup.exists())
+
+    def test_a_person_or_a_folder_named_like_a_setting_is_left_alone(self):
+        engine = rn_engine()
+        for tail in self.STRINGS:
+            with self.subTest(tail=tail):
+                text = self.TOP + tail
+                self.path.write_text(text)
+                self.assertEqual(self.check().returncode, 0)
+                self.assertEqual(self.clean().stdout, f"0 {self.backup}\n")
+                self.assertEqual(self.path.read_text(), text)
+                self.assertFalse(self.backup.exists())
+                self.path.write_text('person = "demo"\n' + tail)
+                self.assertEqual(self.check().returncode, 1)
+                self.assertEqual(self.clean().stdout, f"0 {self.backup}\n")
+                engine.config_off(self.path, self.KEYS)
+                self.assertEqual(self.path.read_text(), self.TOP + 'person = "demo"\n' + tail)
+                self.assertEqual(self.check().returncode, 0)
+                self.path.write_text(text + "[last]\nlan = false\n")
+                self.assertEqual(self.check().returncode, 1)
+                self.assertEqual(self.clean().stdout, f"1 {self.backup}\n")
+                self.assertEqual(self.path.read_text(), text + "[last]\n")
+                self.backup.unlink()
+
+    def test_words_that_only_look_like_the_keys_are_left_alone(self):
+        for tail in self.ALIKE:
+            text = self.TOP + tail
+            with self.subTest(text=text):
+                self.path.write_text(text)
+                self.assertEqual(self.check().returncode, 0)
+                self.assertEqual(self.clean().stdout, f"0 {self.backup}\n")
+                self.assertEqual(self.path.read_text(), text)
+                self.assertFalse(self.backup.exists())
+                self.path.write_text(tail)
+                self.assertEqual(self.check().returncode, 1)
+
+    def test_keys_the_engine_would_read_twice_are_never_reported_as_off(self):
+        engine = rn_engine()
+        for text in ('"auto_update" = false\nlan = false\n', "'lan' = true\nauto_update = false\nlan = false\n",
+                     'note = """\nx\n"""\nauto_update = false\nlan = false\n'):
+            with self.subTest(text=text):
+                self.path.write_text(text)
+                self.assertEqual(self.check().returncode, 2)
+                engine.config_off(self.path, self.KEYS)
+                self.assertEqual(self.check().returncode, 2)
+
+    def test_a_missing_file_is_not_off_and_an_unreadable_one_is_never_reported_as_off(self):
+        self.assertEqual(self.check().returncode, 1)
+        self.assertEqual(self.clean().stdout, f"0 {self.backup}\n")
+        self.assertFalse(self.path.exists())
+        rn_engine().config_off(self.path, self.KEYS)
+        self.assertEqual(self.check().returncode, 0)
+        self.path.write_bytes(b"auto_update = false\nlan = false\nname = \"\xff\"\n")
+        self.assertEqual((self.check().returncode, self.clean().returncode), (2, 2))
+        self.path.unlink()
+        self.path.mkdir()
+        self.assertEqual((self.check().returncode, self.clean().returncode), (2, 2))
+        self.assertFalse(self.backup.exists())
+
+    def test_the_top_is_judged_per_key_and_the_tables_for_both(self):
+        import engine_config
+        self.path.write_text("auto_update = false\n[x]\ny = 1\n")
+        self.assertEqual(engine_config.check(self.path, ("auto_update",)), 0)
+        self.assertEqual(engine_config.check(self.path, ("lan",)), 1)
+        self.assertEqual(engine_config.check(self.path, self.KEYS), 1)
+        self.path.write_text(self.TOP + "[x]\nlan = false\n")
+        self.assertEqual(engine_config.check(self.path, ("auto_update",)), 1)
+        self.assertEqual(engine_config.check(self.path, ("lan",)), 1)
+        self.path.write_text(self.TOP + "[x]\nlan = true\n")
+        self.assertEqual(engine_config.check(self.path, ("auto_update",)), 2)
+        self.assertEqual(engine_config.check(self.path, ("lan",)), 2)
+
+
 class PinnedChecksums(unittest.TestCase):
     TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl")
 
@@ -1225,6 +1515,337 @@ class MacUpgrade(UpgradeSupport, InstallHarness, unittest.TestCase):
         self.assertTrue(self.loaded(), out.decode())
         self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
 
+    KEPT = 'person = "demo"\n\n[inbound]\ndefault = "accept"\n\n[inbound.people]\nbob = "hold"\n'
+    APPENDED = "auto_update = false\nlan = false\n"
+
+    def settings_in_a_table(self, version=NEW, text=None):
+        repo = self.installed()
+        self.cfg = self.home / ".reason/network/config.toml"
+        self.kept = self.cfg.with_name("config.toml.agent-mesh.bak")
+        self.cfg.write_text(self.KEPT + self.APPENDED if text is None else text)
+        self.cfg.chmod(0o640)
+        self.engine_ready(repo, version)
+        self.assertEqual(self.daemon_settings(self.rn_home), "defaults")
+        self.sent = self.engine_sends()
+        self.asked = {key: self.record().get(key) for key in ("cloud", "cloud_setup", "prompt", "cloud_engine")}
+        return repo
+
+    def engine_sends(self):
+        return [line for line in (self.ctl / "calls").read_text().splitlines() if line.split()[1:2] == ["send"]]
+
+    def settings_off(self):
+        import engine_config
+        return engine_config.check(self.cfg, ("auto_update", "lan"))
+
+    def config_state(self):
+        return self.state_cmd("config-state").stdout.strip()
+
+    def assert_settings_loaded(self, old_pid, want=None):
+        want = self.APPENDED + self.KEPT if want is None else want
+        pid = self.daemon(self.rn_home)
+        self.assertNotEqual(pid, old_pid)
+        self.assertEqual(self.cfg.read_text(), want)
+        self.assertEqual(self.daemon_config(self.rn_home), want)
+        self.assertEqual(self.daemon_settings(self.rn_home), "auto_update=false lan=false")
+        self.assertEqual(self.settings_off(), 0)
+        self.assertEqual(self.cfg.stat().st_mode & 0o777, 0o640)
+        self.assertFalse(self.kept.exists())
+        self.assertEqual(sorted(p.name for p in self.cfg.parent.glob("*config.toml*")), ["config.toml"])
+        self.assertNotIn("engine_config", self.record())
+        self.assertEqual(self.config_state(), "ok")
+        self.assertFalse(self.txn().exists())
+        self.assertTrue(self.loaded())
+        check = self.run_script("check.sh")
+        self.assertIn("PASS  auto_update off\nPASS  lan broadcast off\n", check.stdout)
+        self.assertNotIn("has not loaded them yet", check.stdout)
+        self.assertNotIn("cannot be checked", check.stdout)
+        self.assertEqual(self.engine_sends(), self.sent)
+        self.assertEqual({key: self.record().get(key) for key in self.asked}, self.asked)
+        self.assertNotIn("request", self.record())
+
+    def test_settings_in_a_table_are_corrected_and_the_daemon_is_restarted_once(self):
+        repo = self.settings_in_a_table()
+        old_pid, before = self.daemon(self.rn_home), self.cfg.read_bytes()
+        queue = self.home / "Library/Application Support/agent-relay/state.json"
+        queue.write_text(json.dumps({"spool": [{"id": "a"}], "pending": {"b": {"stage": "ringing"}}}))
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertRegex(plan.stdout, r"engine\s+unchanged")
+        self.assertIn("security hardening: correct the engine settings and restart the engine", plan.stdout)
+        self.assertIn("the relays still have 2 message(s) to hand over", plan.stdout)
+        self.assertEqual(self.config_state(), "repair")
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.env["AGENT_MESH_PENDING_WAIT"] = "10"
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("waiting up to 0 minutes", result.stdout)
+        self.assertIn("still have 2 message(s) to hand over; the engine was not restarted", result.stderr)
+        self.assertEqual((self.cfg.read_bytes(), self.daemon(self.rn_home)), (before, old_pid))
+        self.assertEqual(self.service_changes(), [])
+        self.assertNotIn("engine_config", self.record())
+        queue.write_text(json.dumps({"spool": [], "pending": {}}))
+        started = time.time()
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"== engine 1. security hardening: correct the engine settings and restart the daemon "
+                      f"(Reason Network {NEW})", result.stdout)
+        self.assertIn(f"daemon restarted on {NEW}", result.stdout)
+        self.assertIn(f"Removed 2 line(s) that an earlier version appended inside a table of {self.cfg}; the file "
+                      f"as it was is kept as {self.kept} until the engine has loaded the corrected settings.",
+                      result.stdout)
+        self.assert_settings_loaded(old_pid)
+        self.assertGreaterEqual(int(rn_engine().started(self.daemon(self.rn_home))), int(started))
+        steps = [line.split()[1] for line in self.service_changes()]
+        steps = [step for i, step in enumerate(steps) if i == 0 or steps[i - 1] != step]
+        self.assertEqual(steps, ["bootout", "bootstrap"])
+        self.assertEqual(self.backups(), [])
+        self.assertEqual(self.daemons_with_fd9(), [])
+        pid, final = self.daemon(self.rn_home), self.cfg.read_bytes()
+        again = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already up to date", again.stdout)
+        self.assertNotIn("security hardening", again.stdout)
+        self.assertEqual((self.daemon(self.rn_home), self.cfg.read_bytes()), (pid, final))
+        self.assertFalse(self.kept.exists())
+
+    def repaired_with_the_top_already_right(self, table):
+        top = self.APPENDED + 'person = "demo"\n\n'
+        want = top + table.replace("auto_update = false\n", "").replace("lan = false\n", "")
+        repo = self.settings_in_a_table(text=top + table + self.APPENDED)
+        old_pid = self.daemon(self.rn_home)
+        self.assertTrue(self.daemon_config(self.rn_home).startswith(self.APPENDED))
+        self.assertEqual((self.settings_off(), self.config_state()), (1, "repair"))
+        check = self.run_script("check.sh")
+        self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+        self.assertIn("FAIL  auto_update not off\n      -> ./update.sh (it sets  auto_update = false  above the "
+                      f"first [table] line of {self.cfg}, removes the lines an earlier version appended inside "
+                      "tables, and restarts the engine)\n", check.stdout)
+        self.assertIn("FAIL  lan not off\n", check.stdout)
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertIn("security hardening: correct the engine settings and restart the engine", plan.stdout)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("line(s) that an earlier version appended inside a table", result.stdout)
+        self.assert_settings_loaded(old_pid, want)
+
+    def test_lines_left_in_the_people_table_are_removed_although_the_top_of_the_file_is_already_right(self):
+        self.repaired_with_the_top_already_right('[inbound]\ndefault = "accept"\n\n[inbound.people]\nbob = "hold"\n')
+
+    def test_lines_left_in_the_folders_table_are_removed_although_the_top_of_the_file_is_already_right(self):
+        self.repaired_with_the_top_already_right('[folders]\n"~/personal" = "off"\n')
+
+    def test_lines_left_in_several_tables_are_removed_and_their_neighbours_stay(self):
+        self.repaired_with_the_top_already_right('[inbound.people]\nauto_update = false\nbob = "hold"\n'
+                                                 'lan = "refuse"\n\n[folders]\n"~/lan" = "off"\nlan = false\n'
+                                                 'auto_update = "~/updates"\n\n[extra]\n')
+
+    def test_a_table_that_names_a_setting_in_another_way_stops_the_update_before_anything_changes(self):
+        top = self.APPENDED + 'person = "demo"\n\n[folders]\n"~/personal" = "off"\n'
+        repo = self.settings_in_a_table(text=top + "lan = true\nauto_update = false\n")
+        old_pid, before = self.daemon(self.rn_home), self.cfg.read_bytes()
+        self.assertEqual((self.settings_off(), self.config_state()), (2, "unsupported"))
+        check = self.run_script("check.sh")
+        self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+        for key in ("auto_update", "lan"):
+            self.assertIn(f"FAIL  {key} cannot be checked\n      -> ./update.sh (it stops before changing anything and "
+                          f"says what to change in {self.cfg} by hand; after the edit run ./update.sh again, which "
+                          "restarts the engine so that it loads the corrected file)\n", check.stdout)
+        self.assertNotIn("PASS  auto_update off", check.stdout)
+        self.assertNotIn("engine_config", self.record())
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertNotIn("engine_config", self.record())
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertIn("cannot be checked; the update stops before changing anything", plan.stdout)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("cannot be checked. Edit the file by hand", result.stderr)
+        self.assertIn("a line that gives auto_update or lan a quoted text value may stay", result.stderr)
+        self.assertIn("remove every other line, dotted key and table header that names them; then run ./update.sh "
+                      "again (it restarts the engine so that it loads the corrected file)", result.stderr)
+        self.assertEqual((self.cfg.read_bytes(), self.daemon(self.rn_home)), (before, old_pid))
+        self.assertFalse(self.kept.exists())
+        self.assertEqual(self.service_changes(), [])
+        self.assertEqual(self.record()["engine_config"], {"state": "pending"})
+        self.assertEqual(self.config_state(), "unsupported")
+        check = self.run_script("check.sh")
+        self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+        self.assertIn("FAIL  auto_update cannot be checked\n      " + '-> ./update.sh (it stops before changing anything and says what to change in ', check.stdout)
+        self.assertIn("FAIL  lan cannot be checked\n      " + '-> ./update.sh (it stops before changing anything and says what to change in ', check.stdout)
+        self.assertNotIn("PASS  auto_update off", check.stdout)
+        self.cfg.write_text(top)
+        self.assertEqual(self.config_state(), "reload")
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_settings_loaded(old_pid, top)
+
+    def test_a_record_that_cannot_be_written_stops_before_any_promise_of_a_restart(self):
+        top = self.APPENDED + 'person = "demo"\n\n[folders]\n"~/personal" = "off"\n'
+        repo = self.settings_in_a_table(text=top + "lan = true\nauto_update = false\n")
+        old_pid, before = self.daemon(self.rn_home), self.cfg.read_bytes()
+        lib = self.home / ".local/lib/agent-mesh"
+        mode = lib.stat().st_mode & 0o777
+        lib.chmod(0o555)
+        try:
+            result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        finally:
+            lib.chmod(mode)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not write the deployment record", result.stderr)
+        self.assertNotIn("Edit the file by hand", result.stderr)
+        self.assertNotIn("engine_config", self.record())
+        self.assertEqual((self.cfg.read_bytes(), self.daemon(self.rn_home)), (before, old_pid))
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("cannot be checked. Edit the file by hand", result.stderr)
+        self.assertEqual(self.record()["engine_config"], {"state": "pending"})
+        self.cfg.write_text(top)
+        self.assertEqual(self.config_state(), "reload")
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_settings_loaded(old_pid, top)
+
+    def test_a_repair_that_stopped_before_the_write_was_recorded_is_finished_by_the_next_run(self):
+        repo = self.settings_in_a_table()
+        old_pid, before = self.daemon(self.rn_home), self.cfg.read_bytes()
+        self.assertEqual(self.locked_state("config-pending").returncode, 0)
+        cleaned = subprocess.run([sys.executable, str(ROOT / "scripts/engine_config.py"), "clean", "--path",
+                                  str(self.cfg), "auto_update", "lan"], capture_output=True, text=True)
+        self.assertEqual(cleaned.stdout, f"2 {self.kept}\n")
+        self.assertEqual((self.settings_off(), self.config_state()), (1, "repair"))
+        self.assertEqual(self.locked_state("config-verified").returncode, 1)
+        self.assertEqual(self.kept.read_bytes(), before)
+        rn_engine().config_off(self.cfg, ("auto_update", "lan"))
+        self.assertEqual(self.record()["engine_config"], {"state": "pending"})
+        self.assertEqual((self.settings_off(), self.config_state()), (0, "reload"))
+        self.assertEqual(self.locked_state("config-verified").returncode, 1)
+        self.assertEqual((self.kept.read_bytes(), self.daemon(self.rn_home)), (before, old_pid))
+        self.finish_repair(repo, old_pid)
+
+    def interrupted_repair(self, sig):
+        repo = self.settings_in_a_table()
+        old_pid, before = self.daemon(self.rn_home), self.cfg.read_bytes()
+        self.flag("slowstop", NEW)
+        proc = subprocess.Popen(["/bin/bash", str(repo / "update.sh"), "--no-pull", "--yes"], env=self.env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                preexec_fn=os.setpgrp)
+        deadline = time.time() + 60
+        while time.time() < deadline and proc.poll() is None and not (self.ctl / "stopping").exists():
+            time.sleep(0.05)
+        reached = (self.ctl / "stopping").exists()
+        time.sleep(0.5)
+        written, same_daemon = self.settings_off() == 0, self.daemon(self.rn_home) == old_pid
+        os.killpg(proc.pid, sig)
+        self.unflag("slowstop", NEW)
+        out, err = proc.communicate(timeout=90)
+        text = out.decode() + err.decode()
+        self.assertTrue(reached and written and same_daemon, text)
+        self.assertEqual(self.daemon(self.rn_home), old_pid, text)
+        self.assertEqual(self.settings_off(), 0)
+        record = self.record()["engine_config"]
+        self.assertEqual(record["state"], "pending")
+        self.assertIsInstance(record["written_s"], int)
+        self.assertEqual(self.config_state(), "reload")
+        self.assertIn("config reload", self.state_cmd("status", "--lang", "en").stdout.splitlines())
+        self.assertEqual(self.cfg.read_text(), self.APPENDED + self.KEPT)
+        self.assertEqual((self.kept.read_bytes(), self.kept.stat().st_mode & 0o777), (before, 0o640))
+        self.assertEqual(self.daemon_settings(self.rn_home), "defaults")
+        return repo, proc.returncode, text, old_pid
+
+    def finish_repair(self, repo, old_pid):
+        check = self.run_script("check.sh")
+        self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+        self.assertIn("PASS  auto_update off", check.stdout)
+        self.assertIn("FAIL  the engine settings are corrected, but the running engine daemon has not loaded them "
+                      "yet\n      -> ./update.sh", check.stdout)
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertIn("security hardening: correct the engine settings and restart the engine", plan.stdout)
+        self.assertEqual(self.daemon(self.rn_home), old_pid)
+        self.assertTrue(self.kept.exists())
+        started = time.time()
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("appended inside a table", result.stdout)
+        self.assert_settings_loaded(old_pid)
+        self.assertGreaterEqual(int(rn_engine().started(self.daemon(self.rn_home))), int(started))
+        check = self.run_script("check.sh")
+        self.assertNotIn("has not loaded them yet", check.stdout)
+        again = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already up to date", again.stdout)
+
+    def test_a_repair_terminated_before_the_restart_is_reported_and_finished_by_the_next_run(self):
+        repo, code, text, old_pid = self.interrupted_repair(signal.SIGTERM)
+        self.assertEqual(code, 143, text)
+        self.assertIn("the engine settings repair is not finished; run ./update.sh again", text)
+        self.assertFalse(self.txn().exists())
+        self.assertTrue(self.loaded(), text)
+        self.finish_repair(repo, old_pid)
+
+    def test_a_repair_killed_before_the_restart_is_finished_by_the_next_run(self):
+        repo, code, text, old_pid = self.interrupted_repair(signal.SIGKILL)
+        self.assertEqual(code, -signal.SIGKILL, text)
+        self.assertTrue(self.txn().exists())
+        self.finish_repair(repo, old_pid)
+
+    def test_a_pending_record_without_a_write_time_still_asks_for_the_restart(self):
+        repo = self.upgradable(NEW)
+        old_pid = self.daemon(self.rn_home)
+        self.cfg = self.home / ".reason/network/config.toml"
+        data = self.record()
+        data["engine_config"] = {"state": "pending"}
+        self.write_record(data)
+        self.assertEqual(self.config_state(), "reload")
+        self.assertEqual(self.locked_state("config-verified").returncode, 1)
+        self.assertEqual(self.record()["engine_config"], {"state": "pending"})
+        data["engine_config"] = {"state": "pending", "written_s": int(time.time()) + 3600}
+        self.write_record(data)
+        self.assertEqual(self.config_state(), "reload")
+        data["engine_config"] = {"state": "pending", "written_s": 1}
+        self.write_record(data)
+        self.assertEqual(self.config_state(), "ok")
+        data["engine_config"] = {"state": "pending"}
+        self.write_record(data)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(self.daemon(self.rn_home), old_pid)
+        self.assertNotIn("engine_config", self.record())
+
+    def test_an_engine_upgrade_corrects_the_settings_before_the_switch(self):
+        repo = self.settings_in_a_table(OLD)
+        old_pid = self.daemon(self.rn_home)
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertRegex(plan.stdout, rf"engine\s+changed\s+upgrade Reason Network {OLD} to {NEW}")
+        self.assertIn("security hardening: correct the engine settings and restart the engine", plan.stdout)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Security hardening: the engine settings are corrected before the switch.", result.stdout)
+        self.assertEqual((self.version(self.rn), self.daemon_version(self.rn_home)), (NEW, NEW))
+        self.assert_settings_loaded(old_pid)
+        [backup] = self.backups()
+        self.assertEqual(self.version(backup / "reason-network"), OLD)
+
+    def test_settings_the_check_cannot_read_stop_the_update_with_the_lines_to_write(self):
+        repo = self.upgradable(NEW)
+        old_pid = self.daemon(self.rn_home)
+        cfg = self.home / ".reason/network/config.toml"
+        cfg.write_text('"auto_update" = false\nlan = false\nperson = "demo"\n')
+        before = cfg.read_bytes()
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertIn("cannot be checked; the update stops before changing anything", plan.stdout)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("cannot be checked. Edit the file by hand", result.stderr)
+        self.assertIn("auto_update = false", result.stderr)
+        self.assertEqual((cfg.read_bytes(), self.daemon(self.rn_home)), (before, old_pid))
+        self.assertEqual(self.service_changes(), [])
+        self.assertEqual(self.record()["engine_config"], {"state": "pending"})
+        check = self.run_script("check.sh")
+        self.assertIn("FAIL  auto_update cannot be checked\n      " + '-> ./update.sh (it stops before changing anything and says what to change in ', check.stdout)
+        self.assertIn("FAIL  lan cannot be checked\n      " + '-> ./update.sh (it stops before changing anything and says what to change in ', check.stdout)
+        self.assertNotIn("PASS  auto_update off", check.stdout)
+
     def test_a_changed_cloud_engine_helper_asks_for_the_cloud_engine_step_again(self):
         repo = self.installed()
         with open(repo / "box/rn-engine.py", "a") as stream:
@@ -1324,6 +1945,45 @@ class MultiBotUpgrade(UpgradeSupport, AddSupport, unittest.TestCase):
         self.assertFalse(self.txn().exists())
         self.assertFalse((self.lib() / "rollback").exists())
         self.assertEqual(self.daemons_with_fd9(), [])
+        again = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already up to date", again.stdout)
+
+    def test_the_settings_repair_restarts_the_relays_of_both_bots_once_and_asks_the_cloud_nothing(self):
+        repo = self.two_upgradable(NEW)
+        cfg = self.home / ".reason/network/config.toml"
+        kept = cfg.with_name("config.toml.agent-mesh.bak")
+        old_pid, top = self.daemon(self.rn_home), cfg.read_text()
+        self.assertEqual(self.state_cmd("config-state").stdout, "ok\n")
+        cfg.write_text(top + '\n[inbound.people]\nbob = "hold"\nauto_update = false\nlan = false\n')
+        sends = [line for line in (self.ctl / "calls").read_text().splitlines() if line.split()[1:2] == ["send"]]
+        asked = {key: self.record().get(key) for key in ("cloud", "cloud_setup", "prompt", "cloud_engine", "bots")}
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertIn("security hardening: correct the engine settings and restart the engine", plan.stdout)
+        for name in ("alpha", "beta"):
+            self.assertIn(m("update.plan_bot", name, "unchanged", "unchanged"), plan.stdout)
+        before = len(self.multi_started())
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(self.daemon(self.rn_home), old_pid)
+        self.assertEqual(cfg.read_text(), top + '\n[inbound.people]\nbob = "hold"\n')
+        self.assertEqual(self.daemon_settings(self.rn_home), "auto_update=false lan=false")
+        self.assertFalse(kept.exists())
+        changes = self.service_changes()
+        self.assertEqual(changes[:2], [f"launchctl bootout gui/501/{label}" for label in self.labels])
+        starts = [line.split(" ", 3)[3] for line in changes if line.startswith("launchctl bootstrap")]
+        self.assertEqual(starts, [str(self.legacy_plist()), str(self.plist("beta"))])
+        self.assertEqual([label for label, _ in self.multi_started()[before:]], self.labels)
+        self.assert_registered()
+        self.assertFalse(self.txn().exists())
+        self.assertNotIn("engine_config", self.record())
+        self.assertNotIn("request", self.record())
+        self.assertEqual({key: self.record().get(key) for key in asked}, asked)
+        self.assertEqual([line for line in (self.ctl / "calls").read_text().splitlines()
+                          if line.split()[1:2] == ["send"]], sends)
+        check = self.run_script("check.sh")
+        self.assertIn("PASS  auto_update off\nPASS  lan broadcast off\n", check.stdout)
+        self.assertNotIn("has not loaded them yet", check.stdout)
         again = self.run_script("update.sh", "--no-pull", root=repo)
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn("already up to date", again.stdout)
