@@ -199,7 +199,7 @@ cd ~/agent-mesh
 ```
 
 1. 它问这个 Bot 在 Grok 里叫什么，并据此给出建议的地址名；名字里没有拉丁字母和数字时，建议第一个可用的 `bot-2`、`bot-3`……。直接回车接受，或者输入别的名字。agent 可以用 `--grok-name '<它在 Grok 里的名字>' --relay-name <name>` 一次给全，这时安装器只请你确认计划。团队从已有安装读取，不需要 `--name`（给了就必须是同一个团队）。它不重新接入 agent，不下载引擎，也不生成密钥。
-2. 它核对 `<name>`、`<name>-cloud`、`<name>-inbox` 都没有在团队里（任何机器，在线或最近离线）或本机被占用，并且这个名字没有被卸载过，然后显示计划 `Add Bot <team-name>/<name> (called “…” in Grok); <其他 Bot> stay as they are.`，请你确认。`--add-bot` 不接受 `--yes`；不在终端里时，只打印计划，不改动任何东西。
+2. 它核对 `<name>`、`<name>-cloud`、`<name>-inbox` 都不是团队里仍列出的会话（任何机器，在线或离线），也没有在本机用过，并且这个名字没有被卸载过，然后显示计划 `Add Bot <team-name>/<name> (called “…” in Grok); <其他 Bot> stay as they are.`，请你确认。`--add-bot` 不接受 `--yes`；不在终端里时，只打印计划，不改动任何东西。
 3. `[GROK-UI]`：为新 Bot 建一个由 webhook 触发的 routine，把安装器打印的提示词贴进去，再把 Webhook URL 和 key 贴回 `[LOCAL]` 的终端。这个 Bot 的提示词多一个第 0 步（[提示词](prompts/cloud-add-bot.zh-CN.md)），每条 `rn-cloud.sh` 命令前都加上 `RN_BOT=<name>`，thread 笔记放在 `bots/<name>/threads/` 下。
 4. 其余步骤自动完成。安装器经新 Bot 的 webhook 唤醒它；Bot 在第 0 步运行 `box/rn-cloud-add-bot.sh`，核对共用的云电脑并在上面登记这个 Bot 的两个会话，不需要 CopyToBox，也不需要新的邀请。两个会话都出现在团队里之后，安装器才启动这个 Bot 的 relay，再给它发一行请求 `agent-mesh add-bot <name> <req>`，等待确认登记的回信。每一步最多等 10 分钟。
 
@@ -214,7 +214,7 @@ cd ~/agent-mesh
 
 ### 名字与卸载
 
-Bot 的地址不能改名。要换名字，就用新名字添加一个 Bot，改用它的 routine，再用 `./uninstall.sh --level bot --relay-name <旧名字>` 卸载旧的。卸载过的名字永远不能再添加：引擎会一直保留它的旧会话，发到旧地址的信在那里排队、没人读，云端也为它留有 tombstone。细节见[卸载指南](UNINSTALL.zh-CN.md#只卸载一个-bot)。共用一台云电脑的限制见[安全策略](SECURITY.zh-CN.md#已知限制不按漏洞处理)。
+Bot 的地址不能改名。要换名字，就用新名字添加一个 Bot（即新建一个 routine，可以属于同一个 Grok Bot），改用它的 routine，再用 `./uninstall.sh --level bot --relay-name <旧名字>` 卸载旧的。新名字必须从没用过：引擎会保留所有会话，早先安装留下的地址同样不能再添加。卸载过的名字永远不能再添加：引擎会一直保留它的旧会话，发到旧地址的信在那里排队、没人读，云端也为它留有 tombstone。细节见[卸载指南](UNINSTALL.zh-CN.md#只卸载一个-bot)。共用一台云电脑的限制见[安全策略](SECURITY.zh-CN.md#已知限制不按漏洞处理)。
 
 ## 验证
 

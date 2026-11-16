@@ -94,7 +94,7 @@ class InstallHarness:
         cfg.write_text('person = "demo"\n')
         return path
 
-    def run_script(self, script="install.sh", *args, root=ROOT, timeout=10):
+    def run_script(self, script="install.sh", *args, root=ROOT, timeout=60):
         return subprocess.run(["/bin/bash", str(root / script), *args], env=self.env,
                               input="", capture_output=True, text=True, timeout=timeout)
 

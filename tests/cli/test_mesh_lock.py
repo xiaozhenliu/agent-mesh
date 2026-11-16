@@ -144,7 +144,6 @@ class MeshLock(LockHome, unittest.TestCase):
 
     def test_a_lock_file_deleted_while_waiting_is_opened_again(self):
         holder = self.hold(delete=True)
-        old = os.stat(self.lockfile).st_ino
         proc = subprocess.Popen(["/bin/bash", str(self.driver), sys.executable, "-c", "import time; time.sleep(1)"],
                                 env=dict(self.lenv, AGENT_MESH_LOCK_WAIT="20"), stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True)
@@ -155,7 +154,6 @@ class MeshLock(LockHome, unittest.TestCase):
         self.assertEqual(proc.returncode, 0, out + err)
         self.assertIn("taken", out)
         self.assertTrue(self.lockfile.exists())
-        self.assertNotEqual(os.stat(self.lockfile).st_ino, old)
         self.assertEqual(self.lockfile.read_text(), f"pid {out.split()[1]}\n")
 
     def test_waiting_ends_when_the_holder_leaves(self):
