@@ -21,7 +21,7 @@
 
 1. 先按指南「准备」检查 `[LOCAL]` 和 `[BOT-CLOUD]` 的依赖。`[LOCAL]` 的 `uname -s` 应输出 `Darwin`，CPU 为 arm64 或 x86_64；当前用户应已登录桌面，不用 sudo。运行 `git --version` 和 `python3 -c 'import sys, ssl, sqlite3; print(sys.version)'`，要求 Git 可用、Python 3.9+。缺少 Git/Python 时可先运行 `xcode-select --install`，等用户完成安装后重新检查，不把“已发起安装”当作已就绪。已有 agent 也须先安装、登录并能独立工作。
 2. 运行 `curl -sS -o /dev/null -m 10 -w '%{http_code}\n' https://aps1-1.relay.n0.iroh.link/`，应输出 `200`。失败时先让用户关掉 VPN/代理重试；若恢复，给 `iroh.link` 及所有子域添加直连规则（TUN、虚拟网卡、增强或全局模式也需要），并排除 HTTPS 解密/MITM。用 `curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer` 查看，应是公共 CA（目前是 Let's Encrypt）而非代理自己的 CA。引擎可能使用多台中继，规则应覆盖整个域名；`reasonmachines.com` 及其子域也按同样方式放行，因为 Reason Network 0.12 默认使用那里的 Reason 中继。关闭代理后仍失败则排查 DNS、防火墙和网络。返回 200 后再继续。
-3. 如果 `$HOME/.local/bin` 不在 PATH，后续 Bash/zsh 命令加上 `export PATH="$HOME/.local/bin:$PATH";` 前缀。持久配置前确认用户实际使用的 shell：zsh 用 `~/.zshrc`，Bash 用实际读取的启动文件，fish 用 `fish_add_path "$HOME/.local/bin"`，不要统一修改 zsh 配置。检查现有 Reason Network 的路径、版本和默认状态目录；不兼容时先报告，不覆盖另一套安装，也不直接卸载。仓库目录已存在时先核对 origin 和本地改动；本地目录可以自选。
+3. 如果 `$HOME/.local/bin` 不在 PATH，后续 Bash/zsh 命令加上 `export PATH="$HOME/.local/bin:$PATH";` 前缀。持久配置前确认用户实际使用的 shell：zsh 用 `~/.zshrc`，Bash 用实际读取的启动文件，fish 用 `fish_add_path "$HOME/.local/bin"`，不要统一修改 zsh 配置。检查现有 Reason Network 的路径、版本和默认状态目录；不兼容时先报告，不覆盖另一套安装，也不直接卸载。仓库目录已存在时先核对 origin 和本地改动；本地目录可以自选。`./check.sh` 显示这台 Mac 已经运行 agent-mesh、且就是用户说的那个 Bot 时，不要重新安装：按[更新](#更新)处理；要再接一个 Bot 时按第 5 步。
 4. 一次向用户确认：使用 Claude Code、Codex、pi、DeepSeek Harness 中的哪些（其他工具不在本手册支持范围）；团队名（同时是 person 名，1–40 个 ASCII 小写字母、数字或 `-`，首尾不能是 `-`、不能连用，不用真名，建好不能直接改）；Grok Bot 在 Grok 里叫什么（任何语言都可以，原样保存；最多 64 个字符，首尾不能有空格，不能有换行或其他控制字符），再由它推导 Bot 地址名（小写字母、数字，用单个 `-` 分隔，最多 34 个字符，不能是 terminal；以后不能修改）：英文名转小写（`Nova` → `nova`），中文或其他非拉丁字母的名字给出拼音或英文建议（「小助手」→ `xiaozhushou`），把地址给用户看，用户确认或修改后再用；没有默认名，全新安装不带 `--relay-name` 时会停下并给出建议；Grok Bot 能否创建 webhook routine 并使用 CopyToBox（都必须支持）；Mac 是否会保持唤醒（接电防睡眠，合盖会让整套停止）。
 5. **在已有安装上再接一个 Grok Bot。** 第 3 步发现这台 Mac 已有 agent-mesh 安装（`./check.sh` 会打印它的 `Bot address:` 行），而用户想再接一个 Grok Bot 时，不要重做第 1、2 阶段，也不要问团队名。只问新 Bot 在 Grok 里叫什么，按第 4 步给出拼音或英文的地址建议，用户确认或修改后再用。然后运行 `./install.sh --add-bot --grok-name '<grok-name>' --relay-name <relay-name> --lang zh-CN`。绝不加 `--yes`：`--add-bot` 不接受它，计划必须由用户在终端里确认。没有终端时，安装器打印计划并以退出码 3 停下，什么都不改；把计划给用户看，请用户在自己的终端里运行同一条命令、回答 `y`，在 `[GROK-UI]` 用它打印的提示词新建由 webhook 触发的 routine，再把 Webhook URL 和 key 贴到那个终端。不需要云端提示词、邀请链接或 CopyToBox：新 Bot 会在共用的云电脑上自己登记，安装器负责确认（见[多个 Grok Bot](README.zh-CN.md#多个-grok-bot)）。安装器提示 `run ./update.sh first` 时，先按[更新](#更新)处理。它报告这个 Bot 保持 pending 时，之后运行 `./install.sh --relay-name <relay-name> --wake-bot --lang zh-CN`，从添加停下的地方继续。最后运行 `./check.sh`，按第 3 阶段测试新地址。
 
@@ -60,12 +60,23 @@
 - 云端报 `couldn't reach the machine that made the invite`：第 0 阶段第 2 步又失效了（Mac 的 VPN/代理又在拦截 `*.iroh.link`）。按第 0 阶段第 2 步修好，在 Mac 上运行 `reason-network stop`，请 Grok Bot 在邀请仍有效时用同一链接重试。
 - 日志报 `webhook POST failed`：请用户运行 `./install.sh --webhook --lang zh-CN` 重新核对 URL 和 key，不读取 env 文件。
 - Mac 已用另一个名字入队：不能直接改名。仅在用户明确决定后，请用户在自己的终端里运行 `./uninstall.sh --level identity`（需要输入确认，并有一步在 Grok Bot 里完成），再从第 1 阶段重来。
-- 其他问题：展示原始错误和指南中对应的排错章节。
+- 其他问题，包括本手册没写到的停止或退出码 1：原样展示输出，按[指南](README.zh-CN.md)、[升级](UPGRADE.zh-CN.md)或[卸载](UNINSTALL.zh-CN.md)中对应的章节处理，不要即兴修复。
 
 ## 更新
 
-`[LOCAL]`：已有安装时，运行 `./update.sh --plan --lang <en|zh-CN>`（用户所选语言），把输出给用户看。只有 relay 或 dsh 插件不一致时，可以运行 `./update.sh --yes --lang <en|zh-CN>`。退出码 3 表示更新需要用户回答 routine 和 Bot 云电脑的问题：请用户在自己的终端运行 `./update.sh --lang <en|zh-CN>`。有多个 Bot 时它覆盖所有 Bot，并分别询问每个 Bot 的 routine 提示词。不要修改 `~/.local/lib/agent-mesh/deployed.json`。从 v0.3.0 或更早版本第一次更新时，先运行一次 `git pull`，因为旧仓库里还没有 `update.sh`。
+`[LOCAL]`，用于已有安装。
+
+1. 从 v0.8.1 或更早版本来时，先运行 `git pull --ff-only`（原因见[从哪个版本来](UPGRADE.zh-CN.md#从哪个版本来)）。拉取因本地改动被拒绝时，把改动给用户看并停下；绝不 stash、reset 或丢弃这些改动。
+2. 运行 `./update.sh --plan --lang <en|zh-CN>`（用户所选语言），把输出给用户看。它列出 checkout 里未提交的改动时，不要自己加 `--no-pull`：那样会装上没人审过的代码。只有用户明确决定后才加。
+3. 用户同意计划后，运行 `./update.sh --yes --lang <en|zh-CN> </dev/null`，确保标准输入不是终端；不要给它分配交互终端，也不要替用户回答它的问题。`--yes` 只跳过用户刚才已经给出的确认；需要用户做的事（在 `[GROK-UI]` 粘贴 routine 提示词、未完成的云端初始化或手动更新）仍会让它以退出码 3 停下，更新不会执行。计划标明第一次更新云端时（`--lang zh-CN` 显示 `第一次用这个版本更新`，`--lang en` 显示 `first update with this version`），运行前先告诉用户：Grok Bot 会请用户在 Grok 对话里确认这次更新。计划里某个 Bot 附有 `./install.sh --relay-name <name> --wake-bot` 时，之后运行这条命令并补上所选的 `--lang <en|zh-CN>`，单独报告这个 Bot。
+4. 按退出码处理：
+   - `0`：完成或已是最新。运行 `./check.sh`。
+   - `3`：需要用户的终端；更新没有执行，但 checkout 可能已经快进。请用户在自己的终端运行 `./update.sh --lang <en|zh-CN>`；有多个 Bot 时它逐个询问有变化的 routine 提示词。
+   - `1`：没有完成。看错误信息和汇总。写的是 Grok Bot 还没回信时，请用户在 Grok 里查看或确认这条请求，再运行 `./update.sh --no-pull --yes --lang <en|zh-CN> </dev/null`：它按请求号找到回信并记录。只有最后的检查失败时，再运行一次 `./check.sh`，中继探测可能偶尔超时。其他原因（引擎比固定版本新、要求手工修改设置、relay 队列里还有未送达的消息、云端克隆有本地改动、取不到发布 tag、有 Bot 正在卸载）按[用 update.sh 升级](UPGRADE.zh-CN.md#用-updatesh-升级)、[多个 Bot](UPGRADE.zh-CN.md#多个-bot) 或 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)中对应的部分处理。中断的更新再次运行同一条命令即可继续。
+   - `2`：参数用错，检查命令。
+
+不要为了绕过停止而修改 `~/.local/lib/agent-mesh/deployed.json` 或 Reason Network 的设置；`./update.sh` 要求手工修改时，把它的说明交给用户。
 
 ## 卸载
 
-`[LOCAL]`：先运行 `git pull`，再运行 `./uninstall.sh --plan`，把输出给用户看；它列出已安装的内容和每个级别要删除的内容，不改动任何东西。经用户同意，你可以运行 `./uninstall.sh --level program --yes`，它只删除 relay 程序，`./install.sh --restart-relay` 可以装回。`identity` 级别（另外让两台电脑都退出团队，删除密钥和身份）和 `all` 级别（另外删除日志、引擎和云端数据）需要输入确认，并有一步在 Grok Bot 里完成：请用户在自己的终端里运行 `./uninstall.sh --level identity` 或 `--level all`，按[卸载指南](UNINSTALL.zh-CN.md)操作。有多个 Bot 时，除 `bot` 以外的级别都覆盖所有 Bot；只卸载一个 Bot、留下其他 Bot 时，请用户在自己的终端里运行 `./uninstall.sh --level bot --relay-name <relay-name>`，它同样需要输入确认，并有一步在 Grok Bot 里完成。没有终端时它们以退出码 3 结束。所有级别都保留当前代码目录。不要改为手动删除文件，也不要动卸载器列为 foreign 的部署。
+`[LOCAL]`：先核对 checkout 的 origin 和本地改动。有本地改动时，把改动给用户看并停下，除非用户明确选择用这个 checkout 卸载；绝不 stash、reset 或丢弃这些改动。否则运行 `git pull --ff-only`（失败时展示输出并停下），再运行 `./uninstall.sh --plan`，把输出给用户看；它列出已安装的内容和每个级别要删除的内容，不改动任何东西。经用户同意，你可以只删除 relay 程序：先由用户在 `[GROK-UI]` 暂停 routine（每个 Bot 的 routine），再由你运行 `./uninstall.sh --level program --yes`。`./install.sh --restart-relay` 可以装回；`./check.sh` 通过后，由用户恢复 routine。`identity` 级别（另外让两台电脑都退出团队，删除密钥和身份）和 `all` 级别（另外删除日志、引擎和云端数据）需要输入确认，并有一步在 Grok Bot 里完成：请用户在自己的终端里运行 `./uninstall.sh --level identity` 或 `--level all`，按[卸载指南](UNINSTALL.zh-CN.md)操作。有多个 Bot 时，除 `bot` 以外的级别都覆盖所有 Bot；只卸载一个 Bot、留下其他 Bot 时，请用户在自己的终端里运行 `./uninstall.sh --level bot --relay-name <relay-name>`，它同样需要输入确认，并有一步在 Grok Bot 里完成；它不卸载最后一个 Bot，那要用 `identity` 或 `all`。这样卸载的 Bot 地址以后不能再添加。已经运行过旧版 `./uninstall.sh --all` 时，`--residual` 的用法见[卸载指南](UNINSTALL.zh-CN.md#卸载身份或全部)。没有终端时它们以退出码 3 结束。所有级别都保留当前代码目录。不要改为手动删除文件，也不要动卸载器列为 foreign 的部署。
