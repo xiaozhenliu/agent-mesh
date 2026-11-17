@@ -3,7 +3,19 @@ name: CI
 on:
   push:
     branches: [main]
+    paths:
+      - "**"
+      - "!*.md"
+      - "!dsh/README*.md"
+      - "!llms.txt"
+      - "!LICENSE"
   pull_request:
+    paths:
+      - "**"
+      - "!*.md"
+      - "!dsh/README*.md"
+      - "!llms.txt"
+      - "!LICENSE"
   workflow_dispatch:
 
 permissions:

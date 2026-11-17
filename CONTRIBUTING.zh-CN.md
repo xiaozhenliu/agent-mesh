@@ -25,7 +25,7 @@
 
 ## 离线检查
 
-以下离线检查可在开发电脑或 CI 上运行，不需要连接 `[BOT-CLOUD]` 或操作 `[GROK-UI]`。本仓库的 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在推送到 `main` 和每个 pull request 时，于 Linux 和 macOS 上运行同一组检查。在公开发行目录根部运行：
+以下离线检查可在开发电脑或 CI 上运行，不需要连接 `[BOT-CLOUD]` 或操作 `[GROK-UI]`。本仓库的 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在推送到 `main` 和每个 pull request 时，于 Linux 和 macOS 上运行同一组检查；只改用户文档（根目录的 Markdown 文件和 `dsh/README*.md`、`llms.txt`、`LICENSE`）时跳过它，由 [`.github/workflows/docs.yml`](.github/workflows/docs.yml) 在每次推送和 pull request 时运行文档检查。在公开发行目录根部运行：
 
 ```bash
 python3 scripts/check_docs.py
