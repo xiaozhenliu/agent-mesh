@@ -97,7 +97,7 @@ uninstall.state_failed	failed
 uninstall.state_user_confirmed	user-confirmed
 uninstall.state_user_pending	user-pending
 uninstall.plan_service	relay login service and plist
-uninstall.plan_program	relay program, temporary files, rollback/
+uninstall.plan_program	relay program, temporary files, rollback/, agent-mesh command
 uninstall.plan_record	deployment record, update lock, engine backups (~/.local/lib/agent-mesh)
 uninstall.plan_settings	relay settings and signing key (~/.config/agent-relay)
 uninstall.plan_state	relay state: queue, replay protection, kept copies
@@ -205,7 +205,7 @@ uninstall.manual_inbox	an external inbox folder on [BOT-CLOUD] (RN_INBOX_DIR), i
 uninstall.manual_memory	anything the Bot keeps in its long-term memory about this setup
 uninstall.stopped_unchanged	stopped; nothing was changed
 uninstall.stopped_after_relay_restart	stopped after the relay was stopped; run ./install.sh --restart-relay to start it again
-uninstall.label_program	relay program, temporary files, rollback/
+uninstall.label_program	relay program, temporary files, rollback/, agent-mesh command
 uninstall.routine_pause	[GROK-UI] User: pause the routine in Grok Bot.
 uninstall.reinstall_hint	To reinstall later: git pull, then ./install.sh --restart-relay in this folder, then resume the routine. Do not run the full install again.
 uninstall.queue_grew	The queue grew while the relay stopped.

@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| **版本** | agent-mesh **v0.9.1** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
+| **版本** | agent-mesh **v0.10.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
 | **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证，但 Linux 本地安装尚不支持（见[准备](#准备)）· Bot 云端：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
@@ -162,7 +162,7 @@ cd ~/agent-mesh
 
 1. 安装 Reason Network v0.12.17（按安装器里写死的 sha256 校验），创建一个只有你一个人的私有团队，并关掉自动更新和局域网广播。
 2. 显示 `reason-network setup --dry-run` 的计划，**等你确认后**再把本机 agent 接入团队。
-3. `[LOCAL]` 生成签名密钥，并打印 routine 提示词。**用户在 `[GROK-UI]` 新建一个由 webhook 触发的 routine，把提示词贴进去**，再把面板给出的 Webhook URL 和 key 贴回 `[LOCAL]` 的终端。脚本随后写好本地配置，把 relay 装成 Mac 登录时自动启动的服务。
+3. `[LOCAL]` 生成签名密钥，并打印 routine 提示词：一段固定的短文本（routine 桩），每次运行时从 `[BOT-CLOUD]` 加载规则（[routine 桩](UPGRADE.zh-CN.md#routine-桩)）。**用户在 `[GROK-UI]` 新建一个由 webhook 触发的 routine，把提示词贴进去**，再把面板给出的 Webhook URL 和 key 贴回 `[LOCAL]` 的终端。脚本随后写好本地配置，把 relay 装成 Mac 登录时自动启动的服务。
 4. `[LOCAL]` 打印团队邀请链接和给 Grok Bot 的云端提示词。**用户在 `[GROK-UI]` 把这两段一起发给 Grok Bot**。Bot 在 `[BOT-CLOUD]` 核对发布版本的提交号和云端脚本校验值后克隆它、安装引擎、加入团队，然后用 CopyToBox 把密钥从 `[LOCAL]` 复制到 `[BOT-CLOUD]`；用户在 `[GROK-UI]` 批准这次复制。
 
 最后，把已经开着的 Claude Code、Codex 会话关掉重开。Codex 第一次启动会询问，选 Trust all and continue。
@@ -200,8 +200,8 @@ cd ~/agent-mesh
 
 1. 它问这个 Bot 在 Grok 里叫什么，并据此给出建议的地址名；名字里没有拉丁字母和数字时，建议第一个可用的 `bot-2`、`bot-3`……。直接回车接受，或者输入别的名字。agent 可以用 `--grok-name '<它在 Grok 里的名字>' --relay-name <name>` 一次给全，这时安装器只请你确认计划。团队从已有安装读取，不需要 `--name`（给了就必须是同一个团队）。它不重新接入 agent，不下载引擎，也不生成密钥。
 2. 它核对 `<name>`、`<name>-cloud`、`<name>-inbox` 都不是团队里仍列出的会话（任何机器，在线或离线），也没有在本机用过，并且这个名字没有被卸载过，然后显示计划 `Add Bot <team-name>/<name> (called “…” in Grok); <其他 Bot> stay as they are.`，请你确认。`--add-bot` 不接受 `--yes`；不在终端里时，只打印计划，不改动任何东西。
-3. `[GROK-UI]`：为新 Bot 建一个由 webhook 触发的 routine，把安装器打印的提示词贴进去，再把 Webhook URL 和 key 贴回 `[LOCAL]` 的终端。这个 Bot 的提示词多一个第 0 步（[提示词](prompts/cloud-add-bot.zh-CN.md)），每条 `rn-cloud.sh` 命令前都加上 `RN_BOT=<name>`，thread 笔记放在 `bots/<name>/threads/` 下。
-4. 其余步骤自动完成。安装器经新 Bot 的 webhook 唤醒它；Bot 在第 0 步运行 `box/rn-cloud-add-bot.sh`，核对共用的云电脑并在上面登记这个 Bot 的两个会话，不需要 CopyToBox，也不需要新的邀请。两个会话都出现在团队里之后，安装器才启动这个 Bot 的 relay，再给它发一行请求 `agent-mesh add-bot <name> <req>`，等待确认登记的回信。每一步最多等 10 分钟。
+3. `[GROK-UI]`：为新 Bot 建一个由 webhook 触发的 routine，把安装器打印的提示词贴进去，再把 Webhook URL 和 key 贴回 `[LOCAL]` 的终端。这个 Bot 的桩在第一条命令里写明 Bot、团队和团队哈希；它加载的规则在每条 `rn-cloud.sh` 命令前都加上 `RN_BOT=<name>`，thread 笔记放在 `bots/<name>/threads/` 下。用 `--full-prompt` 时，完整提示词改为多一个第 0 步（[第 0 步](prompts/cloud-add-bot.zh-CN.md)）。
+4. 其余步骤自动完成。安装器经新 Bot 的 webhook 唤醒它；桩的第一条命令在打印规则之前运行 `box/rn-cloud-add-bot.sh`，核对共用的云电脑并在上面登记这个 Bot 的两个会话，不需要 CopyToBox，也不需要新的邀请。两个会话都出现在团队里之后，安装器才启动这个 Bot 的 relay，再给它发一行请求 `agent-mesh add-bot <name> <req>`，等待确认登记和桩的回信。每一步最多等 10 分钟。
 
 等待超时时，这个 Bot 保持 pending，既不算失败，也不算完成；会话出现之前它的 relay 不会启动。之后 `./update.sh` 会自己查找回信。`./install.sh --relay-name <name> --wake-bot` 重新唤醒 Bot，并从停下的地方继续；`./install.sh --add-bot --relay-name <name>` 续接这次添加。有一个添加没完成时，不能再添加别的 Bot；先完成它，或用 `--level bot` 卸载它。
 
@@ -361,7 +361,7 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 ./update.sh --lang <en|zh-CN>
 ```
 
-它先拉取更新，再逐项与本机已部署的版本比较，改动之前只问一次。relay、dsh 插件和本机引擎由它自己更新；routine 提示词有变化时显示新提示词，请你粘贴；云端有变化时从这台 Mac 给 Grok Bot 发一条更新请求，并核对 Grok Bot 的回信。从 v0.8.1 或更早版本第一次更新云端时，要你在 Grok 对话里确认一次（Grok Bot 会告诉你怎么说）；`./update.sh --manual` 可以手动完成云端步骤。`./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署。有多个 Bot 时一次运行覆盖所有 Bot：所有 relay 一起参与一次引擎切换，云端只更新一次，提示词有变化的 Bot 各自显示新提示词（见[多个 Bot](UPGRADE.zh-CN.md#多个-bot)）。细节、手动升级顺序和回退顺序见[升级指南](UPGRADE.zh-CN.md)。agent-mesh 0.7.0 还会把两台电脑上的 Reason Network 升级到 0.12.17，先备份，失败时回滚，见 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)。
+它先把 checkout 前进到最新的发布版，再逐项与本机已部署的版本比较，改动之前只问一次。relay、dsh 插件和本机引擎由它自己更新；云端有变化时从这台 Mac 给 Grok Bot 发一条更新请求，并核对 Grok Bot 的回信；routine 桩有变化时显示新的桩请你粘贴，再请 Bot 确认。只是规则变化时不用粘贴，因为桩从云端加载规则。`./update.sh --manual` 可以手动完成云端步骤。第一次运行之后，`agent-mesh update` 和 `agent-mesh check` 可以在任何目录运行这个 checkout 里的脚本。`./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署。有多个 Bot 时一次运行覆盖所有 Bot：所有 relay 一起参与一次引擎切换，云端只更新一次，提示词有变化的 Bot 各自显示新提示词（见[多个 Bot](UPGRADE.zh-CN.md#多个-bot)）。细节、手动升级顺序和回退顺序见[升级指南](UPGRADE.zh-CN.md)。agent-mesh 0.7.0 还会把两台电脑上的 Reason Network 升级到 0.12.17，先备份，失败时回滚，见 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)。
 
 ## 文档与语言
 

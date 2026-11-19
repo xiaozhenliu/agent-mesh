@@ -12,7 +12,7 @@
 
 | 级别 | 删除 | 保留 |
 |---|---|---|
-| `--level program` | relay 服务和 plist、relay 程序、它的临时文件和 `rollback/`；有多个 Bot 时是每个 Bot 的 relay 服务和 plist。 | 其余全部：两台电脑上的团队身份、`~/.config/agent-relay`（webhook 配置和签名密钥）、队列、日志和 Reason Network；有多个 Bot 时保留每个 Bot 的配置、状态和 Bot 名单，`./install.sh --restart-relay` 会把它们全部装回。 |
+| `--level program` | relay 服务和 plist、relay 程序、它的临时文件和 `rollback/`，以及 `~/.local/bin` 里由 agent-mesh 写入的 `agent-mesh` 命令；有多个 Bot 时是每个 Bot 的 relay 服务和 plist。 | 其余全部：两台电脑上的团队身份、`~/.config/agent-relay`（webhook 配置和签名密钥）、队列、日志和 Reason Network；有多个 Bot 时保留每个 Bot 的配置、状态和 Bot 名单，`./install.sh --restart-relay` 会把它们全部装回。 |
 | `--level bot --relay-name <name>` | 一个 Bot：它的 relay 服务和 plist、配置、relay 状态和日志，以及部署记录中它的条目；`[BOT-CLOUD]` 上先为它的名字写 tombstone，再删除它的收件和 thread 笔记。 | 其他 Bot、两台电脑上的团队、签名密钥、引擎和 Reason Network。 |
 | `--level identity` | 另外删除部署记录、`~/.config/agent-relay`、relay 状态（队列、防重放记录、消息副本）和 dsh 插件块；本机退出团队，执行 `setup --remove`，删除 `~/.reason/network`。Bot 退出团队，删除云端的身份、密钥和名字（`box/state`、`box/bin`、`box/person`、`box/relay`、`box/outbound.key`）以及引擎备份 `box/engine-backup-*`。本机的部署记录目录连同其中的引擎备份一起删除。有多个 Bot 时另外删除 `~/.config/agent-relay-bots` 和 `~/Library/Application Support/agent-relay-bots`，`[BOT-CLOUD]` 上另外删除 `bots/`、`box/bots-removed/`、`box/relay.removed` 和 `.maint.lock`。 | relay 日志（包括添加的 Bot 的日志）、引擎二进制、管理锁文件 `~/.local/lib/agent-mesh.lock`，以及云端的 `inbox/`、`threads/` 和 `/workspace/agent-mesh`。 |
 | `--level all`（或 `--all`） | 另外删除 relay 日志（包括添加的 Bot 的日志）、`~/.local/bin/reason-network`、dsh 插件的备份和日志，最后删除管理锁文件；`[BOT-CLOUD]` 上另外删除 `inbox/`、`threads/` 和 `/workspace/agent-mesh`。 | 只保留下面列出的内容。 |

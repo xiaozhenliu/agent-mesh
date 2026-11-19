@@ -62,7 +62,7 @@ With several Grok Bots on one Mac ([Several Grok Bots](README.md#several-grok-bo
 - The cloud maintenance lock protects single commands only, not the model's work between commands or its direct reads and writes of thread notes. During a cloud update other commands wait up to 600 seconds for it, then fail without changing anything; the routine tells the user, and the next wake-up handles the mail.
 - At the first update from v0.8.2 or v0.8.3 to v0.9.0, the old cloud checkout and old commands already running do not respect the maintenance lock. This affects only single-Bot installations, which is all those versions support.
 - Management commands of an older and this version started at the same time are not fully kept apart. Older management tools cannot manage several Bots.
-- If waiting for an added Bot's cloud registration times out, the wake request fails, the model does not run step 0 of its routine prompt, or Grok usage runs out, the Bot stays pending and its relay does not start; `./install.sh --relay-name <name> --wake-bot` tries again. It is never recorded as added.
+- If waiting for an added Bot's cloud registration times out, the wake request fails, the routine's first run does not complete the registration (step 1 of the stub, or step 0 of a complete prompt), or Grok usage runs out, the Bot stays pending and its relay does not start; `./install.sh --relay-name <name> --wake-bot` tries again. It is never recorded as added.
 - A registered relay does not prove that the matching Grok routine works. If the routine of the Bot that carries the cloud update request is broken, `./update.sh` waits until it times out; `./update.sh --manual` is the way out.
 - Any team member can wake any of the Bots, as with one Bot.
 

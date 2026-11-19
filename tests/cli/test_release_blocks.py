@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 
 from render_prompt import CLOUD_FILES, ROOT, render_prompt
-from tests.helpers.prompts import FIRST_UPDATE_PREFIX
 
 TAG = "v" + (ROOT / "VERSION").read_text().strip()
 UPDATE = "box/rn-cloud-update.sh"
@@ -115,7 +114,7 @@ class ReleaseBlocks(unittest.TestCase):
         return subprocess.run(["bash", "-c", text], cwd=self.base, env=self.env, capture_output=True, text=True,
                               timeout=120)
 
-    def update_block(self, commit=None, sums=None, message=False, call="cloud_step"):
+    def update_block(self, commit=None, sums=None, message=False):
         harness = f'''set -u
 . "{ROOT}/scripts/msg.sh"
 state() {{ :; }}
@@ -125,17 +124,14 @@ REL_TAG={TAG}; REL_COMMIT={commit or self.commit}; S_EPIN=0.12.17
 REL_SUMS="$(cat "$1")"$'\\n'
 eval "$(cat "$2")"
 new_req() {{ echo {REQ}; }}
-{call}
+cloud_step
 '''
         sums_file = self.base / "sums"
         sums_file.write_text(self.sums if sums is None else sums)
         script = (ROOT / "update.sh").read_text()
         func = self.base / "cloud_step.sh"
-        parts = []
-        for name, end in (("cloud_block", "prompt_text"), ("bootstrap_message", "cloud_auto")):
-            start = script.index(f"\n{name}() {{") + 1
-            parts.append(script[start:script.index(f"\n{end}() {{", start) + 1])
-        func.write_text("".join(parts))
+        start = script.index("\ncloud_block() {") + 1
+        func.write_text(script[start:script.index("\nprompt_text() {", start) + 1])
         out = subprocess.run(["bash", "-c", harness, "harness", str(sums_file), str(func)],
                              env=self.env, capture_output=True, text=True, timeout=60, check=True).stdout
         if message:
@@ -339,14 +335,6 @@ new_req() {{ echo {REQ}; }}
         self.assertEqual(result.stdout.splitlines()[0], f"agent-mesh-result request {REQ}")
         self.assert_stopped(result, f"this clone is at 99.0.0, newer than {TAG}", newer)
         self.assertNotIn("origin:", result.stdout)
-
-    def test_first_update_message_explains_and_carries_the_block(self):
-        text = self.update_block(message=True, call=f"bootstrap_message {REQ}")
-        self.assertTrue(text.startswith(FIRST_UPDATE_PREFIX))
-        for lang in ("en", "zh-CN"):
-            self.assertIn(FIRST_UPDATE_PREFIX, render_prompt("routine", lang))
-        self.assertIn(f"REQ={REQ}", text)
-        self.assertTrue(text.rstrip("\n").endswith("AGENT_MESH_UPDATE"))
 
     def test_update_script_runs_the_new_checkouts_copy_and_its_reply_is_recorded(self):
         self.existing_clone()

@@ -20,6 +20,7 @@ box/bin/
 box/person
 box/.person.*
 box/relay
+box/lang
 box/relay.damaged-*
 box/relay.removed
 box/bots-removed/

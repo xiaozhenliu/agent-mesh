@@ -447,6 +447,23 @@ class Mac(Base, unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn("relay login service: absent", r.stdout)
 
+    def test_program_level_removes_only_the_agent_mesh_command_it_wrote(self):
+        import mesh_entry
+        self.install()
+        entry = self.p(".local/bin/agent-mesh")
+        mesh_entry.write(self.home, "en")
+        self.assertTrue(mesh_entry.ours(entry))
+        plan = self.run_un("--plan", "--level", "program")
+        self.assertRegex(plan.stdout, r"agent-mesh command\s+present\s+remove")
+        r = self.run_un("--level", "program", "--yes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(entry.exists())
+        self.assertTrue(self.p(".local/bin/reason-network").exists())
+        entry.write_text("#!/bin/sh\necho mine\n")
+        r = self.run_un("--level", "program", "--yes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(entry.read_text(), "#!/bin/sh\necho mine\n")
+
     def test_identity_level_runs_in_order_and_keeps_logs_and_engine(self):
         self.install(name="alice", queue={"spool": [], "pending": {}})
         s, code = self.run_deep()
@@ -1189,7 +1206,7 @@ class MultiBot(AddSupport, unittest.TestCase):
         self.assertNotIn("request", data)
         self.assertNotIn("relay_name", data)
         self.cloud_changed(self.repo_dir)
-        data["bots"]["beta"]["prompt"]["hash"] = "0" * 64
+        data["bots"]["beta"]["prompt"].update(hash="0" * 64, text="0" * 64)
         self.write_record(data)
         r = self.run_tty(self.repo_dir, "--no-pull", "--manual",
                          answers=["y", "y", *self.cloud_reply(self.repo_dir), "y", "n"])

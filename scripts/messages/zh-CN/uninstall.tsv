@@ -97,7 +97,7 @@ uninstall.state_failed	失败
 uninstall.state_user_confirmed	用户已确认
 uninstall.state_user_pending	等待用户处理
 uninstall.plan_service	relay 登录服务和 plist
-uninstall.plan_program	relay 程序、临时文件、rollback/
+uninstall.plan_program	relay 程序、临时文件、rollback/、agent-mesh 命令
 uninstall.plan_record	部署记录、更新锁、引擎备份（~/.local/lib/agent-mesh）
 uninstall.plan_settings	relay 设置和签名密钥（~/.config/agent-relay）
 uninstall.plan_state	relay 状态：队列、防重放记录、保留的副本
@@ -205,7 +205,7 @@ uninstall.manual_inbox	[BOT-CLOUD] 上的外部收件箱文件夹（RN_INBOX_DIR
 uninstall.manual_memory	Bot 长期记忆里关于这套部署的内容
 uninstall.stopped_unchanged	已停止；没有任何改动
 uninstall.stopped_after_relay_restart	已在 relay 停止后停下；运行 ./install.sh --restart-relay 可重新启动它
-uninstall.label_program	relay 程序、临时文件、rollback/
+uninstall.label_program	relay 程序、临时文件、rollback/、agent-mesh 命令
 uninstall.routine_pause	[GROK-UI] 用户：在 Grok Bot 里暂停 routine。
 uninstall.reinstall_hint	以后要重新安装：先 git pull，然后在这个文件夹里运行 ./install.sh --restart-relay，再恢复 routine。不要再运行完整安装。
 uninstall.queue_grew	relay 停止期间队列变长了。

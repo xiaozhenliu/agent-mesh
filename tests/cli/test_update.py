@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import signal
@@ -7,7 +8,7 @@ import time
 import unittest
 
 import messages
-from render_prompt import ROOT
+from render_prompt import CLOUD_FILES, ROOT
 from tests.cli.install_support import (
     BASE_PYTHON,
     InstallHarness,
@@ -136,10 +137,23 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertIn("unreadable", result.stderr)
 
     def test_update_guided_flow_runs_in_order_and_records_each_step(self):
+        self.guided_flow("--manual")
+
+    def test_update_without_a_record_of_the_cloud_side_uses_the_guided_flow_by_itself(self):
+        self.guided_flow()
+
+    def guided_flow(self, *args):
         repo = self.installed(record=False)
-        result = self.run_tty(repo, "--no-pull", "--manual", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", *args, answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.sent(), [])
+        if args:
+            self.assertNotIn(m("update.plan_no_record"), result.stdout)
+        else:
+            self.assertIn(m("update.plan_no_record"), result.stdout)
+        [message] = self.sent()
+        self.assertRegex(message["body"], r"\Aagent-mesh stub [0-9a-f]{16}\nlang=en\Z")
+        self.assertLess(result.stdout.index("match: commit, checksums and engine"),
+                        result.stdout.index("agent-mesh routine stub v1"))
         self.assertIn("match: commit, checksums and engine", result.stdout)
         self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", result.stdout)
         self.assertNotIn("pull --ff-only", result.stdout)
@@ -151,6 +165,7 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertEqual(data["cloud_engine"]["version"], "0.12.17")
         for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
             self.assertEqual(data[field]["state"], "confirmed", field)
+        self.assertEqual((data["prompt"]["mode"], data["prompt"]["stub"]), ("thin", 1))
         self.assertNotIn("txn", data)
         lines = self.service_changes()
         self.assertEqual(lines[0].split()[1], "bootout")
@@ -314,9 +329,7 @@ class Update(InstallHarness, unittest.TestCase):
         tag = self.release_tag(repo)
         c, a = f"{r} sum {cloud}  box/rn-cloud.sh\n", f"{r} commit {'a' * 40}\n"
         f = f"{r} sum {fetch}  box/rn-fetch.py\n"
-        rest = (f"{r} sum {self.sha(repo / 'box/rn-cloud-setup.sh')}  box/rn-cloud-setup.sh\n"
-                f"{r} sum {self.sha(repo / 'box/rn-engine.py')}  box/rn-engine.py\n"
-                f"{r} sum {self.sha(repo / 'box/rn-cloud-add-bot.sh')}  box/rn-cloud-add-bot.sh\n{r} DONE {tag}\n")
+        rest = "".join(f"{r} sum {self.sha(repo / n)}  {n}\n" for n in CLOUD_FILES[2:]) + f"{r} DONE {tag}\n"
         good = [
             a + c + f + rest,
             f"Previously HEAD was {'b' * 40}.\n{r} commit {'A' * 40}\n{r} sum {cloud.upper()} *box/rn-cloud.sh\n"
@@ -440,13 +453,16 @@ class Update(InstallHarness, unittest.TestCase):
         for field in ("cloud", "cloud_setup", "prompt", "cloud_engine"):
             self.assertEqual(data[field]["state"], "confirmed", field)
         self.assertEqual(data["cloud"]["release"], (repo / "VERSION").read_text().strip())
+        self.assertEqual(data["prompt"]["stub"], 1)
         self.assertEqual(self.service_changes(), [])
-        self.assertEqual(self.sent(), [])
+        [message] = self.sent()
+        self.assertRegex(message["body"], r"\Aagent-mesh stub [0-9a-f]{16}\nlang=en\Z")
         data["prompt"]["state"] = "pending"
         self.write_record(data)
-        result = self.run_tty(repo, "--no-pull", answers=["n", "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Replace the prompt saved in the routine", result.stdout)
+        self.assertNotIn("Replace the prompt saved in the routine", result.stdout)
+        self.assertEqual(len(self.sent()), 2)
         self.assertEqual(self.record()["prompt"]["state"], "confirmed")
 
     def test_update_asks_grok_bot_to_update_the_cloud_and_records_its_reply(self):
@@ -498,7 +514,8 @@ class Update(InstallHarness, unittest.TestCase):
                 self.bot_replies(body=body, **conf)
                 result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertIn("No reply from Grok Bot within 15 minutes", result.stdout)
+                self.assertIn("No reply from Grok Bot within 10 s.", result.stdout)
+                self.assertIn("(usually 1 to 3 minutes, at most 10 s)", result.stdout)
                 self.assertNotIn("this first update request", result.stdout)
                 self.assertEqual(len(self.sent()), n)
                 data = self.record()
@@ -573,7 +590,7 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertIn("this checkout changed after the update request was sent", result.stdout)
         self.assertEqual(len(self.sent()), 2)
         body = self.sent()[-1]["body"]
-        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", body)
+        self.assertTrue(body.endswith("\nlang=en"), body)
         self.assertNotIn(old, body)
         self.assertEqual(self.record()["cloud"]["hash"], self.digest(repo, "cloud"))
 
@@ -588,53 +605,393 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(self.sent()), 2, result.stdout)
         body = self.sent()[-1]["body"]
-        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", body)
+        self.assertTrue(body.endswith("\nlang=en"), body)
         self.assertIn("b" * 40, body)
         self.assertNotIn(old, body)
         self.assertIn("v9.9.9", body)
         self.assertEqual(self.record()["cloud"]["release"], "9.9.9")
 
-    def test_update_has_the_prompt_pasted_before_it_asks_grok_bot(self):
+    def test_update_has_grok_bot_update_the_cloud_before_it_shows_a_changed_stub(self):
         repo = self.installed()
         prompt = repo / "prompts/routine.md"
         text = prompt.read_text()
         fence = text.index("```\n") + 4
         prompt.write_text(text[:fence] + "Changed. " + text[fence:])
         self.cloud_changed(repo)
-        self.bot_replies(repo)
-        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        before = self.record()["prompt"]
+        self.bot_replies(body="agent-mesh-result request {req}\nSTOP: /workspace/agent-mesh has local changes\n")
+        result = self.run_script("update.sh", "--no-pull", root=repo)
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.sent(), [])
+        result = self.run_tty(repo, "--no-pull", answers=["y"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("the cloud side was not recorded as updated", result.stderr)
+        self.assertNotIn("Changed. ", result.stdout)
+        self.assertEqual(self.record()["prompt"], before)
+        [message] = self.sent()
+        self.assertRegex(message["body"], rf"\Aagent-mesh update v\S+ {'a' * 40} [0-9a-f]{{16}}\Z")
+        self.bot_replies(repo)
         result = self.run_tty(repo, "--no-pull", answers=["y", "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("You will paste a new routine prompt into Grok", result.stdout)
+        self.assertLess(result.stdout.index("Sent the update request to Grok Bot"), result.stdout.index("Changed. "))
         self.assertIn("the routine prompt was not recorded as updated", result.stderr)
-        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.record()["cloud"]["hash"], self.digest(repo, "cloud"))
+        self.assertEqual(self.record()["prompt"], before)
+        self.assertEqual(len(self.sent()), 2)
         result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertLess(result.stdout.index("Changed. "), result.stdout.index("Sent the update request to Grok Bot"))
-        data = self.record()
-        self.assertEqual(data["prompt"]["state"], "confirmed")
-        self.assertEqual(data["cloud"]["hash"], self.digest(repo, "cloud"))
-        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("Changed. ", result.stdout)
+        self.assertEqual(len(self.sent()), 3)
+        self.assertRegex(self.sent()[-1]["body"], r"\Aagent-mesh stub [0-9a-f]{16}\nlang=en\Z")
+        data = self.record()["prompt"]
+        self.assertEqual((data["state"], data["mode"], data["stub"]), ("confirmed", "thin", 1))
 
-    def test_update_from_a_record_without_the_release_sends_the_checked_block(self):
+    def test_update_without_a_terminal_updates_the_cloud_and_leaves_a_changed_stub_for_later(self):
+        repo = self.installed()
+        version = (repo / "VERSION").read_text().strip()
+        prompt = repo / "prompts/routine.md"
+        text = prompt.read_text()
+        fence = text.index("```\n") + 4
+        prompt.write_text(text[:fence] + "Changed. " + text[fence:])
+        self.cloud_changed(repo)
+        before = self.record()["prompt"]
+        self.bot_replies(repo)
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertIn(m("update.plan_prompt_later"), plan.stdout)
+        self.assertNotIn(m("update.plan_prompt_later"), self.run_tty(repo, "--no-pull", "--plan").stdout)
+        result = self.run_script("update.sh", "--no-pull", root=repo)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.sent(), [])
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Changed. ", result.stdout)
+        self.assertIn(m("update.prompt_later", "en"), result.stdout)
+        self.assertIn(m("r.prompt_later"), result.stdout)
+        [message] = self.sent()
+        self.assertRegex(message["body"], rf"\Aagent-mesh update v{version} {'a' * 40} [0-9a-f]{{16}}\Z")
+        data = self.record()
+        self.assertEqual(data["cloud"]["hash"], self.digest(repo, "cloud"))
+        self.assertEqual(data["prompt"], before)
+        self.assertNotIn("txn", data)
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertRegex(plan.stdout, r"cloud scripts\s+unchanged")
+        self.assertRegex(plan.stdout, r"routine prompt\s+changed")
+        result = self.run_tty(repo, "--no-pull", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Changed. ", result.stdout)
+        self.assertIn(m("r.prompt_later"), result.stdout)
+        self.assertNotIn(m("update.up_to_date"), result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.record()["prompt"], before)
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Changed. ", result.stdout)
+        self.assertEqual(len(self.sent()), 2)
+        self.assertRegex(self.sent()[-1]["body"], r"\Aagent-mesh stub [0-9a-f]{16}\nlang=en\Z")
+        data = self.record()["prompt"]
+        self.assertEqual((data["state"], data["mode"], data["stub"]), ("confirmed", "thin", 1))
+
+    def test_update_without_a_terminal_still_stops_for_a_prompt_that_needs_an_answer(self):
+        repo = self.installed()
+        self.cloud_changed(repo)
+        self.bot_replies(repo)
+        full = subprocess.run([sys.executable, str(repo / "scripts/deploy_state.py"), "--prompt-mode", "full",
+                               "digest", "prompt"], env=self.env, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        data = self.record()
+        data["prompt"].update(state="pending", mode="full", hash=full)
+        self.write_record(data)
+        before = self.record()
+        for args in (("--full-prompt",), ("--manual",)):
+            result = self.run_script("update.sh", "--no-pull", "--yes", *args, root=repo)
+            self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+            self.assertNotIn(m("update.plan_prompt_later"), result.stdout)
+            self.assertEqual(self.sent(), [])
+            self.assertEqual(self.record(), before)
+        self.assertRegex(self.run_script("update.sh", "--no-pull", "--plan", "--full-prompt", root=repo).stdout,
+                         r"routine prompt\s+pending")
+        data = self.record()
+        del data["prompt"]
+        self.write_record(data)
+        before = self.record()
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"routine prompt\s+unknown")
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.record(), before)
+
+    def test_update_from_a_record_before_v0_8_2_shows_the_stub_first_and_puts_the_full_prompt_back(self):
         repo = self.installed()
         version = (repo / "VERSION").read_text().strip()
         data = self.record()
         del data["cloud"]["release"]
+        data["prompt"].update(hash="0" * 64, text="0" * 64)
         self.write_record(data)
+        self.cloud_changed(repo)
+        self.bot_silent()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertIn(m("update.plan_cloud_stub_first", "0.12.17"), plan.stdout)
+        self.assertNotIn(m("update.plan_prompt_later"), plan.stdout)
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.sent(), [])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", "n"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        out = result.stdout
+        self.assertLess(out.index("agent-mesh routine stub v1"), out.index("Sent the update request to Grok Bot"))
+        self.assertLess(out.index("Sent the update request to Grok Bot"), out.index(m("update.full_back", "en")))
+        self.assertIn("--stdin 0 - ", out[out.index(m("update.full_back", "en")):])
+        self.assertIn(m("update.full_back_later"), out)
+        [message] = self.sent()
+        self.assertRegex(message["body"], rf"\Aagent-mesh update v{version} {'a' * 40} [0-9a-f]{{16}}\nlang=en\Z")
+        prompt = self.record()["prompt"]
+        self.assertEqual((prompt["state"], prompt["recover"]), ("pending", 1))
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.recover_check"), result.stdout)
+        self.assertIn(m("update.full_back", "en"), result.stdout)
+        prompt = self.record()["prompt"]
+        self.assertEqual((prompt["state"], prompt["mode"]), ("confirmed", "full"))
+        self.assertNotIn("recover", prompt)
+        self.assertEqual(len(self.sent()), 1)
+        self.put_reply(self.record()["request"]["req"], self.good_reply(repo))
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.cloud_earlier_reply"), result.stdout)
+        self.assertIn("agent-mesh routine stub v1", result.stdout)
+        self.assertEqual(len(self.sent()), 2)
+        self.assertRegex(self.sent()[-1]["body"], r"\Aagent-mesh stub [0-9a-f]{16}\nlang=en\Z")
+        data = self.record()
+        self.assertEqual((data["prompt"]["state"], data["prompt"]["mode"], data["prompt"]["stub"]),
+                         ("confirmed", "thin", 1))
+        self.assertEqual(data["cloud"]["release"], version)
+
+    def test_update_read_back_reports_each_kind_of_answer(self):
+        repo = self.installed()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+
+        def pending():
+            data = self.record()
+            data["prompt"]["state"] = "pending"
+            for key in ("req", "sent_ms", "stub"):
+                data["prompt"].pop(key, None)
+            self.write_record(data)
+
+        pending()
+        (self.who / "stub").write_text("silent")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.readback_timeout", m("update.n_seconds", 5), "demo/bot"), result.stdout)
+        self.assertIn(m("r.stub_missing"), result.stdout)
+        prompt = self.record()["prompt"]
+        self.assertEqual((prompt["state"], prompt["missing"]), ("pending", 1))
+        req = prompt["req"]
+        self.put_reply(req, "agent-mesh-result request {req}\nagent-mesh-result lang en\n"
+                            "agent-mesh-result stub 1\nagent-mesh-result DONE stub\n")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("state.stub_confirmed", "demo/bot", 1), result.stdout)
+        self.assertNotIn("agent-mesh routine stub v1", result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.record()["prompt"]["state"], "confirmed")
+        self.assertNotIn("missing", self.record()["prompt"])
+        pending()
+        (self.who / "stub").write_text("nostub")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("state.stub_missing", "demo/bot"), result.stdout)
+        self.assertIn(m("r.stub_missing"), result.stdout)
+        self.assertEqual((self.record()["prompt"]["state"], self.record()["prompt"]["missing"]), ("pending", 1))
+        self.assertEqual(len(self.sent()), 2)
+        self.assertRegex(self.run_script("update.sh", "--no-pull", "--plan", root=repo).stdout,
+                         r"routine prompt\s+changed")
+        (self.who / "stub").write_text("ok")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("agent-mesh routine stub v1", result.stdout)
+        self.assertEqual(len(self.sent()), 3)
+        self.assertNotIn("missing", self.record()["prompt"])
+        self.assertEqual(self.record()["prompt"]["state"], "confirmed")
+        pending()
+        (self.state / "loaded").unlink()
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.readback_relay_down", "bot"), result.stdout)
+        self.assertEqual(len(self.sent()), 3)
+        (self.state / "loaded").write_text("")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("r.stub_confirmed"), result.stdout)
+        self.assertEqual(self.record()["prompt"]["state"], "confirmed")
+
+    def test_update_read_back_replies_that_do_not_confirm_the_stub(self):
+        repo = self.installed()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        head = "agent-mesh-result request {req}\n"
+        cases = {
+            "stop": (head + "STOP: box/lang cannot be written (disk full)\n",
+                     "STOP: box/lang cannot be written (disk full)"),
+            "language": (head + "agent-mesh-result lang zh-CN\nagent-mesh-result stub 1\nagent-mesh-result DONE stub\n",
+                         m("state.stub_lang", "zh-CN", "en")),
+            "stub": (head + "agent-mesh-result lang {lang}\nagent-mesh-result stub 2\nagent-mesh-result DONE stub\n",
+                     m("state.stub_other", "2", 1)),
+            "done": (head + "agent-mesh-result lang {lang}\nagent-mesh-result stub 1\n", m("reply.no_done", "stub")),
+        }
+        for name, (body, problem) in cases.items():
+            with self.subTest(name):
+                data = self.record()
+                data["prompt"]["state"] = "pending"
+                for key in ("req", "sent_ms", "stub"):
+                    data["prompt"].pop(key, None)
+                self.write_record(data)
+                (self.who / "bot.json").write_text(json.dumps({"stub_body": body}))
+                sent = len(self.sent())
+                result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(m("state.stub_mismatch", "demo/bot"), result.stdout)
+                self.assertIn(problem, result.stdout)
+                self.assertIn(m("r.readback_waiting"), result.stdout)
+                self.assertEqual(len(self.sent()), sent + 1)
+                prompt = self.record()["prompt"]
+                self.assertEqual(prompt["state"], "pending")
+                for key in ("req", "sent_ms", "missing"):
+                    self.assertNotIn(key, prompt)
+                plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+                self.assertRegex(plan.stdout, r"routine prompt\s+read-back")
+                self.bot_silent()
+                result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(len(self.sent()), sent + 2)
+                self.assertNotEqual(self.sent()[-1]["body"], self.sent()[-2]["body"])
+                self.assertNotIn("agent-mesh routine stub v1", result.stdout)
+                self.assertEqual(self.record()["prompt"]["state"], "confirmed", result.stdout + result.stderr)
+
+    def test_update_read_back_with_an_unreadable_message_store_keeps_its_request(self):
+        repo = self.installed()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        data = self.record()
+        data["prompt"]["state"] = "pending"
+        for key in ("req", "sent_ms", "stub"):
+            data["prompt"].pop(key, None)
+        self.write_record(data)
+        (self.who / "stub").write_text("silent")
+        self.assertEqual(self.run_script("update.sh", "--no-pull", root=repo, timeout=60).returncode, 1)
+        req = self.record()["prompt"]["req"]
+        db = self.home / ".reason/network/network.db"
+        db.rename(db.with_name("aside.db"))
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("request.no_db", db), result.stdout)
+        self.assertIn(m("r.prompt_later"), result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual((self.record()["prompt"]["req"], self.record()["prompt"]["missing"]), (req, 1))
+        data = self.record()
+        del data["prompt"]["missing"]
+        self.write_record(data)
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("request.no_db", db), result.stdout)
+        self.assertIn(m("r.readback_waiting"), result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.record()["prompt"]["req"], req)
+        self.assertNotIn("missing", self.record()["prompt"])
+        db.with_name("aside.db").rename(db)
+        self.put_reply(req, "agent-mesh-result request {req}\nagent-mesh-result lang en\n"
+                            "agent-mesh-result stub 1\nagent-mesh-result DONE stub\n")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.record()["prompt"]["state"], "confirmed")
+
+    def test_update_after_a_read_back_timeout_shows_the_stub_again(self):
+        repo = self.installed()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        data = self.record()
+        data["prompt"]["state"] = "pending"
+        for key in ("req", "sent_ms", "stub"):
+            data["prompt"].pop(key, None)
+        self.write_record(data)
+        (self.who / "stub").write_text("silent")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.readback_timeout", m("update.n_seconds", 5), "demo/bot"), result.stdout)
+        self.assertIn(m("r.stub_missing"), result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        old = self.sent()[0]["body"]
+        self.assertRegex(self.run_script("update.sh", "--no-pull", "--plan", root=repo).stdout,
+                         r"routine prompt\s+changed")
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("update.prompt_later", "en"), result.stdout)
+        self.assertNotIn("agent-mesh routine stub v1", result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.record()["prompt"]["missing"], 1)
+        (self.who / "stub").write_text("ok")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("agent-mesh routine stub v1", result.stdout)
+        self.assertLess(result.stdout.index("agent-mesh routine stub v1"), result.stdout.index(m("update.readback_heading", "demo/bot")))
+        self.assertEqual(len(self.sent()), 2)
+        self.assertRegex(self.sent()[-1]["body"], r"\Aagent-mesh stub [0-9a-f]{16}\nlang=en\Z")
+        self.assertNotEqual(self.sent()[-1]["body"], old)
+        prompt = self.record()["prompt"]
+        self.assertEqual((prompt["state"], prompt["stub"]), ("confirmed", 1))
+        for key in ("req", "sent_ms", "missing"):
+            self.assertNotIn(key, prompt)
+
+    def test_update_late_read_back_replies_are_checked_and_a_plan_takes_none(self):
+        repo = self.installed()
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        data = self.record()
+        data["prompt"]["state"] = "pending"
+        for key in ("req", "sent_ms", "stub"):
+            data["prompt"].pop(key, None)
+        self.write_record(data)
+        (self.who / "stub").write_text("silent")
+        self.assertEqual(self.run_script("update.sh", "--no-pull", root=repo, timeout=60).returncode, 1)
+        req = self.record()["prompt"]["req"]
+        self.put_reply(req, "agent-mesh-result request {req}\nagent-mesh-result lang zh-CN\n"
+                            "agent-mesh-result stub 1\nagent-mesh-result DONE stub\n")
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertRegex(plan.stdout, r"routine prompt\s+changed")
+        self.assertNotIn(m("state.stub_mismatch", "demo/bot"), plan.stdout)
+        prompt = self.record()["prompt"]
+        self.assertEqual((prompt["req"], prompt["missing"]), (req, 1))
+        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(m("r.prompt_later"), result.stdout)
+        self.assertIn(m("state.stub_mismatch", "demo/bot"), result.stdout)
+        self.assertIn(m("state.stub_lang", "zh-CN", "en"), result.stdout)
+        prompt = self.record()["prompt"]
+        self.assertEqual((prompt["state"], prompt["missing"]), ("pending", 1))
+        self.assertNotIn("req", prompt)
+        self.assertEqual(len(self.sent()), 1)
+        (self.who / "stub").write_text("ok")
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("agent-mesh routine stub v1", result.stdout)
+        self.assertEqual(len(self.sent()), 2)
+        self.assertEqual(self.record()["prompt"]["state"], "confirmed")
+
+    def test_update_summary_separates_a_failed_check_from_failed_steps(self):
+        repo = self.installed()
+        (repo / "check.sh").write_text("#!/bin/bash\necho 'RESULT fix the FAIL lines above'\nexit 1\n")
         self.cloud_changed(repo)
         self.bot_replies(repo)
         result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        [message] = self.sent()
-        body = message["body"]
-        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", body)
-        self.assertRegex(body, rf"TAG=v{version}; COMMIT={'a' * 40}; REQ=[0-9a-f]{{16}}\n")
-        self.assertIn(f"{self.sha(repo / 'box/rn-fetch.py')}  box/rn-fetch.py", body)
-        self.assertIn('exec bash "$A/box/rn-cloud-update.sh" --after-checkout "$TAG" "$COMMIT" "$REQ"', body)
-        self.assertIn("This first time, Grok Bot does not run it by itself: it tells you in Grok", result.stdout)
-        self.assertEqual(self.record()["cloud"]["release"], version)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.steps_done"), result.stdout)
+        self.assertIn(m("update.check_failed_only"), result.stdout)
+        self.assertNotIn(m("update.check_failed"), result.stdout)
+        self.assertEqual(self.record()["cloud"]["hash"], self.digest(repo, "cloud"))
+        self.cloud_changed(repo)
+        self.env["AGENT_MESH_REPLY_WAIT"] = "5"
+        self.bot_silent()
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.check_failed"), result.stdout)
+        self.assertNotIn(m("update.steps_done"), result.stdout)
 
     def test_update_does_not_ask_grok_bot_without_a_running_relay_or_a_sent_request(self):
         repo = self.installed()
@@ -663,7 +1020,8 @@ class Update(InstallHarness, unittest.TestCase):
         result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(messages.t("update.sent", "demo/bot", lang="zh-CN"), result.stdout)
-        self.assertIn(messages.t("update.waiting", lang="zh-CN"), result.stdout)
+        self.assertIn(messages.t("update.waiting", messages.t("update.n_minutes", 15, lang="zh-CN"), lang="zh-CN"),
+                      result.stdout)
         self.assertIn("RESULT ok lang=zh-CN", result.stdout)
         self.assertRegex(self.sent()[0]["body"], r"\Aagent-mesh update v")
 
@@ -772,23 +1130,104 @@ class Update(InstallHarness, unittest.TestCase):
         result = self.run_script("update.sh", root=repo)
         self.assertEqual(result.returncode, 1)
         self.assertIn("uncommitted changes", result.stderr)
-        self.assertNotIn("git pull", self.calls())
+        self.assertNotIn("git fetch", self.calls())
         (self.git / "dirty").unlink()
-        (self.git / "pull-fail").write_text("")
+        (self.git / "fetch-fail").write_text("")
         result = self.run_script("update.sh", root=repo)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("git pull --ff-only failed", result.stderr)
-        (self.git / "pull-fail").unlink()
+        self.assertIn("fetching the upstream branch and its release tags failed", result.stderr)
+        (self.git / "fetch-fail").unlink()
+        commits = {name: c * 40 for name, c in zip(("v0.9.1", "v0.9.10", "v0.10.0", "tip"), "bcde")}
+        (self.git / "history").write_text("\n".join(["a" * 40, *commits.values()]) + "\n")
+        (self.git / "tags").write_text("v0.10.0-rc1 " + "f" * 40 + "\nv1.0 " + "f" * 40 + "\n"
+                                       + "".join(f"{name} {sha}\n" for name, sha in commits.items() if name != "tip"))
+        (self.git / "merge-fail").write_text("")
+        result = self.run_script("update.sh", root=repo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("git merge --ff-only to release v0.10.0 failed", result.stderr)
+        (self.git / "merge-fail").unlink()
         newer = self.base / "newer-update.sh"
         newer.write_text('#!/bin/bash\nfor a in "$@"; do echo "NEW-SCRIPT [$a]"; done\n')
         (self.git / "pull.sh").write_text(f"cp '{newer}' '{repo}/update.sh'\n")
-        (self.git / "upstream").write_text("b" * 40 + "\n")
         (self.base / "calls").unlink()
         result = self.run_script("update.sh", "--lang", "zh-CN", root=repo)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("NEW-SCRIPT [--no-pull]\nNEW-SCRIPT [--lang]\nNEW-SCRIPT [zh-CN]", result.stdout)
-        self.assertEqual(self.calls().count("git pull"), 1)
+        self.assertIn(f"git merge --ff-only -q {commits['v0.10.0']}\n", self.calls())
+        self.assertEqual(self.calls().count("git merge --ff-only"), 1)
+        self.assertEqual((self.git / "head").read_text().strip(), commits["v0.10.0"])
+        self.assertIn("发布版本 v0.10.0", result.stdout)
         self.assertFalse((self.home / ".local/lib/agent-mesh/update.lock").exists())
+
+    def test_update_moves_only_to_a_newer_release_on_the_upstream_branch(self):
+        repo = self.installed()
+        (repo / "update.sh").write_text((repo / "update.sh").read_text().replace(
+            'exec "$BASH" "$HERE/update.sh" --no-pull "$@"', 'echo HANDOVER; exit 0'))
+        old, release = "a" * 40, "c" * 40
+        (self.git / "tags").write_text(f"v0.9.0 {old}\nnightly {release}\nv0.9.0.1 {release}\n")
+        result = self.run_script("update.sh", "--plan", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("already contains the latest release v0.9.0", result.stdout)
+        self.assertNotIn("git merge --ff-only", self.calls())
+        (self.git / "tags").write_text("nightly " + release + "\n")
+        result = self.run_script("update.sh", "--plan", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("has no release tag vX.Y.Z", result.stdout)
+        (self.git / "tags").write_text(f"v0.9.0 {old}\nv0.9.1 {release}\n")
+        (self.git / "history").write_text("b" * 40 + "\n" + release + "\n")
+        result = self.run_script("update.sh", "--plan", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("commits that are not in the latest release v0.9.1", result.stderr)
+        self.assertIn("./update.sh --no-pull --lang en --plan", result.stderr)
+        (self.git / "history").write_text(old + "\n" + "b" * 40 + "\n" + release + "\n")
+        (self.git / "head").write_text("b" * 40 + "\n")
+        result = self.run_script("update.sh", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"moved the checkout {'b' * 12}..{'c' * 12} (release v0.9.1)\nHANDOVER", result.stdout)
+        result = self.run_script("update.sh", "--plan", root=repo)
+        self.assertIn("already contains the latest release v0.9.1", result.stdout)
+        self.assertNotIn("HANDOVER", result.stdout)
+        self.assertEqual(self.calls().count("git merge --ff-only"), 1)
+
+    def test_update_writes_the_agent_mesh_command_for_this_checkout(self):
+        repo = self.installed()
+        entry = self.home / ".local/bin/agent-mesh"
+        plan = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertFalse(entry.exists())
+        self.assertNotIn("checkout", self.record())
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(os.access(entry, os.X_OK))
+        self.assertIn("# agent-mesh-entry v1", entry.read_text())
+        self.assertEqual(self.record()["checkout"], str(repo.resolve()))
+        self.assertIn(f"{entry.parent} is not in PATH", result.stdout)
+
+        def run(*args):
+            return subprocess.run([str(entry), *args], env=self.env, capture_output=True, text=True, timeout=60)
+
+        (repo / "check.sh").write_text('#!/bin/bash\nfor a in "$@"; do echo "CHECK [$a]"; done\n')
+        self.assertEqual(run("check", "--lang", "zh-CN", "a b").stdout, "CHECK [--lang]\nCHECK [zh-CN]\nCHECK [a b]\n")
+        for args in ((), ("rename",), ("--help",)):
+            bad = run(*args)
+            self.assertEqual((bad.returncode, bad.stdout), (2, ""), args)
+            self.assertIn("usage: agent-mesh update|check", bad.stderr)
+        moved = self.base / "moved repo"
+        repo.rename(moved)
+        gone = run("update", "--plan")
+        self.assertEqual(gone.returncode, 1)
+        self.assertIn(f"the recorded checkout {repo.resolve()} is gone; run ./update.sh once", gone.stderr)
+        self.env["PATH"] = f"{entry.parent}{os.pathsep}{self.env['PATH']}"
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=moved)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.record()["checkout"], str(moved.resolve()))
+        self.assertNotIn("PATH", result.stdout)
+        self.assertEqual(run("check").stdout, "")
+        entry.write_text("#!/bin/sh\necho mine\n")
+        result = self.run_script("update.sh", "--no-pull", "--yes", root=moved)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"{entry} exists and was not written by agent-mesh; left it as it is", result.stdout)
+        self.assertEqual(entry.read_text(), "#!/bin/sh\necho mine\n")
 
     def test_update_lists_the_changed_files_and_offers_to_use_the_checkout_as_it_is(self):
         repo = self.installed()
@@ -994,7 +1433,7 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         [message] = self.sent()
         self.assertEqual(message["to"], "demo/beta")
-        self.assertIn(m("update.timeout"), result.stdout)
+        self.assertIn(m("update.timeout", m("update.n_seconds", 5)), result.stdout)
         request = self.record()["request"]
         self.assertEqual(request["address"], "demo/beta")
         self.put_reply(request["req"], self.good_reply(self.repo_dir), sender="demo/beta")
@@ -1049,8 +1488,14 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertNotEqual(self.record()["request"]["req"], old)
         self.assertNotEqual(self.record()["cloud"]["hash"], self.digest(self.repo_dir, "cloud"))
 
+    def old_stubs(self):
+        data = self.record()
+        for item in (data, data["bots"]["beta"]):
+            item["prompt"].update(hash="0" * 64, text="0" * 64)
+        self.write_record(data)
+
     def test_each_bot_confirms_its_own_prompt_and_a_rerun_shows_only_the_unconfirmed_one(self):
-        before = (self.prompt_hash("en"), self.prompt_hash("en", "beta"))
+        self.old_stubs()
         result = self.run_tty(self.repo_dir, "--no-pull", "--lang", "zh-CN", answers=["y", "y", "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         zh = lambda key, *a: messages.t(key, *a, lang="zh-CN")
@@ -1058,28 +1503,57 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertIn(zh("update.prompt_replace_bot", "beta", "zh-CN"), result.stdout)
         self.assertIn(zh("update.bot_prompt_not_recorded", "beta"), result.stderr)
         data = self.record()
-        self.assertEqual(data["prompt"], {"hash": self.prompt_hash("zh-CN"), "state": "confirmed"})
-        self.assertEqual(data["bots"]["beta"]["prompt"]["hash"], before[1])
-        self.assertNotEqual(before[0], self.prompt_hash("zh-CN"))
+        self.assertEqual((data["prompt"]["hash"], data["prompt"]["state"]), (self.prompt_hash("zh-CN"), "pending"))
+        self.assertEqual(data["bots"]["beta"]["prompt"]["hash"], "0" * 64)
+        self.assertEqual(self.sent(), [])
         result = self.run_tty(self.repo_dir, "--no-pull", "--lang", "zh-CN", answers=["y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn(zh("update.prompt_replace_bot", "alpha", "zh-CN"), result.stdout)
         self.assertIn(zh("update.prompt_replace_bot", "beta", "zh-CN"), result.stdout)
-        self.assertEqual(self.record()["bots"]["beta"]["prompt"],
-                         {"hash": self.prompt_hash("zh-CN", "beta"), "state": "confirmed"})
+        self.assertEqual(sorted(message["to"] for message in self.sent()), ["demo/alpha", "demo/beta"])
+        data = self.record()
+        for item, name in ((data, None), (data["bots"]["beta"], "beta")):
+            self.assertEqual((item["prompt"]["hash"], item["prompt"]["state"], item["prompt"]["stub"]),
+                             (self.prompt_hash("zh-CN", name), "confirmed", 1))
         self.assertEqual(self.service_changes(), [])
         again = self.update("--lang", "zh-CN")
         self.assertIn(zh("update.up_to_date"), again.stdout)
 
-    def test_a_pending_prompt_is_asked_about_for_each_bot(self):
+    def test_a_language_change_is_only_read_back_by_each_bot(self):
+        result = self.run_tty(self.repo_dir, "--no-pull", "--lang", "zh-CN", answers=["y"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(messages.t("update.prompt_replace_bot", "alpha", "zh-CN", lang="zh-CN"), result.stdout)
+        self.assertEqual(sorted((message["to"], message["body"].split("\n")[1]) for message in self.sent()),
+                         [("demo/alpha", "lang=zh-CN"), ("demo/beta", "lang=zh-CN")])
+        data = self.record()
+        for item, name in ((data, None), (data["bots"]["beta"], "beta")):
+            self.assertEqual((item["prompt"]["hash"], item["prompt"]["state"]),
+                             (self.prompt_hash("zh-CN", name), "confirmed"))
+
+    def test_a_language_change_needs_no_terminal(self):
+        plan = self.update("--plan", "--lang", "zh-CN")
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertIn(messages.t("update.plan_bot", "alpha", messages.t("st.unchanged", lang="zh-CN"),
+                                 messages.t("st.readback", lang="zh-CN"), lang="zh-CN"), plan.stdout)
+        result = self.update("--yes", "--lang", "zh-CN")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(sorted((message["to"], message["body"].split("\n")[1]) for message in self.sent()),
+                         [("demo/alpha", "lang=zh-CN"), ("demo/beta", "lang=zh-CN")])
+        data = self.record()
+        for item, name in ((data, None), (data["bots"]["beta"], "beta")):
+            self.assertEqual((item["prompt"]["hash"], item["prompt"]["state"]),
+                             (self.prompt_hash("zh-CN", name), "confirmed"))
+
+    def test_a_pending_stub_is_read_back_only_by_its_bot(self):
         data = self.record()
         data["bots"]["beta"]["prompt"]["state"] = "pending"
         self.write_record(data)
-        result = self.run_tty(self.repo_dir, "--no-pull", answers=["n", "y", "y"])
+        result = self.run_tty(self.repo_dir, "--no-pull", answers=["y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(m("update.ask_bot_prompt_saved", "beta", "en"), result.stderr)
-        self.assertNotIn(m("update.ask_bot_prompt_saved", "alpha", "en"), result.stderr)
-        self.assertIn(m("update.prompt_replace_bot", "beta", "en"), result.stdout)
+        self.assertNotIn(m("update.prompt_replace_bot", "beta", "en"), result.stdout)
+        [message] = self.sent()
+        self.assertEqual(message["to"], "demo/beta")
+        self.assertRegex(message["body"], r"\Aagent-mesh stub [0-9a-f]{16}\nlang=en\Z")
         self.assertEqual(self.record()["bots"]["beta"]["prompt"]["state"], "confirmed")
 
     def test_a_pending_add_is_confirmed_from_its_reply_without_asking(self):
@@ -1097,13 +1571,17 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertIn(m("update.plan_bot_waiting", "gamma", "gamma"), result.stdout)
         self.assertEqual(self.bot("gamma")["cloud"]["state"], "pending")
         req = self.bot("gamma")["cloud"]["req"]
-        self.put_reply(req, f"agent-mesh-result add-bot {{req}} ok gamma {TEAM_HASH}\n", sender="demo/gamma")
+        sent = len(self.sent())
+        self.put_reply(req, f"agent-mesh-result request {{req}}\nagent-mesh-result add-bot {{req}} ok gamma {TEAM_HASH}\n"
+                            "agent-mesh-result lang en\nagent-mesh-result stub 1\nagent-mesh-result DONE add-bot\n",
+                       sender="demo/gamma")
         result = self.update()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(m("state.add_confirmed", "demo/gamma"), result.stdout)
         self.assertNotIn(m("update.plan_bot_waiting", "gamma", "gamma"), result.stdout)
         self.assertEqual(self.bot("gamma")["cloud"]["state"], "confirmed")
         self.assertEqual(self.bot("gamma")["prompt"]["state"], "confirmed")
+        self.assertEqual(len(self.sent()), sent)
 
     def test_a_bot_being_removed_stops_the_update(self):
         data = self.record()
@@ -1115,6 +1593,7 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertEqual(self.service_changes(), [])
 
     def test_the_guided_flow_stops_all_relays_and_pauses_and_resumes_every_routine(self):
+        self.old_stubs()
         result = self.run_tty(self.repo_dir, "--no-pull", "--manual", "--lang", "zh-CN", answers=["y", "y", "y", "y", "n"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         zh = lambda key, *a: messages.t(key, *a, lang="zh-CN")
@@ -1128,7 +1607,8 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertEqual(txn["stage"], "prompt_done")
         self.assertEqual([(p["name"], p["label"], p["was_loaded"]) for p in txn["participants"]],
                          [("alpha", self.labels[0], True), ("beta", self.labels[1], True)])
-        self.assertEqual(self.record()["bots"]["beta"]["prompt"]["state"], "confirmed")
+        self.assertEqual(self.record()["bots"]["beta"]["prompt"]["state"], "pending")
+        self.assertEqual(self.sent(), [])
         before = len(self.multi_started())
         result = self.run_tty(self.repo_dir, "--no-pull", "--lang", "zh-CN", answers=["y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1137,3 +1617,5 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertEqual([label for label, _ in self.multi_started()[before:]], self.labels)
         self.assertEqual(sorted(self.multi_loaded()), self.labels)
         self.assertNotIn("txn", self.record())
+        self.assertEqual(sorted(message["to"] for message in self.sent()), ["demo/alpha", "demo/beta"])
+        self.assertEqual(self.record()["bots"]["beta"]["prompt"]["state"], "confirmed")

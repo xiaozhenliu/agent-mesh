@@ -173,7 +173,8 @@ class DeployState(unittest.TestCase):
     def test_every_cloud_runtime_file_changes_a_recorded_cloud_digest(self):
         import deploy_state
         from render_prompt import CLOUD_FILES
-        runtime = sorted(f"box/{p.name}" for p in (ROOT / "box").glob("rn-*") if p.name != "rn-cloud-uninstall.sh")
+        runtime = sorted([f"box/{p.name}" for p in (ROOT / "box").glob("rn-*") if p.name != "rn-cloud-uninstall.sh"]
+                         + [f"prompts/{p.name}" for p in (ROOT / "prompts").glob("routine-body*.md")])
         self.assertEqual(sorted(set(CLOUD_FILES) | {deploy_state.UPDATE_SCRIPT}), runtime)
         repo = self.home.parent / "repo"
         shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns("__pycache__", ".git", "tests"))

@@ -68,11 +68,11 @@
 
 1. 从 v0.8.1 或更早版本来时，先运行 `git pull --ff-only`（原因见[从哪个版本来](UPGRADE.zh-CN.md#从哪个版本来)）。拉取因本地改动被拒绝时，把改动给用户看并停下；绝不 stash、reset 或丢弃这些改动。
 2. 运行 `./update.sh --plan --lang <en|zh-CN>`（用户所选语言），把输出给用户看。它列出 checkout 里未提交的改动时，不要自己加 `--no-pull`：那样会装上没人审过的代码。只有用户明确决定后才加。
-3. 用户同意计划后，运行 `./update.sh --yes --lang <en|zh-CN> </dev/null`，确保标准输入不是终端；不要给它分配交互终端，也不要替用户回答它的问题。`--yes` 只跳过用户刚才已经给出的确认；需要用户做的事（在 `[GROK-UI]` 粘贴 routine 提示词、未完成的云端初始化或手动更新）仍会让它以退出码 3 停下，更新不会执行。计划标明第一次更新云端时（`--lang zh-CN` 显示 `第一次用这个版本更新`，`--lang en` 显示 `first update with this version`），运行前先告诉用户：Grok Bot 会请用户在 Grok 对话里确认这次更新。计划里某个 Bot 附有 `./install.sh --relay-name <name> --wake-bot` 时，之后运行这条命令并补上所选的 `--lang <en|zh-CN>`，单独报告这个 Bot。
+3. 用户同意计划后，运行 `./update.sh --yes --lang <en|zh-CN> </dev/null`，确保标准输入不是终端；不要给它分配交互终端，也不要替用户回答它的问题。`--yes` 只跳过用户刚才已经给出的确认；需要用户做的事（必须在云端更新之前在 `[GROK-UI]` 粘贴的 routine 提示词、未完成的云端初始化或手动更新）仍会让它以退出码 3 停下，更新不会执行。其他有变化的 routine 提示词这次不换：更新照常完成，汇总里写明提示词这次不换。计划把 routine 提示词标为 `待读回`（`--lang en` 显示 `read-back`）时，不用粘贴：更新会经 relay 请 Bot 确认 routine 桩，并等待回信。计划里某个 Bot 附有 `./install.sh --relay-name <name> --wake-bot` 时，之后运行这条命令并补上所选的 `--lang <en|zh-CN>`，单独报告这个 Bot。
 4. 按退出码处理：
-   - `0`：完成或已是最新。运行 `./check.sh`。
-   - `3`：需要用户的终端；更新没有执行，但 checkout 可能已经快进。请用户在自己的终端运行 `./update.sh --lang <en|zh-CN>`；有多个 Bot 时它逐个询问有变化的 routine 提示词。
-   - `1`：没有完成。看错误信息和汇总。写的是 Grok Bot 还没回信时，请用户在 Grok 里查看或确认这条请求，再运行 `./update.sh --no-pull --yes --lang <en|zh-CN> </dev/null`：它按请求号找到回信并记录。只有最后的检查失败时，再运行一次 `./check.sh`，中继探测可能偶尔超时。其他原因（引擎比固定版本新、要求手工修改设置、relay 队列里还有未送达的消息、云端克隆有本地改动、取不到发布 tag、有 Bot 正在卸载）按[用 update.sh 升级](UPGRADE.zh-CN.md#用-updatesh-升级)、[多个 Bot](UPGRADE.zh-CN.md#多个-bot) 或 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)中对应的部分处理。中断的更新再次运行同一条命令即可继续。
+   - `0`：完成或已是最新。运行 `./check.sh`。汇总写明 routine 提示词这次不换时，告诉用户 Grok Bot 继续用现有提示词工作，想换时在自己的终端运行 `./update.sh --lang <en|zh-CN>`，它会显示新的提示词。
+   - `3`：需要用户的终端；更新没有执行，但 checkout 可能已经前进到最新的发布版。请用户在自己的终端运行 `./update.sh --lang <en|zh-CN>`；routine 桩有变化时它显示要粘贴的桩（有多个 Bot 时逐个显示），之后请每个 Bot 确认。
+   - `1`：没有完成。看错误信息和汇总。写的是 Grok Bot 还没回信（更新请求或读回请求）时，请用户在 Grok 里查看 Bot 做了什么，再运行 `./update.sh --no-pull --yes --lang <en|zh-CN> </dev/null`：它按请求号找到回信并记录。汇总写明各部分都已完成、只有最后的检查失败时，再运行一次 `./check.sh` 并报告结果。其他原因（引擎比固定版本新、要求手工修改设置、relay 队列里还有未送达的消息、云端克隆有本地改动、取不到发布 tag、有 Bot 正在卸载）按[用 update.sh 升级](UPGRADE.zh-CN.md#用-updatesh-升级)、[多个 Bot](UPGRADE.zh-CN.md#多个-bot) 或 [Reason Network 引擎](UPGRADE.zh-CN.md#reason-network-引擎)中对应的部分处理。中断的更新再次运行同一条命令即可继续。
    - `2`：参数用错，检查命令。
 
 不要为了绕过停止而修改 `~/.local/lib/agent-mesh/deployed.json` 或 Reason Network 的设置；`./update.sh` 要求手工修改时，把它的说明交给用户。

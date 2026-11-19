@@ -20,16 +20,18 @@ from pathlib import Path
 
 import bots
 import engine_config
+import mesh_entry
 import relay_names
 from messages import t
-from render_prompt import CLOUD_FILES, ROOT, TEAM, render_prompt
+from render_prompt import CLOUD_FILES, ROOT, STUB_VERSION, TEAM, render_prompt
 from write_launch_agent import launch_agent_bytes
 
 SCHEMA = 1
 REMOTE = ("cloud", "cloud_setup", "prompt", "cloud_engine")
 CLOUD_PARTS = ("cloud", "cloud_setup", "cloud_engine")
 UPDATE_SCRIPT = "box/rn-cloud-update.sh"
-CLOUD_DIGEST = ("box/rn-cloud.sh", "box/rn-fetch.py", UPDATE_SCRIPT, "box/rn-cloud-add-bot.sh")
+CLOUD_DIGEST = ("box/rn-cloud.sh", "box/rn-fetch.py", UPDATE_SCRIPT, "box/rn-cloud-add-bot.sh", "box/rn-routine.py",
+                "prompts/routine-body.md", "prompts/routine-body.zh-CN.md")
 NEEDS = ("cloud", "prompt", "cloud_engine")
 STATES = ("pending", "confirmed")
 TXN_KEYS = ("stage", "relay_was_loaded", "need", "lang", "commit", "target")
@@ -38,6 +40,8 @@ PYTHON_CHECK = "import sys, ssl, sqlite3, plistlib; sys.exit(sys.version_info < 
 PYTHON_PICKS = ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3")
 TEMP_ROOTS = ("/tmp", "/private/tmp", "/var/folders", "/private/var/folders")
 CONFIG_KEYS = ("auto_update", "lan")
+PROMPT = {"mode": "thin"}
+MODES = ("thin", "full")
 
 
 class NoFirstBot(ValueError):
@@ -153,7 +157,7 @@ def digest(field, lang, relay=None):
     if field == "cloud_setup":
         return sha((ROOT / "box/rn-cloud-setup.sh").read_bytes())
     if field == "prompt":
-        return sha(prompt_text(lang, relay).encode("utf-8"))
+        return prompt_digest(lang, relay)
     if field == "cloud_engine":
         return sha(f"reason-network {pinned()}\n{sha((ROOT / 'box/rn-engine.py').read_bytes())}".encode())
     raise ValueError(f"unknown field: {field}")
@@ -167,11 +171,35 @@ def added_bot(relay, data):
     return bot if bot is not None and bot["kind"] == bots.ADDED else None
 
 
-def prompt_text(lang, relay=None):
+def prompt_digest(lang, relay=None, mode=None):
+    mode = mode or PROMPT["mode"]
+    text = prompt_text(lang, relay, mode)
+    return sha((f"{text}\0lang={lang}" if mode == "thin" else text).encode("utf-8"))
+
+
+def stub_sha(lang, relay=None):
+    return sha(prompt_text(lang, relay, "thin").encode("utf-8"))
+
+
+def first_person():
+    try:
+        person = relay_names.parse_env(env_path().read_text(encoding="utf-8", errors="replace")).get("PERSON", "")
+    except OSError:
+        person = ""
+    if not (TEAM.fullmatch(person) and len(person) <= 40):
+        raise ValueError(t("request.no_person", env_path()))
+    return person
+
+
+def prompt_text(lang, relay=None, mode=None):
+    mode = mode or PROMPT["mode"]
     data = load(warn=False) if relay is not None else {}
     bot = added_bot(relay, data)
     if bot is None:
-        return render_prompt("routine", lang, relay_name=relay_name(relay))
+        name = relay_name(relay)
+        if mode == "thin":
+            return render_prompt("routine", lang)
+        return render_prompt("routine", lang, team_name=first_person(), relay_name=name, full=True)
     try:
         text = Path(bot["env"]).read_text(encoding="utf-8", errors="replace")
         person = relay_names.parse_env(text).get("PERSON", "")
@@ -182,7 +210,48 @@ def prompt_text(lang, relay=None):
     team_hash = (bot_entry(data, relay) or {}).get("team_hash")
     if not isinstance(team_hash, str) or not re.fullmatch(r"[0-9a-f]{16}", team_hash):
         raise ValueError(t("state.bot_no_team_hash", relay, record_path(), relay))
-    return render_prompt("routine", lang, team_name=person, bot_selector=relay, team_hash=team_hash)
+    return render_prompt("routine", lang, team_name=person, bot_selector=relay, team_hash=team_hash,
+                         full=mode == "full")
+
+
+def relang(value, text):
+    return (value.get("mode") == "thin" and value.get("text") == text and not value.get("recover")
+            and not value.get("missing"))
+
+
+def prompt_word(value, current, text=None):
+    if value["hash"] != current and text and relang(value, text):
+        return "readback"
+    if value["hash"] != current or value.get("missing"):
+        return "changed"
+    if value["state"] == "confirmed":
+        return "unchanged"
+    return "readback" if value.get("mode") == "thin" else "pending"
+
+
+def prompt_entry(state, lang, relay=None):
+    value = {"hash": prompt_digest(lang, relay), "state": state, "mode": PROMPT["mode"]}
+    if PROMPT["mode"] == "thin":
+        value["text"] = stub_sha(lang, relay)
+    return value
+
+
+def prompt_home(data, relay):
+    if added_bot(relay, data):
+        return known_entry(data, relay)
+    return data
+
+
+def prompt_homes(data):
+    yield data
+    for item in bots_of(data).values():
+        if isinstance(item, dict):
+            yield item
+
+
+def recovering(data):
+    return sum(1 for home_ in prompt_homes(data) if isinstance(home_.get("prompt"), dict)
+               and home_["prompt"].get("recover"))
 
 
 def load(warn=True):
@@ -233,8 +302,15 @@ def remote_status(data, field, lang):
         return "unknown"
     try:
         current = digest(field, lang)
+        text = stub_sha(lang) if field == "prompt" and PROMPT["mode"] == "thin" else None
     except NoFirstBot:
         return "unknown"
+    except ValueError:
+        if field != "prompt":
+            raise
+        return "unknown"
+    if field == "prompt":
+        return prompt_word(value, current, text)
     if value["hash"] != current:
         return "changed"
     return "unchanged" if value["state"] == "confirmed" else "pending"
@@ -394,11 +470,10 @@ def bot_prompt_status(data, name, lang):
         return "unknown"
     try:
         current = digest("prompt", lang, name)
+        text = stub_sha(lang, name) if PROMPT["mode"] == "thin" else None
     except ValueError:
         return "unknown"
-    if value["hash"] != current:
-        return "changed"
-    return "unchanged" if value["state"] == "confirmed" else "pending"
+    return prompt_word(value, current, text)
 
 
 def bot_lines(data, roster, python, lang):
@@ -551,6 +626,7 @@ def cmd_status(args):
     request = request_of(data)
     print(f"request {request['req'] + ' ' + request['mode'] if request else '-'}")
     print(f"config {config_status(data)}")
+    print(f"recover {recovering(data)}")
     try:
         status = name_status(data)
         current = relay_name()
@@ -571,10 +647,19 @@ def known_entry(data, name):
     return value
 
 
+def recover_value(value, old, args):
+    if args.recover:
+        value["recover"] = 1
+        before = old.get("before") if old.get("recover") else old
+        if isinstance(before, dict) and before:
+            value["before"] = before
+    return value
+
+
 def mark_bot_prompt(data, args):
     item = known_entry(data, args.relay_name)
-    value = {"hash": digest("prompt", args.lang, args.relay_name), "state": args.state}
     old = item.get("prompt") if isinstance(item.get("prompt"), dict) else {}
+    value = recover_value(prompt_entry(args.state, args.lang, args.relay_name), old, args)
     if args.expect and args.expect != value["hash"]:
         raise SystemExit(t("state.checkout_moved", "prompt"))
     if args.if_pending and not (old.get("state") == "pending" and old.get("hash") == value["hash"]):
@@ -597,7 +682,13 @@ def cmd_mark(args):
     if status is not None and status.startswith("changed "):
         _, recorded, current = status.split()
         raise SystemExit(t("state.renamed_not_recorded", recorded, current))
-    value = {"hash": digest(args.field, args.lang, args.relay_name), "state": args.state}
+    if args.field == "prompt":
+        old_value = data.get("prompt") if isinstance(data.get("prompt"), dict) else {}
+        value = recover_value(prompt_entry(args.state, args.lang, args.relay_name), old_value, args)
+    else:
+        value = {"hash": digest(args.field, args.lang, args.relay_name), "state": args.state}
+    if args.recover and args.field != "prompt":
+        raise ValueError("--recover applies only to the routine prompt")
     if args.field == "cloud_engine":
         value["version"] = pinned()
     old = entry(data, args.field)
@@ -702,6 +793,150 @@ def cmd_check_name(args):
 
 def cmd_show_prompt(args):
     sys.stdout.write(prompt_text(args.lang, args.relay_name))
+
+
+def cmd_prompt_need(args):
+    if PROMPT["mode"] == "full":
+        print("full")
+        return
+    data = load(warn=False)
+    old = prompt_home(data, args.relay_name).get("prompt")
+    old = old if isinstance(old, dict) else {}
+    same = old.get("mode") == "thin" and old.get("text") == stub_sha(args.lang, args.relay_name)
+    print("readback" if same and not old.get("recover") and not old.get("missing") else "stub")
+
+
+def cmd_prompt_recover(args):
+    data = load(warn=False)
+    value = prompt_home(data, args.relay_name).get("prompt")
+    if not (isinstance(value, dict) and value.get("recover")):
+        raise SystemExit(1)
+
+
+def cmd_prompt_undo(args):
+    data = load_strict()
+    home_ = prompt_home(data, args.relay_name)
+    value = home_.get("prompt")
+    if isinstance(value, dict) and value.get("recover"):
+        if isinstance(value.get("before"), dict):
+            home_["prompt"] = value["before"]
+        else:
+            home_.pop("prompt", None)
+        save(data)
+
+
+def new_req():
+    return f"{int(time.time()):08x}{secrets.token_hex(4)}"
+
+
+def stub_address(data, relay):
+    bot = added_bot(relay, data)
+    return f"{bot_person(bot)}/{relay}" if bot is not None else bot_address()
+
+
+def cmd_stub_new(args):
+    data = load_strict()
+    value = prompt_home(data, args.relay_name).get("prompt")
+    current = prompt_digest(args.lang, args.relay_name, "thin")
+    if (isinstance(value, dict) and value.get("hash") != current
+            and relang(value, stub_sha(args.lang, args.relay_name))):
+        value["hash"], value["state"] = current, "pending"
+    if not (isinstance(value, dict) and value.get("mode") == "thin" and value.get("state") == "pending"
+            and value.get("hash") == current):
+        raise ValueError(t("state.stub_not_pending"))
+    value["req"] = new_req()
+    value["sent_ms"] = int(time.time() * 1000) - 2000
+    save(data)
+    print(value["req"])
+
+
+def stub_lines(body, req):
+    result = LEAD + r"agent-mesh-result "
+    langs = re.findall(result + r"lang (\S+)" + TAIL, body, re.M)
+    stubs = re.findall(result + r"stub ([0-9]+)" + TAIL, body, re.M)
+    return langs, stubs
+
+
+def confirm_stub(value, stub):
+    for key in ("req", "sent_ms", "recover", "before", "missing"):
+        value.pop(key, None)
+    value["state"] = "confirmed"
+    value["stub"] = stub
+
+
+def cmd_stub_check(args):
+    try:
+        data = load_strict()
+        home_ = prompt_home(data, args.relay_name)
+        sender = stub_address(data, args.relay_name)
+    except ValueError as error:
+        print(str(error))
+        raise SystemExit(4)
+    value = home_.get("prompt")
+    if not (isinstance(value, dict) and value.get("mode") == "thin" and isinstance(value.get("req"), str)
+            and re.fullmatch(r"[0-9a-f]{16}", value["req"]) and isinstance(value.get("sent_ms"), int)):
+        raise SystemExit(3)
+    if args.late and not value.get("missing"):
+        raise SystemExit(3)
+    if value.get("hash") != prompt_digest(args.lang, args.relay_name, "thin"):
+        raise SystemExit(3)
+    try:
+        body = find_reply(value["req"], sender, value["sent_ms"])
+    except LookupError as error:
+        print(str(error))
+        raise SystemExit(4)
+    if body is None:
+        raise SystemExit(3)
+    langs, stubs = stub_lines(body, value["req"])
+    problems = [line.strip() for line in body.splitlines() if re.match(LEAD + r"STOP:", line)]
+    if not re.search(LEAD + r"agent-mesh-result DONE stub" + TAIL, body, re.M):
+        problems.append(t("reply.no_done", "stub"))
+    if langs != [args.lang]:
+        problems.append(t("state.stub_lang", ", ".join(langs) or "-", args.lang))
+    if stubs and stubs != [str(STUB_VERSION)]:
+        problems.append(t("state.stub_other", ", ".join(stubs), STUB_VERSION))
+    if problems:
+        print(t("state.stub_mismatch", sender))
+        for line in problems:
+            print(f"  {line}")
+        value.pop("req", None)
+        value.pop("sent_ms", None)
+        save(data)
+        raise SystemExit(1)
+    if not stubs:
+        value.pop("req", None)
+        value.pop("sent_ms", None)
+        value["missing"] = 1
+        save(data)
+        print(t("state.stub_missing", sender))
+        raise SystemExit(5)
+    confirm_stub(value, STUB_VERSION)
+    save(data)
+    print(t("state.stub_confirmed", sender, STUB_VERSION))
+
+
+def cmd_stub_timeout(args):
+    data = load_strict()
+    value = prompt_home(data, args.relay_name).get("prompt")
+    if isinstance(value, dict) and value.get("mode") == "thin" and value.get("state") == "pending":
+        value["missing"] = 1
+        save(data)
+
+
+def cmd_entry(args):
+    if not record_path().exists():
+        return
+    data = load(warn=False)
+    if not data:
+        return
+    lang = args.lang or (data.get("lang") if data.get("lang") in ("en", "zh-CN") else "en")
+    checkout = str(Path(args.checkout).resolve())
+    if data.get("checkout") != checkout:
+        data["checkout"] = checkout
+        save(data)
+    note = mesh_entry.write(home(), lang)
+    if note:
+        print(note)
 
 
 def cmd_lang(_args):
@@ -985,12 +1220,16 @@ def cmd_bot_address(args):
 
 def cmd_request_new(args):
     data = load_strict()
-    req = secrets.token_hex(8)
+    req = new_req()
     data["request"] = {"req": req, "tag": args.tag, "commit": args.commit, "mode": args.mode,
                        "sent_ms": int(time.time() * 1000) - 2000,
                        "target": {field: digest(field, "en") for field in CLOUD_PARTS}}
     if args.address:
         data["request"]["address"] = args.address
+    if args.relay_name:
+        data["request"]["relay"] = args.relay_name
+    if args.lang:
+        data["request"]["lang"] = args.lang
     save(data)
     print(req)
 
@@ -1041,8 +1280,34 @@ def check_request(args):
         data["relay_name"] = relay_name()
     data.pop("request")
     stamp_release(data)
+    note = stub_from_update(data, request, text)
     save(data)
     print(t("reply.match_engine", pinned()))
+    if note:
+        print(note)
+
+
+def stub_from_update(data, request, text):
+    for home_ in prompt_homes(data):
+        value = home_.get("prompt")
+        if isinstance(value, dict) and value.pop("recover", None):
+            value.pop("before", None)
+    lang, relay = request.get("lang"), request.get("relay")
+    if lang not in ("en", "zh-CN"):
+        return None
+    try:
+        value = prompt_home(data, relay).get("prompt")
+        current = prompt_digest(lang, relay, "thin")
+    except ValueError:
+        return None
+    if not (isinstance(value, dict) and value.get("mode") == "thin" and value.get("state") == "pending"
+            and value.get("hash") == current):
+        return None
+    langs, stubs = stub_lines(text, request["req"])
+    if langs == [lang] and stubs == [str(STUB_VERSION)]:
+        confirm_stub(value, STUB_VERSION)
+        return t("state.stub_confirmed", request_address(request), STUB_VERSION)
+    return None
 
 
 def added_bot_strict(data, name):
@@ -1106,7 +1371,7 @@ def cmd_add_request(args):
     data = load_strict()
     added_bot_strict(data, args.relay_name)
     item = known_entry(data, args.relay_name)
-    req = secrets.token_hex(8)
+    req = new_req()
     item["cloud"] = {"state": "pending", "req": req, "sent_ms": int(time.time() * 1000) - 2000}
     save(data)
     print(req)
@@ -1143,7 +1408,8 @@ def cmd_add_reply(args):
         raise SystemExit(4)
     ok = re.compile(add_marker(req, args.relay_name, team_hash), re.M)
     other = re.compile(LEAD + r"(STOP:.*|agent-mesh-result add-bot " + re.escape(req) + r" .*)$", re.M)
-    if not any(ok.search(body) for body in bodies):
+    found = [body for body in bodies if ok.search(body)]
+    if not found:
         lines = [m.group(0).strip() for body in bodies for m in other.finditer(body)]
         if not lines:
             raise SystemExit(3)
@@ -1155,15 +1421,24 @@ def cmd_add_reply(args):
         return
     item["cloud"] = {"state": "confirmed", "req": req, "sent_ms": sent}
     prompt = item.get("prompt") if isinstance(item.get("prompt"), dict) else {}
+    note = None
     if prompt.get("state") == "pending" and prompt.get("hash") == digest("prompt", args.lang, args.relay_name):
-        item["prompt"] = {"hash": prompt["hash"], "state": "confirmed"}
+        if prompt.get("mode") != "thin":
+            item["prompt"] = {"hash": prompt["hash"], "state": "confirmed", "mode": prompt.get("mode", "full")}
+        elif stub_lines(found[0], req) == ([args.lang], [str(STUB_VERSION)]):
+            confirm_stub(prompt, STUB_VERSION)
+        else:
+            prompt["missing"] = 1
+            note = t("state.stub_missing", sender)
     save(data)
     print(t("state.add_confirmed", sender))
+    if note:
+        print(note)
 
 
-WAKE_TEXT = ("agent-mesh: the Mac installer just added this Bot ({address}). If its cloud registration is not done "
-             "yet, do step 0 of your routine prompt now; once it is done, step 0 does nothing. There is no mail to "
-             "fetch for this notice.")
+WAKE_TEXT = ("agent-mesh: the Mac installer just added this Bot ({address}). Run step 1 of your routine prompt now: "
+             "it registers this Bot on the cloud computer if that is not done yet, and does nothing more when it is. "
+             "There is no mail to fetch for this notice.")
 
 
 def relay_module():
@@ -1377,6 +1652,7 @@ def cmd_txn_clear(_args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prompt-mode", choices=MODES, default="thin")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("status")
     p.add_argument("--lang", required=True, choices=("en", "zh-CN"))
@@ -1407,6 +1683,7 @@ def main(argv=None):
     p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
     p.add_argument("--expect")
     p.add_argument("--if-pending", action="store_true")
+    p.add_argument("--recover", action="store_true")
     p.add_argument("--relay-name")
     p.set_defaults(run=cmd_mark)
     p = sub.add_parser("check-name")
@@ -1426,7 +1703,20 @@ def main(argv=None):
     p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
     p.add_argument("--relay-name")
     p.set_defaults(run=cmd_show_prompt)
+    for name, run in (("prompt-need", cmd_prompt_need), ("prompt-recover", cmd_prompt_recover),
+                      ("prompt-undo", cmd_prompt_undo), ("stub-new", cmd_stub_new), ("stub-check", cmd_stub_check),
+                      ("stub-timeout", cmd_stub_timeout)):
+        p = sub.add_parser(name)
+        p.add_argument("--lang", default="en", choices=("en", "zh-CN"))
+        p.add_argument("--relay-name")
+        if name == "stub-check":
+            p.add_argument("--late", action="store_true")
+        p.set_defaults(run=run)
     sub.add_parser("lang").set_defaults(run=cmd_lang)
+    p = sub.add_parser("entry")
+    p.add_argument("--checkout", required=True)
+    p.add_argument("--lang", choices=("en", "zh-CN"))
+    p.set_defaults(run=cmd_entry)
     p = sub.add_parser("txn-start")
     p.add_argument("--lang", required=True, choices=("en", "zh-CN"))
     p.add_argument("--need", required=True)
@@ -1462,6 +1752,8 @@ def main(argv=None):
     p.add_argument("--commit", required=True)
     p.add_argument("--mode", required=True, choices=("line", "block"))
     p.add_argument("--address")
+    p.add_argument("--relay-name")
+    p.add_argument("--lang", choices=("en", "zh-CN"))
     p.set_defaults(run=cmd_request_new)
     p = sub.add_parser("request-check")
     p.add_argument("--tag", required=True)
@@ -1495,6 +1787,7 @@ def main(argv=None):
         p.add_argument("--relay-name", required=True)
         p.set_defaults(run=run)
     args = parser.parse_args(argv)
+    PROMPT["mode"] = args.prompt_mode
     utf8_stdout()
     try:
         args.run(args)

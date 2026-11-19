@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from pathlib import Path
 from render_prompt import CLOUD_FILES, ROOT
@@ -52,6 +53,33 @@ def rn_engine():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class TtyFeeder:
+    """Types the answers into a pty while the script runs and drains the echo, so a long input never blocks."""
+
+    def __init__(self, master, data):
+        self.master, self.data, self.done = master, data, threading.Event()
+        os.set_blocking(master, False)
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while not self.done.is_set():
+            readable, writable, _ = select.select([self.master], [self.master] if self.data else [], [], 0.05)
+            try:
+                if readable:
+                    os.read(self.master, 4096)
+                if writable and self.data:
+                    self.data = self.data[os.write(self.master, self.data[:256]):]
+            except BlockingIOError:
+                continue
+            except OSError:
+                return
+
+    def stop(self):
+        self.done.set()
+        self.thread.join(timeout=5)
 
 
 class InstallHarness:
@@ -222,9 +250,10 @@ exit 0""")
     def registers_on_wake(self, name):
         (self.hooks / "then.json").write_text(json.dumps(self.cloud_listing(f"{name}-cloud", f"{name}-inbox")))
 
-    def bot_confirms(self, name, team_hash=None, sender=None):
+    def bot_confirms(self, name, team_hash=None, sender=None, lang="en"):
         team_hash = team_hash or hashlib.sha256(TEAM_ID.encode()).hexdigest()[:16]
-        self.bot_replies(body=f"Done.\nagent-mesh-result add-bot {{req}} ok {name} {team_hash}\n",
+        self.bot_replies(body=f"Done.\nagent-mesh-result request {{req}}\nagent-mesh-result lang {lang}\n"
+                              f"agent-mesh-result stub 1\nagent-mesh-result add-bot {{req}} ok {name} {team_hash}\n",
                          sender=sender or f"demo/{name}")
 
     def run_staged(self, root, *args, steps=(), script="install.sh", timeout=60):
@@ -413,18 +442,19 @@ exit 0""")
 
     def run_tty(self, root, *args, answers=(), script="update.sh"):
         master, slave = pty.openpty()
+        feeder = TtyFeeder(master, "".join(answer + "\n" for answer in answers).encode() + b"\x04")
         try:
-            os.write(master, "".join(answer + "\n" for answer in answers).encode() + b"\x04")
             return subprocess.run(["/bin/bash", str(root / script), *args], env=self.env, stdin=slave,
                                   capture_output=True, text=True, timeout=60)
         finally:
+            feeder.stop()
             os.close(slave)
             os.close(master)
 
     def run_tty_until(self, root, *args, answers=(), wait_for="", sig=signal.SIGTERM):
         master, slave = pty.openpty()
+        feeder = TtyFeeder(master, "".join(answer + "\n" for answer in answers).encode())
         try:
-            os.write(master, "".join(answer + "\n" for answer in answers).encode())
             proc = subprocess.Popen(["/bin/bash", str(root / "update.sh"), *args], env=self.env, stdin=slave,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     preexec_fn=own_group_with_default_signals)
@@ -442,6 +472,7 @@ exit 0""")
             out, err = proc.communicate(timeout=60)
             return proc.returncode, out.decode(), (seen + err).decode()
         finally:
+            feeder.stop()
             os.close(slave)
             os.close(master)
 
@@ -523,11 +554,11 @@ exit 0""")
         self.env["AGENT_MESH_REPLY_WAIT"] = "5"
         result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn(messages.t("update.sent_first", "demo/bot", lang=lang), result.stdout)
-        self.assertIn(messages.t("update.timeout_first", lang=lang), result.stdout)
-        self.assertNotIn(messages.t("update.timeout", lang=lang), result.stdout)
+        self.assertIn(messages.t("update.sent", "demo/bot", lang=lang), result.stdout)
+        wait = messages.t("update.n_seconds", 5, lang=lang)
+        self.assertIn(messages.t("update.timeout", wait, lang=lang), result.stdout)
         [message] = self.sent()
-        self.assertIn("bash -s <<'AGENT_MESH_UPDATE'", message["body"])
+        self.assertRegex(message["body"], rf"\Aagent-mesh update v\S+ {'a' * 40} [0-9a-f]{{16}}\nlang={lang}\Z")
         return self.record()["request"]["req"]
 
     def env_file(self):
@@ -669,14 +700,28 @@ body = sys.stdin.read()
 with open(who / "sent", "a") as stream:
     stream.write(json.dumps({"to": sys.argv[1], "body": body}) + "\n")
 conf_path = who / "bot.json"
-if not conf_path.exists():
+conf = json.loads(conf_path.read_text()) if conf_path.exists() else {}
+stub = re.fullmatch(r"agent-mesh stub ([0-9a-f]{16})\nlang=(\S+)", body)
+if not (stub or conf):
     sys.exit(0)
-conf = json.loads(conf_path.read_text())
+db = sqlite3.connect(Path(os.environ["HOME"]) / ".reason/network/network.db")
+db.execute(TABLE)
+if stub:
+    mode = conf.get("stub") or ((who / "stub").read_text().strip() if (who / "stub").exists() else "ok")
+    if mode == "silent":
+        sys.exit(0)
+    req, lang = stub.groups()
+    text = (f"agent-mesh-result request {req}\nagent-mesh-result lang {lang}\n"
+            + ("agent-mesh-result stub 1\n" if mode == "ok" else "") + "agent-mesh-result DONE stub\n")
+    if "stub_body" in conf:
+        text = conf["stub_body"].replace("{req}", req).replace("{lang}", lang)
+    db.execute("INSERT INTO messages VALUES (?, ?, 'demo/terminal', ?, ?, 0)",
+               (os.urandom(8).hex(), sys.argv[1], text, int(time.time() * 1000)))
+    db.commit()
+    sys.exit(0)
 found = re.search(r"^agent-mesh update \S+ \S+ ([0-9a-f]{16})$|REQ=([0-9a-f]{16})$|^agent-mesh add-bot \S+ ([0-9a-f]{16})$",
                   body, re.M)
 req = conf.get("req") or next(g for g in found.groups() if g)
-db = sqlite3.connect(Path(os.environ["HOME"]) / ".reason/network/network.db")
-db.execute(TABLE)
 db.execute("INSERT INTO messages VALUES (?, ?, 'demo/terminal', ?, ?, ?)",
            (os.urandom(8).hex(), conf.get("sender", "demo/bot"), conf["body"].replace("{req}", req),
             int(time.time() * 1000) - conf.get("ago_ms", 0), conf.get("held", 0)))
@@ -743,7 +788,16 @@ case "$*" in
   "rev-parse --short HEAD") head -c 7 "$S/head"; echo ;;
   "status --porcelain --untracked-files=no") [ ! -f "$S/dirty" ] || cat "$S/dirty" ;;
   "status --porcelain -- box") [ ! -f "$S/boxdirty" ] || cat "$S/boxdirty" ;;
-  "pull --ff-only") [ ! -f "$S/pull-fail" ] || exit 1; [ ! -f "$S/pull.sh" ] || /bin/sh "$S/pull.sh"; cp "$S/upstream" "$S/head" ;;
+  "fetch --quiet --tags") [ ! -f "$S/fetch-fail" ] || exit 1 ;;
+  "tag --merged @{u} -l v*") [ ! -f "$S/tags" ] || awk '{ print $1 }' "$S/tags" ;;
+  "rev-list -n 1 refs/tags/"*) awk -v t="${4#refs/tags/}" '$1 == t { print $2; f = 1 } END { exit !f }' "$S/tags" ;;
+  "merge-base --is-ancestor "*) a="$3"; b="$4"; h="$(cat "$S/head")"
+    [ "$a" != HEAD ] || a="$h"; [ "$b" != HEAD ] || b="$h"; [ "$a" != "$b" ] || exit 0
+    [ -f "$S/history" ] || exit 1
+    i="$(awk -v x="$a" '$0 == x { print NR; exit }' "$S/history")"; j="$(awk -v x="$b" '$0 == x { print NR; exit }' "$S/history")"
+    [ -n "$i" ] && [ -n "$j" ] && [ "$i" -le "$j" ] ;;
+  "merge --ff-only -q "*) [ ! -f "$S/merge-fail" ] || exit 1; [ ! -f "$S/pull.sh" ] || /bin/sh "$S/pull.sh"
+    echo "$4" > "$S/head" ;;
   "init -q --bare "*|"fetch -q --depth 1 --no-tags "*|"rev-parse --verify -q refs/tags/"*|"cat-file blob "*)
     exec /bin/sh "$RELEASE_GIT_STUB" "$@" ;;
   *) echo "unexpected git $*" >> "$CALL_LOG"; exit 99 ;;

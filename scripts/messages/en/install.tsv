@@ -150,7 +150,7 @@ install.add_team_other	--name %s is not this Mac's team (%s). --add-bot uses the
 install.add_team_person	Reason Network reports the team %s, but its configuration says %s; nothing was changed
 install.add_unfinished	adding Bot '%s' is not finished. Finish it first with %s (or uninstall that Bot), then add another one
 install.add_update_first	this installation is not up to date or not confirmed yet (an update, the cloud setup, a relay or a routine prompt); run ./update.sh first, then add the Bot
-install.add_wait_timeout	The cloud registration of %s has not appeared yet; the Bot stays pending and its relay is not started. Once the Bot has done step 0 of its routine prompt in Grok, run %s
+install.add_wait_timeout	The cloud registration of %s has not appeared yet; the Bot stays pending and its relay is not started. The Bot registers on the first run of its routine; once that run has finished, run %s
 install.add_waiting	Waiting for the cloud computer to register %s and %s (up to %s minutes) ...
 install.add_wake_failed	the wake notice could not be sent (see above); nothing else was changed. Check the routine's webhook, then run %s
 install.add_who_failed	could not list the team's sessions (reason-network who --all --json failed), so the new Bot's address names were not checked; nothing was changed, run again
@@ -172,7 +172,7 @@ install.rotate_key_kept	The signing key %s was replaced; a new key is not rolled
 install.rotate_restart_failed_all	not every relay restarted: their code, plists and running state were restored, but they need the new key. See the log lines above, then run ./install.sh --restart-relay
 install.try_again	%s; try again
 install.wake_legacy	--wake-bot is only for an added Bot; choose one with --relay-name
-install.wake_not_yet	The cloud registration of %s has not appeared yet. Once the Bot has done step 0 of its routine prompt in Grok, run %s again
+install.wake_not_yet	The cloud registration of %s has not appeared yet. The Bot registers on the first run of its routine; once that run has finished, run %s again
 install.which_bot	this Mac has several Bots; choose one with --relay-name:
 install.bot_not_configured	the relay of %s is not configured yet; run %s
 install.bot_no_plist	the relay login service of %s is missing; run %s

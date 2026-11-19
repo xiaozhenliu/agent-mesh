@@ -83,7 +83,7 @@ if mode == "tag":
 
 W, A = sys.argv[2], sys.argv[3]
 B = os.path.join(A, "box")
-RUNTIME = re.compile(r"^box/(bin|state)/|^box/(person|relay|outbound\.key)$|^box/relay\.damaged-|^box/engine-backup-|"
+RUNTIME = re.compile(r"^box/(bin|state)/|^box/(person|relay|lang|outbound\.key)$|^box/relay\.damaged-|^box/engine-backup-|"
                      r"^box/\.(relay|person)\.[A-Za-z0-9]{6}$|^inbox/|^threads/|(^|/)__pycache__/|\.pyc$|"
                      r"^bots/|^box/relay\.removed$|^box/bots-removed/|^\.maint\.lock$")
 INSIDE = (b"agent-mesh/box", b"box/state", b"box/bin")

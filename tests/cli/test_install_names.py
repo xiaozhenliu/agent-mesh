@@ -68,9 +68,12 @@ class InstallNames(InstallHarness, unittest.TestCase):
             self.assertEqual(lines.count(line), 1, line)
         self.assertFalse([line for line in lines if line.startswith(("WEBHOOK_URL=", "WEBHOOK_KEY="))])
         self.assertEqual(env.stat().st_mode & 0o777, 0o600)
-        self.assertIn("<team-name>/alice-cloud", result.stdout)
-        self.assertIn("<team-name>/alice ", result.stdout)
+        self.assertIn(render_prompt("routine", "en"), result.stdout)
         self.assertNotIn("<relay-name>", result.stdout)
+        full = self.state_cmd("--prompt-mode", "full", "show-prompt")
+        self.assertEqual(full.returncode, 0, full.stderr)
+        self.assertIn("/alice-cloud", full.stdout)
+        self.assertNotIn("<relay-name>", full.stdout)
         self.assertIn("rn who --all --json", self.rn_calls())
         data = self.record()
         self.assertEqual(data["relay_name"], "alice")
@@ -175,7 +178,8 @@ class InstallNames(InstallHarness, unittest.TestCase):
         self.assertIn("LISTEN_NAME=bot", self.env_file().read_text())
         self.assertEqual(self.record()["relay_name"], "bot")
         self.assertNotIn("grok_name", self.record())
-        self.assertIn("<team-name>/bot-cloud", result.stdout)
+        self.assertIn(render_prompt("routine", "en"), result.stdout)
+        self.assertIn("/bot-cloud", self.state_cmd("--prompt-mode", "full", "show-prompt").stdout)
         for relay in (None, "alice"):
             shutil.rmtree(self.home / ".local/lib/agent-mesh")
             shutil.rmtree(self.home / ".config")
@@ -529,24 +533,23 @@ class InstallNames(InstallHarness, unittest.TestCase):
         repo = self.installed(relay="alice")
         data = self.record()
         self.assertEqual(data["relay_name"], "alice")
-        data["prompt"]["state"] = "pending"
-        self.write_record(data)
-        result = self.run_tty(repo, "--no-pull", answers=["n", "y", "y", "y"])
+        result = self.run_tty(repo, "--no-pull", "--full-prompt", answers=["y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        shown = self.state_cmd("show-prompt", root=repo).stdout
-        self.assertIn("<team-name>/alice-cloud", shown)
+        shown = self.state_cmd("--prompt-mode", "full", "show-prompt", root=repo).stdout
+        self.assertIn("demo/alice-cloud", shown)
         self.assertIn("this one (en):\n" + "-" * 64 + "\n" + shown + "\n" + "-" * 64 + "\n", result.stdout)
-        self.assertEqual(self.record()["prompt"]["hash"], self.state_cmd("digest", "prompt", root=repo).stdout.strip())
+        self.assertEqual(self.record()["prompt"]["hash"],
+                         self.state_cmd("--prompt-mode", "full", "digest", "prompt", root=repo).stdout.strip())
 
     def test_update_accepts_records_from_before_the_name_was_recorded(self):
         repo = self.installed()
         old = self.record()
         old.pop("relay_name")
-        old["prompt"]["hash"] = ROUTINE_V083["en"]
+        old["prompt"] = {"hash": ROUTINE_V083["en"], "state": "confirmed"}
         self.write_record(old)
         result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertRegex(result.stdout, r"routine prompt\s+unchanged")
+        self.assertRegex(result.stdout, r"routine prompt\s+changed")
         self.assertRegex(result.stdout, r"address name\s+unknown\s+bot")
         status = self.state_cmd("status", "--lang", "en", "--python", sys.executable, root=repo).stdout.splitlines()
         self.assertIn("name unknown bot", status)

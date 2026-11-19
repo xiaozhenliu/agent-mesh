@@ -9,7 +9,8 @@ die() { printf 'update: %s\n' "$(tq "$@")" >&2; exit 1; }
 fail() { printf 'update: %s\n' "$*" >&2; exit 1; }
 ask() { local a=""; read -r -p "$(tq "$@") [y/N] " a || true; [[ "$a" == [yY]* ]]; }
 ask_go() { local a=""; read -r -p "$(tq update.continue) [Y/n] " a || return 1; [[ -z "$a" || "$a" == [yY]* ]]; }
-state() { "$PYTHON" "$HERE/scripts/deploy_state.py" "$@"; }
+state() { "$PYTHON" "$HERE/scripts/deploy_state.py" --prompt-mode "$PROMPT_MODE" "$@"; }
+state_full() { "$PYTHON" "$HERE/scripts/deploy_state.py" --prompt-mode full "$@"; }
 installer() { "$BASH" "$HERE/install.sh" "$@" --lang "$DOC_LANG"; }
 service() { echo "gui/$(id -u)/$LABEL"; }
 relay_loaded() { launchctl print "$(service)" >/dev/null 2>&1; }
@@ -62,6 +63,7 @@ parse_args() {
       --no-pull) PULL=0; shift ;;
       --plan) PLAN=1; shift ;;
       --manual) MANUAL=1; shift ;;
+      --full-prompt) PROMPT_MODE=full; shift ;;
       --repo-url) [ $# -ge 2 ] && [ -n "$2" ] || usage_error update.url_needs; REPO_URL="$2"; shift 2 ;;
       -h|--help) t update.help; exit 0 ;;
       *) usage_error update.unknown_option "$1" ;;
@@ -84,6 +86,13 @@ setup $R_SETUP
 cengine $R_CENGINE
 prompt $R_PROMPT
 EOF
+  [ "$CHECK_FAILED" = 1 ] || return 0
+  if [ "$FAILED" = 0 ]; then
+    t update.steps_done
+    t update.check_failed_only
+  else
+    t update.check_failed
+  fi
 }
 
 bot_names() {
@@ -234,6 +243,7 @@ no_pull_command() {
   [ "$YES" = 0 ] || cmd="$cmd --yes"
   [ "$PLAN" = 0 ] || cmd="$cmd --plan"
   [ "$MANUAL" = 0 ] || cmd="$cmd --manual"
+  [ "$PROMPT_MODE" = thin ] || cmd="$cmd --full-prompt"
   [ "$REPO_URL" = "$DEFAULT_REPO_URL" ] || cmd="$cmd --repo-url $(printf '%q' "$REPO_URL")"
   printf '%s' "$cmd"
 }
@@ -251,7 +261,7 @@ dirty_files() {
 pull_checkout() {
   git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die update.not_git
   git -C "$HERE" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 || die update.no_upstream
-  local old new dirty
+  local old new dirty tag target
   dirty="$(git -C "$HERE" status --porcelain --untracked-files=no)" || die update.not_git
   if [ -n "$dirty" ]; then
     dirty_files "$dirty"
@@ -259,11 +269,26 @@ pull_checkout() {
     ask update.ask_dirty_continue || die update.stopped_nothing
     return 1
   fi
-  old="$(git -C "$HERE" rev-parse HEAD)"
-  git -C "$HERE" pull --ff-only || die update.pull_failed
-  new="$(git -C "$HERE" rev-parse HEAD)"
-  if [ "$old" = "$new" ]; then t update.at_latest; return 1; fi
-  t update.pulled "${old:0:12}" "${new:0:12}"
+  old="$(git -C "$HERE" rev-parse HEAD)" || die update.not_git
+  git -C "$HERE" fetch --quiet --tags || die update.pull_failed
+  tag="$(latest_tag)" || die update.pull_failed
+  if [ -z "$tag" ]; then t update.no_release_tag; return 1; fi
+  target="$(git -C "$HERE" rev-list -n 1 "refs/tags/$tag")" || die update.pull_failed
+  if git -C "$HERE" merge-base --is-ancestor "$target" HEAD; then t update.at_latest "$tag"; return 1; fi
+  git -C "$HERE" merge-base --is-ancestor HEAD "$target" || die update.tag_diverged "$tag" "$(no_pull_command)"
+  git -C "$HERE" merge --ff-only -q "$target" || die update.merge_failed "$tag"
+  new="$(git -C "$HERE" rev-parse HEAD)" || die update.not_git
+  t update.pulled "${old:0:12}" "${new:0:12}" "$tag"
+}
+
+latest_tag() {
+  local tags tag best=""
+  tags="$(git -C "$HERE" tag --merged '@{u}' -l 'v*')" || return 1
+  while IFS= read -r tag; do
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    if [ -z "$best" ] || ! at_least "${best#v}" "${tag#v}"; then best="$tag"; fi
+  done <<< "$tags"
+  printf '%s' "$best"
 }
 
 checkout_label() { git -C "$HERE" rev-parse --short HEAD 2>/dev/null || tq update.no_checkout; }
@@ -272,6 +297,44 @@ cloud_needed() { [ "$S_CLOUD" != unchanged ] || [ "$S_SETUP" != unchanged ] || [
 cloud_pending() { [ "$S_CLOUD" = pending ] || [ "$S_SETUP" = pending ] || [ "$S_CENGINE" = pending ]; }
 stale() { [ "$1" != unchanged ] && [ "$1" != pending ]; }
 cloud_stale() { stale "$S_CLOUD" || stale "$S_SETUP" || stale "$S_CENGINE"; }
+paste_needed() { [ "$S_PROMPT" != unchanged ] && [ "$S_PROMPT" != readback ]; }
+
+defer_paste() {
+  local i
+  [ "$MANUAL" = 0 ] && [ "$ORDER" = cloud_first ] && { [ "$YES" = 1 ] || [ ! -t 0 ]; } || return 1
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    prompt_bot "$i" || continue
+    case "${B_PROMPT[$i]}" in unchanged|readback|changed) ;; *) return 1 ;; esac
+  done
+}
+
+wait_text() {
+  local s="${AGENT_MESH_REPLY_WAIT:-900}"
+  if [ "$((s % 60))" = 0 ]; then tq update.n_minutes "$((s / 60))"; else tq update.n_seconds "$s"; fi
+}
+
+at_least() {
+  local IFS=. a b i
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  read -r -a a <<< "$1"
+  read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    [ "$((10#${a[$i]}))" -gt "$((10#${b[$i]}))" ] && return 0
+    [ "$((10#${a[$i]}))" -lt "$((10#${b[$i]}))" ] && return 1
+  done
+  return 0
+}
+
+pick_order() {
+  ORDER=cloud_first
+  if [ "$MANUAL" = 1 ]; then
+    ORDER=manual
+  elif cloud_needed && ! cloud_pending && [ "$S_CLOUD" = unknown ] && [ "$S_CREL" = - ]; then
+    ORDER=manual; MANUAL=1; AUTO_MANUAL=1
+  elif cloud_needed && ! at_least "$S_CREL" 0.8.2; then
+    ORDER=stub_first
+  fi
+}
 
 release_check() {
   local out k a b
@@ -300,12 +363,13 @@ prompt_names() {
 }
 
 merge_prompt() {
-  local i changed=0 unknown=0 pending=0
+  local i changed=0 unknown=0 pending=0 readback=0
   for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
     prompt_bot "$i" || continue
     case "${B_PROMPT[$i]}" in
       unchanged) ;;
       pending) pending=1 ;;
+      readback) readback=1 ;;
       changed) changed=1 ;;
       *) unknown=1 ;;
     esac
@@ -313,6 +377,7 @@ merge_prompt() {
   if [ "$changed" = 1 ]; then S_PROMPT=changed
   elif [ "$unknown" = 1 ]; then S_PROMPT=unknown
   elif [ "$pending" = 1 ]; then S_PROMPT=pending
+  elif [ "$readback" = 1 ]; then S_PROMPT=readback
   else S_PROMPT=unchanged; fi
 }
 
@@ -352,7 +417,7 @@ read_status() {
       relay) S_RELAY="$v" ;; dsh) S_DSH="$v" ;; cloud) S_CLOUD="$v" ;;
       cloud_setup) S_SETUP="$v" ;; prompt) S_PROMPT="$v" ;; txn) S_TXN="$v" ;; name) S_NAME="$v" ;;
       engine) read -r S_ENGINE S_EVER S_EPIN <<< "$v" ;; etxn) S_ETXN="$v" ;; cloud_engine) S_CENGINE="$v" ;;
-      cloud_release) S_CREL="$v" ;; config) S_CONFIG="$v" ;;
+      cloud_release) S_CREL="$v" ;; config) S_CONFIG="$v" ;; recover) S_RECOVER="$v" ;;
       bot)
         read -r -a w <<< "$v"
         B_NAMES+=("${w[0]}"); B_KINDS+=("${w[2]}"); B_STAGES+=("${w[4]}"); B_RELAY+=("${w[8]}")
@@ -441,17 +506,23 @@ print_plan() {
   if cloud_pending; then
     t update.plan_cloud_pending
   elif cloud_needed; then
-    if [ "$MANUAL" = 1 ]; then t update.plan_cloud_manual
-    elif [ "$S_CREL" = - ]; then t update.plan_cloud_first "$S_EPIN"
+    if [ "$MANUAL" = 1 ]; then
+      t update.plan_cloud_manual
+      [ "$AUTO_MANUAL" = 0 ] || t update.plan_no_record
+    elif [ "$ORDER" = stub_first ]; then t update.plan_cloud_stub_first "$S_EPIN"
     else t update.plan_cloud_auto "$S_EPIN"; fi
   fi
+  [ "$S_RECOVER" = 0 ] || t update.plan_recover
   case "$S_PROMPT" in
     pending) plan_line prompt pending "$(tq update.plan_prompt_pending)" ;;
-    *) plan_line prompt "$S_PROMPT" "$(tq update.plan_prompt)" ;;
+    readback) plan_line prompt readback "$(tq update.plan_prompt_readback)" ;;
+    *)
+      plan_line prompt "$S_PROMPT" "$(tq update.plan_prompt)"
+      [ "$DEFER" = 0 ] || t update.plan_prompt_later ;;
   esac
   [ "$MULTI" = 0 ] || plan_bots
   if [ "$S_ENGINE" != unchanged ] || config_needed; then t update.plan_engine_order; fi
-  if [ "$MANUAL" = 1 ] && { cloud_needed || [ "$S_PROMPT" != unchanged ]; }; then
+  if [ "$MANUAL" = 1 ] && { cloud_needed || paste_needed; }; then
     if [ "$MULTI" = 1 ]; then t update.plan_manual_order_bots; else t update.plan_manual_order; fi
   fi
 }
@@ -496,7 +567,7 @@ BLOCK
   printf '%s' "$REL_SUMS"
   cat <<'BLOCK'
 AGENT_MESH_SUMS
-[ "$n" = 5 ] || stop "the checksum list is incomplete; nothing was changed"
+[ "$n" = 8 ] || stop "the checksum list is incomplete; nothing was changed"
 old="$(git rev-parse HEAD)" || stop "cannot read HEAD; nothing was changed"
 restore() {
   if git checkout -q -f --detach "$old" && [ "$(git rev-parse HEAD)" = "$old" ] && [ -z "$(git status --porcelain)" ]; then
@@ -517,7 +588,7 @@ AGENT_MESH_UPDATE
 BLOCK
 }
 
-new_req() { "$PYTHON" -c 'import secrets; print(secrets.token_hex(8))'; }
+new_req() { "$PYTHON" -c 'import secrets, time; print("%08x%s" % (int(time.time()), secrets.token_hex(4)))'; }
 
 cloud_step() {
   local req
@@ -559,34 +630,174 @@ prompt_text() {
 }
 
 prompt_one() {
-  local i="$1" rn=()
+  local i="$1" rn=() need recover=0
   [ "${B_KINDS[$i]}" != added ] || rn=(--relay-name "${B_NAMES[$i]}")
+  need="$(state prompt-need --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"})" || die update.no_status
+  if [ "$need" = stub ] && cloud_needed && [ "$ORDER" = cloud_first ]; then
+    t update.prompt_after_cloud "${B_NAMES[$i]}"
+    return 0
+  fi
   SHOWN="$(state digest prompt --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"})"
+  if [ "$need" = readback ]; then
+    state mark prompt pending --lang "$DOC_LANG" --expect "$SHOWN" ${rn[@]+"${rn[@]}"}
+    B_PROMPT[i]=readback
+    return 0
+  fi
+  if [ "$need" = stub ] && cloud_needed; then
+    recover=1
+    state mark prompt pending --recover --lang "$DOC_LANG" --expect "$SHOWN" ${rn[@]+"${rn[@]}"}
+  fi
   prompt_text "$i"
   if [ "$MULTI" = 1 ]; then
-    ask update.ask_bot_prompt_saved_now "${B_NAMES[$i]}" || die update.bot_prompt_not_recorded "${B_NAMES[$i]}"
-  else
-    ask update.ask_prompt_saved_now || die update.prompt_not_recorded
+    if ! ask update.ask_bot_prompt_saved_now "${B_NAMES[$i]}"; then
+      [ "$recover" = 0 ] || state prompt-undo ${rn[@]+"${rn[@]}"}
+      die update.bot_prompt_not_recorded "${B_NAMES[$i]}"
+    fi
+  elif ! ask update.ask_prompt_saved_now; then
+    [ "$recover" = 0 ] || state prompt-undo ${rn[@]+"${rn[@]}"}
+    die update.prompt_not_recorded
   fi
-  state mark prompt confirmed --lang "$DOC_LANG" --expect "$SHOWN" ${rn[@]+"${rn[@]}"}
-  B_PROMPT[i]=unchanged
+  if [ "$need" = full ]; then
+    state mark prompt confirmed --lang "$DOC_LANG" --expect "$SHOWN" ${rn[@]+"${rn[@]}"}
+    B_PROMPT[i]=unchanged
+  else
+    [ "$recover" = 1 ] || state mark prompt pending --lang "$DOC_LANG" --expect "$SHOWN" ${rn[@]+"${rn[@]}"}
+    B_PROMPT[i]=readback
+  fi
 }
 
 prompt_step() {
   local i
   for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
-    prompt_bot "$i" && [ "${B_PROMPT[$i]}" != unchanged ] || continue
+    prompt_bot "$i" && [ "${B_PROMPT[$i]}" != unchanged ] && [ "${B_PROMPT[$i]}" != readback ] || continue
     prompt_one "$i"
   done
   merge_prompt
   R_PROMPT="$(tq r.updated)"
+  [ "$S_PROMPT" != readback ] || R_PROMPT="$(tq r.readback_waiting)"
+}
+
+full_back() {
+  local i rn shown=0
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    rn=()
+    [ "${B_KINDS[$i]}" != added ] || rn=(--relay-name "${B_NAMES[$i]}")
+    state prompt-recover ${rn[@]+"${rn[@]}"} || continue
+    shown=1
+    echo
+    if [ "$MULTI" = 1 ]; then t update.full_back_bot "${B_NAMES[$i]}" "$DOC_LANG"
+    else t update.full_back "$DOC_LANG"; fi
+    echo "----------------------------------------------------------------"
+    state_full show-prompt --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"}
+    echo
+    echo "----------------------------------------------------------------"
+    SHOWN="$(state_full digest prompt --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"})"
+    if [ -t 0 ] && ask update.ask_full_back; then
+      state_full mark prompt confirmed --lang "$DOC_LANG" --expect "$SHOWN" ${rn[@]+"${rn[@]}"}
+      R_PROMPT="$(tq r.full_back)"
+    else
+      R_PROMPT="$(tq r.full_back_pending)"
+      t update.full_back_later
+    fi
+  done
+  [ "$shown" = 1 ] || return 1
+  t update.full_back_retry
+}
+
+cloud_fail() {
+  printf 'update: %s\n' "$(tq "$@")" >&2
+  full_back || true
+  exit 1
+}
+
+recover_step() {
+  local rc=0
+  echo
+  t update.recover_check
+  if [ "$REL_STATE" = ok ] || release_check; then
+    request_check || rc=$?
+    if [ "$rc" = 0 ]; then
+      read_status
+      return 0
+    fi
+  else
+    printf 'update: %s\n' "$REL_NOTE" >&2
+  fi
+  full_back || true
+  exit 1
+}
+
+stub_first_ready() {
+  if [ "$MULTI" = 1 ]; then
+    TARGET=""
+    pick_target || die update.no_target
+  else
+    relay_loaded || die update.relay_down
+  fi
+}
+
+readback_step() {
+  local i rn rc out to req waited limit="${AGENT_MESH_REPLY_WAIT:-900}"
+  read_status
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    prompt_bot "$i" && [ "${B_PROMPT[$i]}" = readback ] || continue
+    if cloud_needed; then
+      t update.readback_after_cloud "${B_NAMES[$i]}"
+      continue
+    fi
+    rn=()
+    [ "${B_KINDS[$i]}" != added ] || rn=(--relay-name "${B_NAMES[$i]}")
+    if [ "${B_STAGES[$i]}" != relay ] || ! label_loaded "${B_LABELS[$i]}"; then
+      t update.readback_relay_down "${B_NAMES[$i]}"
+      FAILED=1
+      continue
+    fi
+    to="$(state bot-address ${rn[@]+"${rn[@]}"})" || { FAILED=1; continue; }
+    echo
+    t update.readback_heading "$to"
+    rc=0; out="$(state stub-check --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"} 2>&1)" || rc=$?
+    if [ "$rc" = 3 ]; then
+      req="$(state stub-new --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"})" || die update.no_request
+      if ! "$RN" send "$to" - < <(printf 'agent-mesh stub %s\nlang=%s' "$req" "$DOC_LANG") >/dev/null 9>&-; then
+        t update.readback_send_failed "$to"
+        FAILED=1
+        continue
+      fi
+      t update.readback_sent "$to" "$(wait_text)"
+      waited=0
+      while :; do
+        rc=0; out="$(state stub-check --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"} 2>&1)" || rc=$?
+        [ "$rc" = 3 ] && [ "$waited" -lt "$limit" ] || break
+        sleep 5
+        waited=$((waited + 5))
+        [ $((waited % 60)) != 0 ] || t update.still_waiting "$((waited / 60))"
+      done
+    fi
+    [ -z "$out" ] || printf '%s\n' "$out"
+    case "$rc" in
+      0) B_PROMPT[i]=unchanged ;;
+      3)
+        state stub-timeout ${rn[@]+"${rn[@]}"} || true
+        B_PROMPT[i]=changed
+        t update.readback_timeout "$(wait_text)" "$to"
+        FAILED=1 ;;
+      5) B_PROMPT[i]=changed; FAILED=1 ;;
+      *) FAILED=1 ;;
+    esac
+  done
+  merge_prompt
+  case "$S_PROMPT" in
+    unchanged) R_PROMPT="$(tq r.stub_confirmed)" ;;
+    readback) R_PROMPT="$(tq r.readback_waiting)" ;;
+    changed) R_PROMPT="$(tq r.stub_missing)" ;;
+  esac
 }
 
 guided() {
   local stage paused=0
   NEED=""
   cloud_needed && NEED="cloud"
-  [ "$S_PROMPT" = unchanged ] || NEED="${NEED:+$NEED,}prompt"
+  ! paste_needed || NEED="${NEED:+$NEED,}prompt"
   if [ -n "$NEED" ] && cloud_needed && [ "$REL_STATE" != ok ]; then
     release_check || fail "$REL_NOTE"
   fi
@@ -629,7 +840,7 @@ guided() {
       S_CLOUD=unchanged; S_SETUP=unchanged; S_CENGINE=unchanged
       R_CLOUD="$(tq r.updated)"; R_SETUP="$(tq r.confirmed)"; R_CENGINE="$(tq r.engine_confirmed "$S_EPIN")"
     fi
-    if [ "$S_PROMPT" != unchanged ]; then
+    if paste_needed; then
       t update.g_prompt
       prompt_step
       state txn-set stage prompt_done
@@ -831,6 +1042,19 @@ add_pending_step() {
   [ "$again" = 0 ] || read_status
 }
 
+late_stub_step() {
+  local i rn rc out again=0
+  for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
+    prompt_bot "$i" && [ "${B_PROMPT[$i]}" = changed ] || continue
+    rn=()
+    [ "${B_KINDS[$i]}" != added ] || rn=(--relay-name "${B_NAMES[$i]}")
+    rc=0; out="$(state stub-check --late --lang "$DOC_LANG" ${rn[@]+"${rn[@]}"} 2>&1)" || rc=$?
+    [ "$rc" = 3 ] || { [ -z "$out" ] || printf '%s\n' "$out"; }
+    [ "$rc" != 0 ] || again=1
+  done
+  [ "$again" = 0 ] || read_status
+}
+
 pending_step() {
   local i rn rc
   if cloud_pending; then
@@ -881,6 +1105,8 @@ pick_target() {
     pid="$(label_pid "${B_LABELS[$i]}")"
     [ "$m_name" = "$addr" ] && [ -n "$pid" ] && [ "$pid" = "$m_pid" ] || continue
     TARGET="$addr"
+    TARGET_NAME=""
+    [ "${B_KINDS[$i]}" != added ] || TARGET_NAME="${B_NAMES[$i]}"
     return 0
   done
   return 1
@@ -894,47 +1120,37 @@ request_check() {
     0) printf '%s\n' "$out"; cloud_recorded ;;
     1) printf '%s\n' "$out"
        R_CLOUD="$(tq r.cloud_stopped)"
-       die update.cloud_stopped ;;
+       cloud_fail update.cloud_stopped ;;
     3) [ -z "$out" ] || printf '%s\n' "$out" ;;
   esac
   return "$rc"
 }
 
-bootstrap_message() {
-  echo "This is my update request from my Mac (sent by ./update.sh). On [BOT-CLOUD], run this block exactly as"
-  echo "written, as one bash command, and reply to this message with its full output. It updates"
-  echo "/workspace/agent-mesh to the release $REL_TAG after checking it. If its last line is not the DONE line, stop"
-  echo "and reply with the output; do not retry, reset, clean, stash or repair anything."
-  echo
-  cloud_block "$1"
-}
-
 cloud_auto() {
-  local mode=line addr="" req i=0 rounds rc
-  [ "$S_CREL" != - ] || mode=block
-  [ "$REL_STATE" = ok ] || release_check || fail "$REL_NOTE"
-  [ "$MULTI" = 1 ] || addr="$(state bot-address)" || die update.no_address
+  local addr="" req i=0 rounds rc body lang=()
+  [ "$REL_STATE" = ok ] || release_check || { printf 'update: %s\n' "$REL_NOTE" >&2; full_back || true; exit 1; }
+  [ "$MULTI" = 1 ] || addr="$(state bot-address)" || cloud_fail update.no_address
   echo
   t update.cloud_heading "$REL_TAG"
   rc=0; request_check || rc=$?
   [ "$rc" != 0 ] || { t update.cloud_earlier_reply; return 0; }
+  TARGET_NAME=""
   if [ "$MULTI" = 1 ]; then
     TARGET=""
-    pick_target || die update.no_target
+    pick_target || cloud_fail update.no_target
     addr="$TARGET"
   else
-    relay_loaded || die update.relay_down
+    relay_loaded || cloud_fail update.relay_down
   fi
-  req="$(state request-new --tag "$REL_TAG" --commit "$REL_COMMIT" --mode "$mode" --address "$addr")" \
-    || die update.no_request
-  if [ "$mode" = line ]; then
-    "$RN" send "$addr" - < <(printf '%s' "agent-mesh update $REL_TAG $REL_COMMIT $req") >/dev/null 9>&- || die update.send_failed "$addr"
-    t update.sent "$addr"
-  else
-    "$RN" send "$addr" - < <(bootstrap_message "$req") >/dev/null 9>&- || die update.send_failed "$addr"
-    t update.sent_first "$addr"
-  fi
-  t update.waiting
+  body="agent-mesh update $REL_TAG $REL_COMMIT"
+  [ "$ORDER" = cloud_first ] || lang=(--lang "$DOC_LANG")
+  req="$(state request-new --tag "$REL_TAG" --commit "$REL_COMMIT" --mode line --address "$addr" \
+    ${TARGET_NAME:+--relay-name "$TARGET_NAME"} ${lang[@]+"${lang[@]}"})" || cloud_fail update.no_request
+  body="$body $req"
+  [ "${#lang[@]}" = 0 ] || body="$body"$'\n'"lang=$DOC_LANG"
+  "$RN" send "$addr" - < <(printf '%s' "$body") >/dev/null 9>&- || cloud_fail update.send_failed "$addr"
+  t update.sent "$addr"
+  t update.waiting "$(wait_text)"
   rounds=$(( ${AGENT_MESH_REPLY_WAIT:-900} / 5 ))
   while :; do
     rc=0; request_check || rc=$?
@@ -942,8 +1158,9 @@ cloud_auto() {
     if [ "$i" -ge "$rounds" ]; then
       [ "$rc" != 4 ] || printf '%s\n' "$LAST_CHECK"
       R_CLOUD="$(tq r.cloud_waiting)"
-      if [ "$mode" = block ]; then t update.timeout_first; else t update.timeout; fi
+      t update.timeout "$(wait_text)"
       FAILED=1
+      if full_back; then exit 1; fi
       return 0
     fi
     i=$((i + 1))
@@ -961,6 +1178,7 @@ main() {
   LANG_ARG=""; YES=0; PULL=1; PLAN=0; MANUAL=0; REPO_URL="$DEFAULT_REPO_URL"
   REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""; LAST_CHECK=""; TARGET=""
   FAILED=0; NEED=""; SHOWN=""; SHOWN_SETUP=""; SHOWN_ENGINE=""; S_NAME=""; REPLY_TEXT=""; S_CREL=-
+  S_RECOVER=0; ORDER=cloud_first; AUTO_MANUAL=0; TARGET_NAME=""; DEFER=0
   S_ENGINE=unchanged; S_EVER=""; S_EPIN=""; S_ETXN=-; S_CENGINE=unchanged; S_CONFIG=ok; BACKLOG=0
   pick_lang "$@"
   parse_args "$@"
@@ -979,8 +1197,12 @@ main() {
   read_python
   read_status
   [ "$PLAN" = 1 ] || add_pending_step
+  [ "$PLAN" = 1 ] || late_stub_step
+  pick_order
   local terminal=0 confirm=0
-  if [ "$S_TXN" != - ] || [ "$S_PROMPT" != unchanged ] || cloud_pending || { [ "$MANUAL" = 1 ] && cloud_needed; }; then
+  ! paste_needed || ! defer_paste || DEFER=1
+  if [ "$S_TXN" != - ] || { paste_needed && [ "$DEFER" = 0 ]; } || cloud_pending || [ "$S_RECOVER" != 0 ] \
+    || { [ "$MANUAL" = 1 ] && cloud_needed; }; then
     terminal=1
   fi
   if cloud_needed || [ "$S_ENGINE" != unchanged ] || [ "$S_ETXN" != - ] || config_needed; then
@@ -1000,12 +1222,14 @@ main() {
     t update.needs_terminal "$DOC_LANG"
     exit 3
   fi
+  state entry --checkout "$HERE" --lang "$DOC_LANG" || t update.entry_failed
   if [ "$PY_SOURCE" = plist ] && [ "$S_RELAY" = unchanged ]; then
     state relay-python --record >/dev/null || t update.python_not_recorded "$LIB_DIR/deployed.json"
   fi
   [ "$S_CONFIG" != ok ] || state config-verified || true
   "$PYTHON" "$HERE/scripts/reply_convention.py" install || t update.convention_failed "$LIB_DIR/templates"
-  if [ "$terminal" = 0 ] && [ "$confirm" = 0 ] && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ]; then
+  if [ "$terminal" = 0 ] && [ "$confirm" = 0 ] && [ "$S_RELAY" = unchanged ] && [ "$S_DSH" != changed ] \
+    && [ "$S_PROMPT" != readback ] && ! paste_needed; then
     t update.up_to_date
     exit 0
   fi
@@ -1016,10 +1240,11 @@ main() {
     exit 0
   fi
   if [ "$YES" != 1 ] && [ -t 0 ]; then
-    if [ "$S_PROMPT" != unchanged ] && [ "$MANUAL" = 0 ]; then t update.will_paste; fi
+    if paste_needed && [ "$MANUAL" = 0 ]; then t update.will_paste; fi
     ask_go || die update.stopped_nothing
   fi
   ACTING=1
+  if [ "$S_RECOVER" != 0 ]; then recover_step; pick_order; fi
 
   local changed=0
   if [ "$S_ETXN" != - ]; then
@@ -1039,7 +1264,7 @@ main() {
     engine_step
     changed=1
   fi
-  if [ "$MANUAL" = 1 ] && { cloud_needed || [ "$S_PROMPT" != unchanged ]; }; then
+  if [ "$MANUAL" = 1 ] && { cloud_needed || paste_needed; }; then
     guided
     changed=1
   elif [ "$S_RELAY" = changed ]; then
@@ -1047,24 +1272,37 @@ main() {
     changed=1
   fi
   if [ "$S_DSH" = changed ]; then update_dsh; changed=1; fi
-  if [ "$S_PROMPT" != unchanged ]; then
+  if [ "$ORDER" = cloud_first ] && cloud_needed; then
+    cloud_auto
+    changed=1
+  fi
+  if paste_needed && [ "$DEFER" = 1 ]; then
+    echo
+    t update.prompt_later "$DOC_LANG"
+    R_PROMPT="$(tq r.prompt_later)"
+  elif paste_needed; then
+    [ "$ORDER" != stub_first ] || ! cloud_needed || stub_first_ready
     prompt_step
     changed=1
   fi
-  if cloud_needed; then
+  if [ "$ORDER" != cloud_first ] && cloud_needed; then
     cloud_auto
+    changed=1
+  fi
+  if [ "$S_PROMPT" = readback ]; then
+    readback_step
     changed=1
   fi
 
   if [ "$changed" = 1 ]; then
     echo
     t update.check
-    "$BASH" "$HERE/check.sh" --lang "$DOC_LANG" 9>&- || { t update.check_failed; FAILED=1; }
+    "$BASH" "$HERE/check.sh" --lang "$DOC_LANG" 9>&- || CHECK_FAILED=1
   fi
-  [ "$FAILED" = 0 ] || exit 1
+  [ "$FAILED" = 0 ] && [ "$CHECK_FAILED" = 0 ] || exit 1
 }
 
-TXN_ACTIVE=0; ACTING=0; ENGINE_TXN=0; ENGINE_TMP=""; MULTI=0; CONFIG_OPEN=0
+TXN_ACTIVE=0; ACTING=0; ENGINE_TXN=0; ENGINE_TMP=""; MULTI=0; CONFIG_OPEN=0; PROMPT_MODE=thin; CHECK_FAILED=0
 B_NAMES=(); P_NAMES=(); P_LABELS=(); P_PLISTS=(); P_WAS=(); P_PIDS=()
 trap on_exit EXIT
 trap 'exit 130' INT

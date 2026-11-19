@@ -4,6 +4,29 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.10.0 — 2026-11-19
+
+Upgrading takes one command (#41). Update with `./update.sh`; it asks you to paste the new short prompt into Grok once. After that, the rules of the prompt change with each update, and you paste again only when the short prompt itself changes.
+
+### Added
+
+- `agent-mesh update` and `agent-mesh check` run from any folder.
+- `./update.sh --full-prompt` keeps using the complete prompt.
+
+### Changed
+
+- The routine prompt is a fixed short text; Grok Bot reads the rules from the cloud on every run.
+- After you paste the prompt, `./update.sh` checks by itself that it is in effect instead of asking.
+- Updating from v0.4.0 – v0.8.1 no longer needs a confirmation in a Grok conversation.
+- `./update.sh` updates to the newest release by default.
+- Without a terminal or with `--yes`, `./update.sh` still updates the cloud and leaves a changed prompt for the next run in a terminal.
+- When a Bot is added, the new Bot registers itself the first time it is woken.
+
+### Fixed
+
+- When the network is briefly slow, `./check.sh` no longer reports one slow probe as a failure, and a finished update no longer reports an error for it (#54).
+- The messages while waiting for the cloud's reply show the actual waiting time (#40).
+
 ## v0.9.1 — 2026-11-17
 
 Upgrading takes less effort, and this version includes security hardening (#38). Update with `./update.sh`; the cloud is not updated in this version and the routine prompt does not need pasting again.

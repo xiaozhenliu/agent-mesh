@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from render_prompt import render_prompt
+from render_prompt import prompt_block, render_prompt
 
 ROOT = Path(__file__).resolve().parents[1]
 FENCE = re.compile(r"^```[^\n]*\n.*?^```[ \t]*$", re.M | re.S)
@@ -115,7 +115,33 @@ def check_docs():
             elif url.fragment and resolved.suffix == ".md":
                 if unquote(url.fragment) not in anchors(resolved.read_text(encoding="utf-8")):
                     errors.append(f"{path.relative_to(ROOT)}: missing anchor: {target}")
-    for template in ("routine", "cloud-setup"):
+    try:
+        stub = {lang: render_prompt("routine", lang) for lang in ("en", "zh-CN")}
+        if stub["en"] != stub["zh-CN"]:
+            errors.append("routine: the stub block must be the same English text in both languages")
+        if re.findall(r"<[a-z]+(?:-[a-z]+)+>", stub["en"]) or not stub["en"].startswith("agent-mesh routine stub v1."):
+            errors.append("routine: the stub must start with its version line and have no placeholders")
+        render_prompt("routine", "en", team_name="demo", bot_selector="alice", team_hash="0" * 16)
+        found = lambda text: set(re.findall(r"<[a-z]+(?:-[a-z]+)+>", text))
+        fixed_command = lambda text: [line for line in text.splitlines() if "--stdin 0 - " in line]
+        for lang in ("en", "zh-CN"):
+            body = prompt_block("routine-body", lang)
+            if found(body) != {"<team-name>", "<relay-name>", "<rn-cloud>", "<threads-dir>"}:
+                errors.append(f"routine-body ({lang}): expected placeholders <team-name>, <relay-name>, <rn-cloud> and "
+                              "<threads-dir>")
+            for fixed in ("/bot", "bot-cloud", "bot-inbox", "含 bot", "rn-cloud.sh ", "/threads/"):
+                if fixed in body:
+                    errors.append(f"routine-body ({lang}): fixed text {fixed!r}; use the placeholders")
+            tail = prompt_block("routine-full", lang)
+            if found(tail) != {"<rn-cloud>"}:
+                errors.append(f"routine-full ({lang}): expected the placeholder <rn-cloud> only")
+            if len(fixed_command(tail)) != 1 or fixed_command(tail) != fixed_command(prompt_block("routine-full", "en")):
+                errors.append(f"routine-full ({lang}): the fixed command must appear once and match English")
+            for selector in ({}, {"bot_selector": "alice", "team_hash": "0" * 16}):
+                render_prompt("routine", lang, team_name="demo", full=True, **selector)
+    except (OSError, ValueError) as error:
+        errors.append(str(error))
+    for template in ("cloud-setup",):
         try:
             en = render_prompt(template, "en")
             zh = render_prompt(template, "zh-CN")
@@ -131,13 +157,6 @@ def check_docs():
                                                 re.M | re.S)
                 if len(block(en)) != 1 or block(en) != block(zh):
                     errors.append("cloud-setup: the AGENT_MESH_SETUP block must appear once and match in both languages")
-            if template == "routine":
-                for lang, text in (("en", en), ("zh-CN", zh)):
-                    if placeholders(text) != {"<team-name>", "<relay-name>"}:
-                        errors.append(f"routine ({lang}): expected placeholders <team-name> and <relay-name>")
-                    for fixed in ("/bot", "bot-cloud", "bot-inbox", "含 bot"):
-                        if fixed in text:
-                            errors.append(f"routine ({lang}): fixed Bot address {fixed!r}; use <relay-name>")
         except (OSError, ValueError) as error:
             errors.append(str(error))
     try:
@@ -147,9 +166,8 @@ def check_docs():
             if found(text) != {"<team-name>", "<relay-name>", "<team-hash>"}:
                 errors.append(f"cloud-add-bot ({lang}): expected placeholders <team-name>, <relay-name> and "
                               "<team-hash>")
-            if not text.startswith("0. ") or sum(line.startswith("0. ") for line in text.splitlines()) != 1:
-                errors.append(f"cloud-add-bot ({lang}): the block must be one step 0")
-            render_prompt("routine", lang, team_name="demo", bot_selector="alice", team_hash="0" * 16)
+            if not text.startswith("0. ") or len(text.rstrip("\n").splitlines()) != 1:
+                errors.append(f"cloud-add-bot ({lang}): the block must be one line, step 0")
     except (OSError, ValueError) as error:
         errors.append(str(error))
     try:

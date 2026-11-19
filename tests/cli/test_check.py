@@ -141,6 +141,38 @@ class Check(InstallHarness, unittest.TestCase):
                                        "  demo  mac  this machine\n")
         self.assertIn("PASS  relay reachable: the team's relay", self.run_script("check.sh").stdout)
 
+    def test_check_probes_a_failed_relay_once_more_before_failing(self):
+        self.configured()
+        self.tool("sleep", 'echo "sleep $*" >> "$CALL_LOG"')
+        self.tool("curl", 'echo "curl $*" >> "$CALL_LOG"; for a; do url="$a"; done\n'
+                          'case "$url" in *"$PROBE_DOWN"*) [ -z "$PROBE_DOWN" ] || exit 28 ;; esac\n'
+                          '[ -z "$PROBE_SLOW" ] || [ "$(grep -c -F " $url" "$CALL_LOG")" -gt 1 ] || exit 28\n'
+                          'printf 200')
+        self.env.update(PROBE_DOWN="", PROBE_SLOW="", MOCK_VERSION="0.10.7")
+        (self.base / "calls").unlink(missing_ok=True)
+        out = self.run_script("check.sh").stdout
+        urls = sorted({line.split()[-1] for line in self.calls().splitlines() if line.startswith("curl ")})
+        self.assertTrue(urls)
+        self.assertIn("PASS  relay reachable: ", out)
+        self.assertNotIn("second probe", out)
+        self.assertNotIn("sleep 3", self.calls())
+        self.env["PROBE_SLOW"] = "1"
+        (self.base / "calls").unlink()
+        out = self.run_script("check.sh").stdout
+        line = next(l for l in out.splitlines() if "relay reachable" in l)
+        self.assertTrue(line.startswith("PASS  relay reachable: "), out)
+        self.assertTrue(line.endswith("(the second probe passed: " + " ".join(urls) + ")"), line)
+        self.assertEqual(self.calls().count("sleep 3\n"), len(urls))
+        self.assertEqual(sum(l.startswith("curl ") for l in self.calls().splitlines()), 2 * len(urls))
+        self.env["PROBE_DOWN"] = urls[0]
+        (self.base / "calls").unlink()
+        out = self.run_script("check.sh", "--lang", "zh-CN").stdout
+        self.assertIn(f"FAIL  relay 无法连接（", out)
+        line = next(l for l in out.splitlines() if "relay 无法连接" in l)
+        self.assertTrue(line.endswith(f"： {urls[0]}"), line)
+        self.assertEqual(self.calls().count("sleep 3\n"), len(urls))
+        self.assertEqual(self.run_script("check.sh").returncode, 1)
+
     def test_install_probes_the_pinned_default_before_the_engine_exists(self):
         result = self.run_script("install.sh", "--name", "demo", "--relay-name", "nova", "--yes")
         self.assertIn("ok (default relays of Reason Network 0.12.17 (not installed yet))", result.stdout)
@@ -215,6 +247,20 @@ class Check(InstallHarness, unittest.TestCase):
         self.assertIn("RESULT fix the FAIL lines above", out)
         fake_python(python)
         self.assertNotIn("FAIL  the relay's Python", check())
+
+    def test_check_fails_while_a_shown_stub_waits_for_its_cloud_update(self):
+        self.configured(relay="alice")
+        fail = "FAIL  the routine stub may be in the routine, but the cloud update it needs was not confirmed"
+        self.write_record({"schema": 1, "prompt": {"hash": "0" * 64, "state": "pending", "mode": "thin"}})
+        self.assertNotIn(fail, self.run_script("check.sh").stdout)
+        for data in ({"schema": 1, "prompt": {"hash": "0" * 64, "state": "pending", "mode": "thin", "recover": 1}},
+                     {"schema": 1, "bots": {"beta": {"prompt": {"hash": "0" * 64, "state": "pending", "recover": 1}}}}):
+            with self.subTest(data=data):
+                self.write_record(data)
+                out = self.run_script("check.sh").stdout
+                self.assertIn(fail, out)
+                self.assertIn("-> ./update.sh (it looks for the cloud reply first", out)
+                self.assertIn("RESULT fix the FAIL lines above", out)
 
     def test_check_reads_the_engine_settings_the_way_the_engine_does(self):
         def check():

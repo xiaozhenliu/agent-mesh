@@ -1,4 +1,4 @@
-update.help	agent-mesh: update an installed Mac to the version in this checkout.\n  ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--manual] [--repo-url URL]\n  --plan     show what differs and what would run, then exit; the deployment is not changed\n  --no-pull  use this checkout as is; otherwise git pull --ff-only runs first. When tracked files have\n             uncommitted changes it lists them and, in a terminal without --yes, asks whether to continue\n             with the checkout as it is; otherwise it stops and prints the command to do so\n  --yes      skip the one confirmation at the start\n  --manual   update the cloud side by hand: pause the routine, send Grok Bot a command block and paste its reply\n  --lang     language of the terminal text and the routine prompt; default: the recorded one, then AGENT_MESH_LANG,\n             then en\n  --repo-url the repository the cloud installs from (default: the public agent-mesh repository); the cloud scripts\n             in this checkout must match its release tag v<VERSION>, which is checked online before anything changes\nIt updates this Mac first (relay, dsh plugin, Reason Network). The relay keeps the Python it already runs on,\nwhichever python3 runs this script; change it with ./install.sh --python <path>. When the routine prompt changed, it shows the new one\nfor you to paste into the routine. When the cloud side changed, it sends Grok Bot an update request from this Mac,\nwaits up to 15 minutes for the reply, checks it and records it. The first time after v0.8.1 or earlier, Grok Bot\ndoes not run it by itself: it tells you in Grok and runs it after you confirm once in a Grok conversation.\nIt also refreshes the filled-in reply convention in ~/.local/lib/agent-mesh/templates.\nWith several Bots on this Mac it covers all of them: one engine step for the relays of every Bot, each\nchanged routine prompt in turn, and one cloud request sent through the first Bot that can take it.\nExit: 0 done or already up to date, 1 not fully done (see the summary), 2 usage, 3 needs a terminal (nothing changed).
+update.help	agent-mesh: update an installed Mac to the version in this checkout.\n  ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--manual] [--full-prompt] [--repo-url URL]\n  --plan     show what differs and what would run, then exit; the deployment is not changed\n  --no-pull  use this checkout as is; otherwise it first fetches the upstream branch and moves this branch\n             forward to the newest release tag vX.Y.Z on it. When tracked files have uncommitted changes it\n             lists them and, in a terminal without --yes, asks whether to continue with the checkout as it is;\n             otherwise it stops and prints the command to do so\n  --yes      skip the one confirmation at the start\n  --manual   update the cloud side by hand: pause the routine, send Grok Bot a command block and paste its reply\n  --full-prompt  use the complete routine prompt (rules rendered on this Mac) instead of the short stub; it has\n             to be pasted again whenever the rules change. Run ./update.sh without it to switch back to the stub\n  --lang     language of the terminal text and the routine rules; default: the recorded one, then AGENT_MESH_LANG,\n             then en\n  --repo-url the repository the cloud installs from (default: the public agent-mesh repository); the cloud scripts\n             in this checkout must match its release tag v<VERSION>, which is checked online before anything changes\nIt updates this Mac first (relay, dsh plugin, Reason Network). The relay keeps the Python it already runs on,\nwhichever python3 runs this script; change it with ./install.sh --python <path>. The routine prompt is a short\nstub that loads the rules from the cloud computer; when it changed, it shows the new one for you to paste into\nthe routine, and the Bot's next reply confirms it. When the cloud side changed, it sends Grok Bot an update\nrequest from this Mac, waits for the reply (15 minutes by default), checks it and records it. After v0.8.1 or earlier\nyou paste the stub first; if that update then fails, it shows a complete prompt for you to paste back.\nIt also refreshes the filled-in reply convention in ~/.local/lib/agent-mesh/templates and the agent-mesh\ncommand in ~/.local/bin (agent-mesh update and agent-mesh check run this checkout's scripts).\nWith several Bots on this Mac it covers all of them: one engine step for the relays of every Bot, each\nchanged routine prompt in turn, and one cloud request sent through the first Bot that can take it.\nExit: 0 done or already up to date, 1 not fully done (see the summary), 2 usage, 3 needs a terminal (nothing changed).
 update.lang_needs	--lang needs en or zh-CN
 update.url_needs	--repo-url needs a URL
 update.unknown_option	unknown option: %s (see ./update.sh --help)
@@ -29,9 +29,12 @@ update.stopped_at	The update stopped at '%s'. Run ./update.sh again in a termina
 update.not_git	this directory is not a git clone; get the new version yourself, then run ./update.sh --no-pull
 update.no_upstream	this branch has no upstream; pull it yourself, then run ./update.sh --no-pull
 update.dirty_checkout	tracked files have uncommitted changes; commit or stash them, or use this checkout as it is: %s
-update.pull_failed	git pull --ff-only failed; nothing was changed
-update.at_latest	checkout is already at the latest commit
-update.pulled	pulled %s..%s
+update.pull_failed	fetching the upstream branch and its release tags failed; nothing was changed
+update.at_latest	checkout already contains the latest release %s
+update.pulled	moved the checkout %s..%s (release %s)
+update.no_release_tag	the upstream branch has no release tag vX.Y.Z; not moving the checkout, using it as it is
+update.tag_diverged	this checkout has commits that are not in the latest release %s; nothing was changed. Merge it yourself, or use this checkout as it is: %s
+update.merge_failed	git merge --ff-only to release %s failed; nothing was changed
 update.no_checkout	not a git checkout
 update.release_ok	%s at %s; the cloud files in this checkout match it
 update.no_status	could not read the deployment state
@@ -49,7 +52,6 @@ update.plan_dsh_absent	- (not installed)
 update.plan_dsh	replace the plugin file; bridge settings stay
 update.plan_cloud_pending	  cloud: asks whether Grok Bot finished the setup the installer printed
 update.plan_cloud_manual	  cloud: you send Grok Bot a command block in the chat and paste its reply here (terminal; the routine is paused meanwhile)
-update.plan_cloud_first	  cloud: first update with this version: this Mac sends Grok Bot the update as a message; Grok Bot tells you in Grok and runs it after you confirm once in a Grok conversation; it checks out the release and checks Reason Network %s, then this Mac checks its reply
 update.plan_cloud_auto	  cloud: this Mac sends Grok Bot an update request; Grok Bot checks out the release and checks Reason Network %s by itself, then this Mac checks its reply
 update.plan_prompt_pending	asks whether the prompt the installer printed is saved
 update.plan_prompt	you replace the routine's prompt in [GROK-UI] (terminal)
@@ -100,11 +102,11 @@ update.no_address	could not read the Bot address from ~/.config/agent-relay/env 
 update.no_request	could not record the update request (see above); nothing was sent
 update.send_failed	could not send the update request to %s (see above); run ./update.sh again
 update.sent	Sent the update request to Grok Bot (%s).
-update.sent_first	Sent the update to Grok Bot (%s). This first time, Grok Bot does not run it by itself: it tells you in Grok, with the message id and a sentence to say. Say it in a Grok conversation to confirm; later updates do not ask.
-update.waiting	Waiting for Grok Bot to finish (usually 1 to 3 minutes, at most 15)...
+update.waiting	Waiting for Grok Bot to finish (usually 1 to 3 minutes, at most %s)...
+update.n_minutes	%s min
+update.n_seconds	%s s
 update.still_waiting	  still waiting (%s min)
-update.timeout	No reply from Grok Bot within 15 minutes. It may still be working; its result also shows in Grok.\nRun ./update.sh again later: it first looks for the reply to this request and records it, and sends a new\nrequest only if there is none. If Grok Bot did not act on it, use ./update.sh --manual.
-update.timeout_first	No reply from Grok Bot within 15 minutes. If Grok Bot told you about this first update request in Grok, confirm it\nin a Grok conversation with the sentence it gave, then run ./update.sh --no-pull again: it first looks for the reply to\nthis request and records it. If Grok Bot did not act on it, use ./update.sh --manual.
+update.timeout	No reply from Grok Bot within %s. It may still be working; its result also shows in Grok.\nRun ./update.sh again later: it first looks for the reply to this request and records it, and sends a new\nrequest only if there is none. If Grok Bot did not act on it, use ./update.sh --manual.
 update.preflight_failed	fix the problem above, then run ./update.sh again; nothing was changed
 update.needs_terminal	This needs answers in a terminal and this is not one: nothing was changed.\n[LOCAL] User: run   ./update.sh --lang %s   in this repository in Terminal.
 update.convention_failed	note: could not refresh the reply convention with this Bot's address in %s
@@ -115,7 +117,10 @@ update.stopped_nothing	stopped; nothing was changed
 update.etxn_first	== an engine upgrade did not finish ('%s'); rolling it back first
 update.etxn_failed	the unfinished engine upgrade could not be rolled back; see the steps above
 update.check	== check
-update.check_failed	check.sh reported FAIL lines; the update steps above are kept
+update.check_failed	the self-check also did not pass (see the FAIL lines above); the update steps that completed are kept
+update.steps_done	every update step completed
+update.check_failed_only	the self-check did not pass (see the FAIL lines above); run agent-mesh check (or ./check.sh in this checkout) again later to recheck
+update.entry_failed	note: could not record this checkout for the agent-mesh command; ./update.sh in this checkout still works
 r.unchanged	unchanged
 r.updated	updated
 r.confirmed	confirmed
@@ -179,3 +184,29 @@ update.config_cleaned	Removed %s line(s) that an earlier version appended inside
 update.dirty_list	tracked files have uncommitted changes:
 update.dirty_more	  ... %s files in total
 update.ask_dirty_continue	Continue with this checkout as it is (the same as --no-pull)?
+st.readback	read-back
+update.plan_no_record	  (this Mac has no record of the cloud side, as after v0.3.0 or earlier, so the cloud step is done by hand this time)
+update.plan_cloud_stub_first	  cloud: first update after v0.8.1 or earlier: you paste the new routine stub first; Grok Bot then runs the update request from this Mac by itself, checks out the release, checks Reason Network %s and loads the new rules in the same run; this Mac checks its reply. If the update fails, this script shows a complete prompt for you to paste back
+update.plan_recover	  an earlier update showed the routine stub but did not confirm the cloud update: its reply is looked for first; without it, a complete prompt is shown for you to paste back (terminal)
+update.plan_prompt_readback	this Mac asks the Bot to confirm that it loads its rules through the stub (nothing to paste)
+update.prompt_after_cloud	The routine stub for %s is shown once the cloud update is recorded; the current prompt keeps working until then.
+update.plan_prompt_later	  routine prompt: without a terminal, or with --yes, it is left as it is; Grok Bot keeps its current prompt, and ./update.sh run in a terminal without --yes shows the new one later
+update.prompt_later	The routine prompt is left as it is: Grok Bot keeps its current prompt. To change it, run   ./update.sh --lang %s   in Terminal, without --yes.
+update.full_back	[GROK-UI] The cloud update did not finish. Put this complete prompt back into the routine (%s); it works with the cloud as it is now:
+update.full_back_bot	[GROK-UI] The cloud update did not finish. Put this complete prompt back into the routine of Bot %s (%s); it works with the cloud as it is now:
+update.ask_full_back	Is this complete prompt saved in the routine?
+update.full_back_later	Not recorded. Until this prompt or the stub works, Grok Bot does not process ordinary messages; ./update.sh shows it again, and ./check.sh reports it.
+update.full_back_retry	The next ./update.sh retries the cloud update and then offers the stub again.
+update.recover_check	== an earlier update showed the routine stub: looking for the reply to its cloud update request
+update.readback_after_cloud	The stub of %s is confirmed after the cloud update is recorded; run ./update.sh again then.
+update.readback_relay_down	The relay of %s is not running, so the stub cannot be confirmed; run ./install.sh --restart-relay, then ./update.sh again.
+update.readback_heading	== routine stub: asking %s to confirm it
+update.readback_send_failed	could not send the read-back request to %s; run ./update.sh again
+update.readback_sent	Sent the read-back request to %s. Waiting for its reply (usually 1 to 3 minutes, at most %s)...
+update.readback_timeout	No reply within %s from %s: the routine prompt stays unconfirmed. Run ./update.sh again: it first looks for a late reply to this request, and if there is none it shows the stub again to paste into the routine, then asks the Bot once more.
+r.readback_waiting	waiting for the Bot to confirm the stub; run ./update.sh again later
+r.stub_confirmed	stub confirmed
+r.stub_missing	not confirmed; run ./update.sh to show the stub again
+r.full_back	complete prompt put back; the next ./update.sh retries
+r.full_back_pending	not recorded: put the complete prompt back, then run ./update.sh again
+r.prompt_later	left as it is; run ./update.sh in a terminal to change it

@@ -1,4 +1,4 @@
-update.help	agent-mesh：把已安装的 Mac 更新到这个 checkout 的版本。\n  ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--manual] [--repo-url URL]\n  --plan     显示哪些部分不同、将运行什么，然后退出；不改动部署\n  --no-pull  直接使用这个 checkout；否则先运行 git pull --ff-only。已跟踪的文件有未提交的改动时，列出这些\n             文件；在终端里且没有 --yes 时询问是否用当前的 checkout 继续，否则停下并给出这样做的命令\n  --yes      跳过开头唯一的一次确认\n  --manual   手动更新云端：暂停 routine，把命令块发给 Grok Bot，再把它的回复粘贴回来\n  --lang     终端提示和 routine 提示词的语言；默认依次取记录中的语言、AGENT_MESH_LANG、en\n  --repo-url 云端安装所用的仓库（默认是公开的 agent-mesh 仓库）；这个 checkout 中的云端脚本必须与该仓库的\n             发布 tag v<VERSION> 一致，改动任何内容之前会在线核对\n先更新这台 Mac（relay、dsh 插件、Reason Network）。relay 沿用它现在使用的 Python，与运行这个脚本的 python3\n无关；要更换请运行 ./install.sh --python <path>。routine 提示词有变化时，显示新提示词，请你粘贴进 routine。\n云端有变化时，从这台 Mac 给 Grok Bot 发一条更新请求，最多等 15 分钟，收到回信后核对并记录。从 v0.8.1 或更早\n版本第一次更新时，Grok Bot 不会自己运行：它会在 Grok 里告诉你，你在 Grok 对话里确认一次后它才运行更新。\n同时刷新 ~/.local/lib/agent-mesh/templates 中填好地址的回复约定。\n这台 Mac 上有多个 Bot 时，一次覆盖全部：所有 Bot 的 relay 共用一个引擎步骤，有变化的 routine 提示词逐个处理，\n云端更新请求只发一次，发给第一个能接收它的 Bot。\n退出码：0 完成或已是最新，1 未全部完成（见汇总），2 用法错误，3 需要终端（没有做任何改动）。
+update.help	agent-mesh：把已安装的 Mac 更新到这个 checkout 的版本。\n  ./update.sh [--lang en|zh-CN] [--yes] [--no-pull] [--plan] [--manual] [--full-prompt] [--repo-url URL]\n  --plan     显示哪些部分不同、将运行什么，然后退出；不改动部署\n  --no-pull  直接使用这个 checkout；否则先取回上游分支，把当前分支前进到上游最新的发布 tag vX.Y.Z。已跟踪\n             的文件有未提交的改动时，列出这些文件；在终端里且没有 --yes 时询问是否用当前的 checkout 继续，\n             否则停下并给出这样做的命令\n  --yes      跳过开头唯一的一次确认\n  --manual   手动更新云端：暂停 routine，把命令块发给 Grok Bot，再把它的回复粘贴回来\n  --full-prompt  使用完整的 routine 提示词（规则在这台 Mac 上渲染），不用简短的桩；规则每次变化都要重贴。\n             再运行不带这个选项的 ./update.sh 即换回桩\n  --lang     终端提示和 routine 规则的语言；默认依次取记录中的语言、AGENT_MESH_LANG、en\n  --repo-url 云端安装所用的仓库（默认是公开的 agent-mesh 仓库）；这个 checkout 中的云端脚本必须与该仓库的\n             发布 tag v<VERSION> 一致，改动任何内容之前会在线核对\n先更新这台 Mac（relay、dsh 插件、Reason Network）。relay 沿用它现在使用的 Python，与运行这个脚本的 python3\n无关；要更换请运行 ./install.sh --python <path>。routine 提示词是一段从云电脑加载规则的简短的桩；桩有变化时\n显示新的桩，请你粘贴进 routine，Bot 的下一次回信会证实它。云端有变化时，从这台 Mac 给 Grok Bot 发一条更新请求，\n等待回信（默认最多 15 分钟），收到后核对并记录。从 v0.8.1 或更早版本更新时先贴桩；那次更新失败时，会显示完整提示词\n请你贴回去。\n同时刷新 ~/.local/lib/agent-mesh/templates 中填好地址的回复约定，以及 ~/.local/bin 中的 agent-mesh 命令\n（agent-mesh update、agent-mesh check 运行这个 checkout 的脚本）。\n这台 Mac 上有多个 Bot 时，一次覆盖全部：所有 Bot 的 relay 共用一个引擎步骤，有变化的 routine 提示词逐个处理，\n云端更新请求只发一次，发给第一个能接收它的 Bot。\n退出码：0 完成或已是最新，1 未全部完成（见汇总），2 用法错误，3 需要终端（没有做任何改动）。
 update.lang_needs	--lang 需要 en 或 zh-CN
 update.url_needs	--repo-url 需要一个 URL
 update.unknown_option	未知选项：%s（见 ./update.sh --help）
@@ -29,9 +29,12 @@ update.stopped_at	更新停在 '%s'。在终端里重新运行 ./update.sh，从
 update.not_git	这个目录不是 git clone；请自行获取新版本，然后运行 ./update.sh --no-pull
 update.no_upstream	这个分支没有上游；请自行拉取，然后运行 ./update.sh --no-pull
 update.dirty_checkout	已跟踪的文件有未提交的改动；请提交或 stash，或直接使用当前的 checkout：%s
-update.pull_failed	git pull --ff-only 失败；没有做任何改动
-update.at_latest	checkout 已是最新提交
-update.pulled	已拉取 %s..%s
+update.pull_failed	取回上游分支及其发布 tag 失败；没有做任何改动
+update.at_latest	checkout 已包含最新的发布版本 %s
+update.pulled	checkout 已从 %s 前进到 %s（发布版本 %s）
+update.no_release_tag	上游分支上没有 vX.Y.Z 形式的发布 tag；不移动 checkout，按当前检出继续
+update.tag_diverged	这个 checkout 有最新发布版本 %s 里没有的提交；没有做任何改动。请自行合并，或按当前检出继续：%s
+update.merge_failed	git merge --ff-only 到发布版本 %s 失败；没有做任何改动
 update.no_checkout	不是 git checkout
 update.release_ok	%s，提交 %s；这个 checkout 中的云端文件与它一致
 update.no_status	无法读取部署状态
@@ -49,7 +52,6 @@ update.plan_dsh_absent	-（未安装）
 update.plan_dsh	替换插件文件；桥接设置保留
 update.plan_cloud_pending	  云端：询问 Grok Bot 是否已完成安装程序给出的云端安装
 update.plan_cloud_manual	  云端：你在对话里把命令块发给 Grok Bot，再把回复粘贴到这里（需要终端；期间 routine 暂停）
-update.plan_cloud_first	  云端：第一次用这个版本更新：这台 Mac 把更新作为消息发给 Grok Bot，Grok Bot 不会自己运行，会在 Grok 里告诉你，你在 Grok 对话里确认一次后它才运行；它检出发布版并检查 Reason Network %s，然后这台 Mac 核对它的回信
 update.plan_cloud_auto	  云端：这台 Mac 给 Grok Bot 发一条更新请求；Grok Bot 自动检出发布版并检查 Reason Network %s，然后这台 Mac 核对它的回信
 update.plan_prompt_pending	询问安装程序给出的提示词是否已保存
 update.plan_prompt	你在 [GROK-UI] 替换 routine 的提示词（需要终端）
@@ -100,11 +102,11 @@ update.no_address	无法从 ~/.config/agent-relay/env 读取 Bot 地址（见上
 update.no_request	无法记录更新请求（见上面）；没有发送任何内容
 update.send_failed	无法把更新请求发给 %s（见上面）；请重新运行 ./update.sh
 update.sent	已把更新请求发给 Grok Bot（%s）。
-update.sent_first	已把更新发给 Grok Bot（%s）。这是第一次，Grok Bot 不会自己运行：它会在 Grok 里告诉你消息 id 和一句确认用的话。在 Grok 对话里说这句话即可；以后的更新不再需要。
-update.waiting	等待 Grok Bot 完成（通常 1～3 分钟，最多 15 分钟）…
+update.waiting	等待 Grok Bot 完成（通常 1～3 分钟，最多 %s）…
+update.n_minutes	%s 分钟
+update.n_seconds	%s 秒
 update.still_waiting	  仍在等待（%s 分钟）
-update.timeout	15 分钟内没有收到 Grok Bot 的回信。它可能还在执行，结果也会出现在 Grok 里。\n稍后重新运行 ./update.sh：它会先查找这次请求的回信并记录，找不到才重新发送请求。\n如果 Grok Bot 没有处理这条请求，请用 ./update.sh --manual。
-update.timeout_first	15 分钟内没有收到 Grok Bot 的回信。如果 Grok Bot 在 Grok 里告诉了你这条首次更新请求，请在 Grok 对话里用它给的那句话确认，\n然后重新运行 ./update.sh --no-pull：它会先查找这次请求的回信并记录。如果 Grok Bot 没有处理这条请求，请用 ./update.sh --manual。
+update.timeout	%s内没有收到 Grok Bot 的回信。它可能还在执行，结果也会出现在 Grok 里。\n稍后重新运行 ./update.sh：它会先查找这次请求的回信并记录，找不到才重新发送请求。\n如果 Grok Bot 没有处理这条请求，请用 ./update.sh --manual。
 update.preflight_failed	处理上面的问题，然后重新运行 ./update.sh；没有做任何改动
 update.needs_terminal	这一步需要在终端里回答问题，而当前不是终端：没有做任何改动。\n[LOCAL] 用户：在终端里进入这个仓库，运行   ./update.sh --lang %s
 update.convention_failed	注意：无法在 %s 中刷新填好这个 Bot 地址的回复约定
@@ -115,7 +117,10 @@ update.stopped_nothing	已停止；没有做任何改动
 update.etxn_first	== 上次引擎升级没有完成（'%s'）；先回滚
 update.etxn_failed	未完成的引擎升级无法回滚；见上面的步骤
 update.check	== 检查
-update.check_failed	check.sh 报告了 FAIL 行；上面的更新步骤保留
+update.check_failed	自检也未通过（见上面的 FAIL 行）；已完成的更新步骤保留
+update.steps_done	更新的各步骤已完成
+update.check_failed_only	自检未通过（见上面的 FAIL 行）；稍后运行 agent-mesh check（或这个检出里的 ./check.sh）复核
+update.entry_failed	注意：没能为 agent-mesh 命令记录这个检出；在这个检出里运行 ./update.sh 仍然可用
 r.unchanged	未变
 r.updated	已更新
 r.confirmed	已确认
@@ -179,3 +184,29 @@ update.config_cleaned	已删除 %s 行早期版本追加在 %s 某个表里的�
 update.dirty_list	已跟踪的文件有未提交的改动：
 update.dirty_more	  ……共 %s 个文件
 update.ask_dirty_continue	用当前的 checkout 继续（等同 --no-pull）？
+st.readback	待读回
+update.plan_no_record	  （这台 Mac 没有云端的记录，就像 v0.3.0 或更早的版本，所以这次手动更新云端）
+update.plan_cloud_stub_first	  云端：从 v0.8.1 或更早版本第一次更新：先由你粘贴新的 routine 桩；随后 Grok Bot 自己运行这台 Mac 发来的更新请求，检出发布版，检查 Reason Network %s，并在同一轮里加载新规则；这台 Mac 核对它的回信。更新失败时，本脚本会显示完整提示词请你贴回去
+update.plan_recover	  上次更新显示了 routine 桩，但没有证实云端已更新：先查找那次请求的回信；没有回信时，显示完整提示词请你贴回去（需要终端）
+update.plan_prompt_readback	这台 Mac 请 Bot 证实它通过桩加载规则（不用粘贴）
+update.prompt_after_cloud	%s 的 routine 桩等云端更新记录后再显示；在那之前现在的提示词照常工作。
+update.plan_prompt_later	  routine 提示词：不在终端运行或加了 --yes 时这次不换；Grok Bot 继续用现在的提示词，以后在终端不加 --yes 运行 ./update.sh 时再显示新的
+update.prompt_later	routine 提示词这次不换：Grok Bot 继续用现在的提示词。要换时，在终端运行   ./update.sh --lang %s   ，不加 --yes。
+update.full_back	[GROK-UI] 云端更新没有完成。把这份完整提示词贴回 routine（%s）；它能配合云端现在的状态工作：
+update.full_back_bot	[GROK-UI] 云端更新没有完成。把这份完整提示词贴回 Bot %s 的 routine（%s）；它能配合云端现在的状态工作：
+update.ask_full_back	这份完整提示词已经保存在 routine 里了吗？
+update.full_back_later	没有记录。在这份提示词或桩能工作之前，Grok Bot 不处理普通消息；./update.sh 会再次显示它，./check.sh 也会报告。
+update.full_back_retry	下次运行 ./update.sh 会重试云端更新，然后再提示换回桩。
+update.recover_check	== 上次更新显示了 routine 桩：查找那次云端更新请求的回信
+update.readback_after_cloud	%s 的桩等云端更新记录后再证实；届时再运行 ./update.sh。
+update.readback_relay_down	%s 的 relay 没有运行，无法证实桩；运行 ./install.sh --restart-relay，然后再运行 ./update.sh。
+update.readback_heading	== routine 桩：请 %s 证实
+update.readback_send_failed	无法把读回请求发给 %s；请再运行 ./update.sh
+update.readback_sent	已把读回请求发给 %s。等待它的回信（通常 1～3 分钟，最多 %s）……
+update.readback_timeout	%s内没有收到 %s 的回信：routine 提示词仍未确认。再运行 ./update.sh：它先查找这次请求迟到的回信；没有的话会再次显示桩，粘贴进 routine 后再请 Bot 确认。
+r.readback_waiting	等待 Bot 证实桩；稍后再运行 ./update.sh
+r.stub_confirmed	桩已证实
+r.stub_missing	未确认；运行 ./update.sh 再次显示桩
+r.full_back	已贴回完整提示词；下次运行 ./update.sh 会重试
+r.full_back_pending	没有记录：把完整提示词贴回去，再运行 ./update.sh
+r.prompt_later	这次不换；在终端运行 ./update.sh 时再换

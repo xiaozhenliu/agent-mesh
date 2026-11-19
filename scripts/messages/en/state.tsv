@@ -52,3 +52,13 @@ state.not_removing	%s is not being uninstalled
 state.needs_lock	this command changes the deployment record and only runs inside ./install.sh or ./update.sh
 state.python_unusable	%s cannot run the relay: it must be the absolute path of a Python 3.9+ with ssl and sqlite3
 state.config_not_written	the engine settings in %s are still not off; nothing was recorded
+state.stub_not_pending	this Bot's routine prompt is not a stub waiting for its read-back; nothing was sent
+state.stub_lang	the reply reports the rules language %s, not %s
+state.stub_other	the reply reports routine stub v%s, not v%s
+state.stub_mismatch	%s answered the read-back, but the reply does not confirm the routine stub:
+state.stub_missing	%s answered, but did not load its rules through the routine stub in that run: the routine prompt stays unconfirmed. Run ./update.sh: it shows the stub again to paste into the routine, then asks the Bot to confirm it
+state.stub_confirmed	%s loaded its rules through routine stub v%s: the routine prompt is confirmed.
+entry.usage	usage: agent-mesh update|check [options]; runs ./update.sh or ./check.sh in your agent-mesh checkout
+entry.gone	agent-mesh: the recorded checkout %s is gone; run ./update.sh once in your new agent-mesh checkout
+entry.foreign	%s exists and was not written by agent-mesh; left it as it is (run ./update.sh and ./check.sh in the checkout instead)
+entry.no_path	%s is not in PATH; add it to run agent-mesh update and agent-mesh check from any folder

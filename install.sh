@@ -540,6 +540,7 @@ webhook_step() {
     write_env "$url" "$key"
   fi
   chmod 600 "$ENV_FILE"
+  deploy_state entry --checkout "$HERE" --lang "$DOC_LANG" || t install.record_failed "$LIB_DIR/deployed.json"
   [ "${1:-}" != nostart ] || return 0
   local stage=relay
   if [ "$BOT_KIND" = added ]; then stage="$(bot_field stage)" || exit 1; fi

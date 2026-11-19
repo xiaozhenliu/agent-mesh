@@ -52,3 +52,13 @@ state.not_removing	%s 不在卸载中
 state.needs_lock	这个命令会改动部署记录，只能在 ./install.sh 或 ./update.sh 里运行
 state.python_unusable	%s 不能用来运行 relay：必须是带 ssl 和 sqlite3 的 Python 3.9+ 的绝对路径
 state.config_not_written	%s 里的引擎设置仍未关闭；没有写入记录
+state.stub_not_pending	这个 Bot 的 routine 提示词不是等待读回的桩；没有发送任何内容
+state.stub_lang	回信报告的规则语言是 %s，不是 %s
+state.stub_other	回信报告的是 routine 桩 v%s，不是 v%s
+state.stub_mismatch	%s 回复了读回请求，但回信没有证实 routine 桩：
+state.stub_missing	%s 回复了，但那一轮没有通过 routine 桩加载规则：routine 提示词仍未确认。运行 ./update.sh：它会再次显示桩，粘贴进 routine 后再请 Bot 证实
+state.stub_confirmed	%s 已通过 routine 桩 v%s 加载规则：routine 提示词已确认。
+entry.usage	用法：agent-mesh update|check [选项]；在你的 agent-mesh 检出里运行 ./update.sh 或 ./check.sh
+entry.gone	agent-mesh：记录的检出目录 %s 不存在了；请在新的 agent-mesh 检出里运行一次 ./update.sh
+entry.foreign	%s 已存在且不是 agent-mesh 写的；保持原样（请改为在检出里运行 ./update.sh 和 ./check.sh）
+entry.no_path	%s 不在 PATH 里；加入后可以在任何目录运行 agent-mesh update 和 agent-mesh check

@@ -37,6 +37,7 @@ fail=0
 ok()   { printf 'PASS  %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n      -> %s\n' "$1" "$2"; fail=1; }
 skip() { printf 'SKIP  %s\n' "$(tq check.skip_reason "$1" "$2")"; }
+probe_relay() { curl -sS -o /dev/null -m 10 -w '%{http_code}' "$1" 2>/dev/null | grep -q '^200$'; }
 
 # prerequisites
 [ "$(uname -s)" = Darwin ] || { bad "$(tq check.not_macos)" "$(tq check.not_macos_fix)"; exit 1; }
@@ -54,11 +55,19 @@ relay_hint="$(tq check.relay_hint)"
 pinned="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$(dirname "$0")/install.sh" | head -n 1)"
 if relays="$(python3 "$(dirname "$0")/scripts/relay_targets.py" --rn "$RN" --home "$HOME/.reason/network" --pinned "${pinned:-unknown}" 2>/dev/null)"; then
   source="$(printf '%s\n' "$relays" | head -n 1)"
-  down=""
+  down=""; again=""
   for url in $(printf '%s\n' "$relays" | tail -n +2); do
-    curl -sS -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null | grep -q '^200$' || down="$down $url"
+    probe_relay "$url" && continue
+    sleep 3
+    if probe_relay "$url"; then again="$again $url"; else down="$down $url"; fi
   done
-  [ -z "$down" ] && ok "$(tq check.relay_ok "$source")" || bad "$(tq check.relay_bad "$source" "$down")" "$relay_hint"
+  if [ -n "$down" ]; then
+    bad "$(tq check.relay_bad "$source" "$down")" "$relay_hint"
+  elif [ -n "$again" ]; then
+    ok "$(tq check.relay_ok_again "$source" "$again")"
+  else
+    ok "$(tq check.relay_ok "$source")"
+  fi
 else
   skip "$(tq check.relay_unknown)" "$(tq check.relay_unknown_why "${relays:-$(tq check.targets_failed)}" "$relay_hint")"
 fi
@@ -408,6 +417,23 @@ case "$cengine" in
   pending\ *) skip "$(tq check.cloud_engine)" "$(tq check.cloud_engine_pending)" ;;
   none) skip "$(tq check.cloud_engine)" "$(tq check.cloud_engine_none)" ;;
   *) skip "$(tq check.cloud_engine)" "$(tq check.cloud_engine_unreadable "$LIB/deployed.json" "$cengine")" ;;
+esac
+
+recover="$(python3 - "$LIB/deployed.json" <<'PY' 2>&1
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit
+if isinstance(data, dict):
+    bots = data.get("bots") if isinstance(data.get("bots"), dict) else {}
+    homes = [data] + [item for item in bots.values() if isinstance(item, dict)]
+    print(sum(1 for item in homes if isinstance(item.get("prompt"), dict) and item["prompt"].get("recover")))
+PY
+)"
+case "$recover" in
+  ""|0) ;;
+  *) bad "$(tq check.prompt_recover)" "$(tq check.prompt_recover_fix)" ;;
 esac
 
 echo

@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 
 import bots
+import mesh_entry
 import mesh_lock
 import relay_names
 from messages import pad, t
@@ -113,6 +114,7 @@ class Paths:
         self.bots_state = h / "Library/Application Support/agent-relay-bots"
         self.logs = h / "Library/Logs"
         self.rn_bin = h / ".local/bin/reason-network"
+        self.entry = mesh_entry.path(h)
         self.rn_home = h / ".reason/network"
         self.machine_key = self.rn_home / "machine.key"
         self.config_toml = self.rn_home / "config.toml"
@@ -903,8 +905,8 @@ class Uninstaller:
         multi = "_multi" if inv.multi else ""
         rows = [
             ("service" + multi, have(any(m.plist_present or m.loaded for m in inv.members)), "stop_remove"),
-            ("program", have(p.relay.exists() or p.temp_files() or p.rollback.exists() or p.rollback_tmp.exists()),
-             remove),
+            ("program", have(p.relay.exists() or p.temp_files() or p.rollback.exists() or p.rollback_tmp.exists()
+                             or mesh_entry.ours(p.entry)), remove),
             ("record", have(p.lib.exists()), remove if deep else keep),
             ("settings" + multi, have(p.conf.exists() or p.bots_conf.exists()), remove if deep else keep),
             ("state" + multi, have(p.state.exists() or p.bots_state.exists()), remove if deep else keep),
@@ -1147,7 +1149,8 @@ class Uninstaller:
 
     def program_paths(self):
         p = self.p
-        return [p.relay, p.rollback, p.rollback_tmp] + [t for t in p.temp_files() if t.parent == p.lib]
+        entry = [p.entry] if mesh_entry.ours(p.entry) else []
+        return [p.relay, p.rollback, p.rollback_tmp] + [t for t in p.temp_files() if t.parent == p.lib] + entry
 
     def prompt_relay_name(self):
         if self.level == "bot":

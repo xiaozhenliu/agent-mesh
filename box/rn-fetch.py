@@ -21,6 +21,13 @@ stores what arrives in $REASON_NETWORK_HOME/network.db (table messages, kept eve
   rn-fetch.py purge DAYS                   delete received messages, inbox folders, stray logs, remembered
                                            bad rows and thread notes older than DAYS (0 = all); the engine
                                            must be stopped
+  rn-fetch.py release RUN-DIR              after a bootstrap update (rn-cloud-update.sh --stdin): remove the
+                                           claimed marker of each id that is complete in RUN-DIR/fetch, whose
+                                           claim RUN-DIR snapshotted (start, then fetch, then the copies, then
+                                           snap) and whose marker still holds that token, with no working,
+                                           replying, done or legacy marker; RUN-DIR is .git/agent-mesh/boot/<run>
+                                           of the clone. Nothing is released when RN_CLAIM_LEASE is below 900 s
+                                           or snap is a lease or more after start. One JSON line per id
 With no IDs (scan/wait): every RN-FWD message not yet written to the inbox folder.
 
 Re-forward (fetch only, relay v3.1): Reason Network 0.10.5 can silently drop a message after `send` said
@@ -840,7 +847,82 @@ def purge(days, threads, rn_bin=None):
         lock.close()
 
 
+def release_one(mid, run, rel):
+    if safe(mid) != mid or mid.startswith("_"):
+        return "not a plain message id"
+    d = BASE / mid
+    if d.is_symlink() or not d.is_dir():
+        return "no message folder"
+    try:
+        snap = json.loads((run / str(rel / mid / "claimed").replace("/", "_")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "this run took no snapshot of its claim"
+    if not isinstance(snap, dict) or snap.get("id") != mid or not snap.get("token"):
+        return "the snapshot of its claim is damaged"
+    st = markers(d)
+    if collision(d, mid, st):
+        return f"id collision: folder {d.name} belongs to another id"
+    other = [m for m in ("working", "replying", "done", "legacy") if m in st]
+    if other:
+        return f"it has a {other[0]} marker"
+    cur = st.get("claimed")
+    if cur is None or cur[1] is None:
+        return "its claim is missing or damaged"
+    if cur[1].get("id") != mid or cur[1].get("token") != snap["token"]:
+        return "another turn holds its claim"
+    (d / "claimed").unlink()
+    return None
+
+
+def release(run_dir):
+    run = Path(run_dir)
+    if (not run.is_absolute() or len(run.parents) < 4 or run.parent.name != "boot"
+            or run.parents[1].name != "agent-mesh" or run.parents[2].name != ".git"
+            or any(p.is_symlink() or not p.is_dir() for p in (run, run.parent, run.parents[1], run.parents[2]))):
+        print("rn-fetch: release needs the absolute path of a folder in .git/agent-mesh/boot/", file=sys.stderr)
+        return 2
+    try:
+        rel = BASE.relative_to(run.parents[3])
+    except ValueError:
+        print(f"rn-fetch: the inbox {BASE} is not inside the clone of {run}", file=sys.stderr)
+        return 2
+    ttl = lease()
+    try:
+        span = (run / "snap").stat().st_mtime - (run / "start").stat().st_mtime
+        lines = read(run / "fetch").splitlines()
+    except OSError as e:
+        out({"released": 0, "reason": f"the run folder is incomplete: {e.strerror or e}"})
+        return 0
+    if ttl < 900:
+        out({"released": 0, "reason": "RN_CLAIM_LEASE is below 900 seconds"})
+        return 0
+    if not 0 <= span < ttl:
+        out({"released": 0, "reason": "the snapshot was not taken within one lease of the start"})
+        return 0
+    ids = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("status") == "complete" and isinstance(r.get("id"), str):
+            ids.append(r["id"])
+    lock = inbox_lock(300)
+    try:
+        for mid in dict.fromkeys(ids):
+            reason = release_one(mid, run, rel)
+            out({"id": mid, "released": True} if reason is None else {"id": mid, "kept": reason})
+    finally:
+        lock.close()
+    return 0
+
+
 def main(argv):
+    if argv[:1] == ["release"]:
+        if len(argv) != 2:
+            print("usage: rn-fetch.py release RUN-DIR", file=sys.stderr)
+            return 2
+        return release(argv[1])
     if argv == ["send-status"]:
         status = send_status(sys.stdin.buffer.read().decode("utf-8", "replace"))
         sys.stdout.buffer.write(status.encode("utf-8") + b"\n")

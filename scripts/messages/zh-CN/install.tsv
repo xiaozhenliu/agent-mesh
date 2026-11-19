@@ -150,7 +150,7 @@ install.add_team_other	--name %s 不是这台 Mac 的团队（%s）。--add-bot 
 install.add_team_person	Reason Network 报告的团队是 %s，但它的配置写的是 %s；没有改动任何东西
 install.add_unfinished	Bot“%s”的添加还没有完成。请先用 %s 完成它（或者卸载那个 Bot），再添加新的
 install.add_update_first	这个安装还不是最新或还没有确认（更新、云端设置、relay 或 routine 提示词）；请先运行 ./update.sh，再添加 Bot
-install.add_wait_timeout	%s 的云端登记还没有出现；Bot 仍为待确认，relay 没有启动。Bot 在 Grok 里完成 routine 提示词的第 0 步后，运行 %s
+install.add_wait_timeout	%s 的云端登记还没有出现；Bot 仍为待确认，relay 没有启动。Bot 的 routine 第一次运行时完成登记；这次运行结束后，运行 %s
 install.add_waiting	等待云电脑登记 %s 和 %s（最多 %s 分钟）……
 install.add_wake_failed	唤醒通知没有发出（见上文）；其他都没有改动。请检查 routine 的 webhook，然后运行 %s
 install.add_who_failed	无法列出团队的会话（reason-network who --all --json 失败），所以没有检查新 Bot 的地址名；没有改动任何东西，请再运行一次
@@ -172,7 +172,7 @@ install.rotate_key_kept	签名密钥 %s 已更换；新密钥不会回滚：
 install.rotate_restart_failed_all	并非所有 relay 都重启成功：它们的代码、plist 和运行状态已恢复，但需要使用新密钥。请看上面的日志，然后运行 ./install.sh --restart-relay
 install.try_again	%s；请重试
 install.wake_legacy	--wake-bot 只用于添加的 Bot；请用 --relay-name 指定
-install.wake_not_yet	%s 的云端登记还没有出现。Bot 在 Grok 里完成 routine 提示词的第 0 步后，再运行 %s
+install.wake_not_yet	%s 的云端登记还没有出现。Bot 的 routine 第一次运行时完成登记；这次运行结束后，再运行 %s
 install.which_bot	这台 Mac 上有多个 Bot；请用 --relay-name 选一个：
 install.bot_not_configured	%s 的 relay 还没有配置；运行 %s
 install.bot_no_plist	%s 的 relay 登录服务不存在；运行 %s

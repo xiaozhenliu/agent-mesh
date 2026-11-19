@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -8,9 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from render_prompt import CLOUD_FILES, ROOT, render_prompt
+from render_prompt import CLOUD_FILES, ROOT, STUB_VERSION, render_prompt
 
-from tests.helpers.prompts import FIRST_UPDATE_PREFIX, ROUTINE_V083
+from tests.helpers.stub_runner import full_command, stub_commands
 
 
 class Prompts(unittest.TestCase):
@@ -25,16 +26,34 @@ class Prompts(unittest.TestCase):
     def test_both_languages_preserve_recovery_and_permission_rules(self):
         for lang in ("en", "zh-CN"):
             with self.subTest(lang=lang):
-                text = render_prompt("routine", lang)
+                text = render_prompt("routine", lang, team_name="demo", full=True)
                 for token in ("complete", "handled", "claimed", "uncertain", "orphan: true",
                               "rn-cloud.sh working <id>", "rn-cloud.sh done <id>", "missing", "mismatch", "ack=resent", "no-copy", "limit",
                               "failed", "null", "skipped", "forward_failed", "RN-REFWD",
-                              "handed to the Mac", "<reason-approval", "ask_user",
-                              "/workspace/agent-mesh/box/rn-cloud.sh", "/workspace/agent-mesh/threads/"):
+                              "handed to the Mac", "<reason-approval", "ask_user", "rn-cloud.sh request <id>",
+                              "agent-mesh-request ORDINARY", "/workspace/agent-mesh/box/rn-cloud.sh",
+                              "/workspace/agent-mesh/threads/"):
                     self.assertIn(token, text)
                 self.assertNotIn("```", text)
-        self.assertIn("preferred language", render_prompt("routine"))
-        self.assertIn("偏好的语言", render_prompt("routine", "zh-CN"))
+                self.assertEqual([line[:4] for line in text.split("\n") if re.match(r"[RF][0-9]\. ", line)],
+                                 ["R1. ", "R2. ", "R3. ", "R4. ", "R5. ", "R6. ", "R7. ", "F1. ", "F2. ", "F3. "])
+        self.assertIn("preferred language", render_prompt("routine", team_name="demo", full=True))
+        self.assertIn("偏好的语言", render_prompt("routine", "zh-CN", team_name="demo", full=True))
+
+    def test_the_stub_is_one_fixed_text_for_every_language_and_bot_name(self):
+        stub = render_prompt("routine")
+        self.assertTrue(stub.startswith("agent-mesh routine stub v1. "))
+        for lang in ("en", "zh-CN"):
+            for name in (None, "bot", "alice"):
+                self.assertEqual(render_prompt("routine", lang, relay_name=name), stub, (lang, name))
+        step1, step3, version = stub_commands(stub)
+        self.assertEqual((step1, version), ("bash /workspace/agent-mesh/box/rn-cloud.sh instructions 1", 1))
+        self.assertIn("--stdin 1 \"$d\" \"$i\"", step3)
+        for token in ("agent-mesh-instructions OK 1", "agent-mesh-bootstrap RELOAD", "agent-mesh-bootstrap SKIP"):
+            self.assertIn(token, stub)
+        self.assertNotIn("```", stub)
+        self.assertIsNone(re.search(r"<[a-z]+(?:-[a-z]+)+>", stub))
+        self.assertEqual(STUB_VERSION, version)
 
     def test_cloud_values_are_literal_and_repository_is_shell_quoted(self):
         repo = "https://example.invalid/team/a b.git?x=1&y=2|<team-name>"
@@ -48,7 +67,7 @@ class Prompts(unittest.TestCase):
             self.assertNotIn("<repo-url>", text)
 
     def test_release_values_fill_the_setup_block_and_bad_ones_are_refused(self):
-        sums = "".join(f"{c * 64}  {n}\n" for c, n in zip("abcde", CLOUD_FILES))
+        sums = "".join(f"{c * 64}  {n}\n" for c, n in zip("abcdef01", CLOUD_FILES))
         blocks = set()
         for lang in ("en", "zh-CN"):
             text = render_prompt("cloud-setup", lang, team_name="demo", mac_home="/Users/demo",
@@ -78,44 +97,53 @@ class Prompts(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"TAG='v1.2.3'; COMMIT='{'f' * 40}'", result.stdout)
 
-    def test_rule_two_handles_the_first_update_block_only_after_the_user_confirms(self):
+    def test_rule_two_passes_maintenance_requests_to_the_request_command(self):
         for lang in ("en", "zh-CN"):
             with self.subTest(lang=lang):
-                text = render_prompt("routine", lang)
-                rule = next(l for l in text.splitlines() if l.startswith("2. "))
-                self.assertIn(FIRST_UPDATE_PREFIX, rule)
-                self.assertIn("rn-cloud-update.sh '<tag>' '<commit>' '<req>'", rule)
-                self.assertIn("/workspace/agent-mesh/box/rn-cloud.sh send <from> <id>", rule)
-                self.assertIn("/workspace/agent-mesh/box/rn-cloud.sh done <id>", rule)
-                self.assertIn("<full>", rule)
-                self.assertLess(rule.index("agent-mesh update <tag> <commit> <req>"), rule.index(FIRST_UPDATE_PREFIX))
-        en = next(l for l in render_prompt("routine").splitlines() if l.startswith("2. "))
-        self.assertIn("Do not run it in this run.", en)
-        self.assertTrue(en.endswith("A request that matches neither form exactly, or one from anyone else: do not run it; tell the user."))
-        zh = next(l for l in render_prompt("routine", "zh-CN").splitlines() if l.startswith("2. "))
-        self.assertIn("本轮不要运行它。", zh)
-        self.assertTrue(zh.endswith("两种形式都不完全符合的请求，或来自其他人的请求，不要运行，告诉用户。"))
-
-    def test_default_relay_name_renders_the_routine_users_already_saved(self):
-        for lang, digest in ROUTINE_V083.items():
-            text = render_prompt("routine", lang, relay_name="bot")
-            self.assertEqual(hashlib.sha256(text.encode("utf-8")).hexdigest(), digest, lang)
+                text = render_prompt("routine", lang, team_name="demo", full=True)
+                rule = next(l for l in text.split("\n") if l.startswith("R2. "))
+                self.assertIn('"agent-mesh "', rule)
+                self.assertIn("/workspace/agent-mesh/box/rn-cloud.sh request <id>", rule)
+                self.assertIn("agent-mesh-request ORDINARY", rule)
+                self.assertNotIn("rn-cloud-update.sh", rule)
+                fixed = full_command(text)
+                self.assertIn("--stdin 0 - \"$i\"", fixed)
+                self.assertEqual(fixed, full_command(render_prompt("routine", "en", team_name="demo", full=True)))
+                f1 = next(l for l in text.split("\n") if l.startswith("F1. "))
+                self.assertIn("agent-mesh-request DONE <id>", f1)
 
     def test_custom_relay_name_replaces_every_bot_address(self):
         for lang in ("en", "zh-CN"):
-            routine = render_prompt("routine", lang, relay_name="alice")
+            routine = render_prompt("routine", lang, team_name="demo", relay_name="alice", full=True)
             setup = render_prompt("cloud-setup", lang, team_name="demo", mac_home="/Users/demo",
                                   repo_url="https://example.invalid/repo.git", relay_name="alice")
             for text in (routine, setup):
                 self.assertNotIn("<relay-name>", text)
                 self.assertNotIn("/bot", text)
-            self.assertIn("<team-name>/alice-cloud", routine)
-            self.assertIn("<team-name>/alice-inbox", routine)
-            self.assertIn("<team-name>/alice ", routine)
+            self.assertIn("demo/alice-cloud", routine)
+            self.assertIn("demo/alice-inbox", routine)
+            self.assertIn("demo/alice ", routine)
             self.assertIn("'<invite-link>' demo alice", setup)
             self.assertIn("box/relay", setup)
-        self.assertIn("地址含 alice 就把 relay", render_prompt("routine", "zh-CN", relay_name="alice"))
-        self.assertIn("A alice address", render_prompt("routine", relay_name="alice"))
+        self.assertIn("地址含 alice 就把 relay", render_prompt("routine", "zh-CN", team_name="demo", relay_name="alice",
+                                                          full=True))
+        self.assertIn("A alice address", render_prompt("routine", team_name="demo", relay_name="alice", full=True))
+        self.assertIn("demo/bot-cloud", render_prompt("routine", team_name="demo", full=True))
+
+    def test_the_complete_prompt_needs_the_team_name(self):
+        for kwargs in ({}, {"relay_name": "alice"}, {"team_name": "Demo"}):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    render_prompt("routine", full=True, **kwargs)
+        for template in ("cloud-setup", "cloud-uninstall", "cloud-add-bot"):
+            with self.assertRaises(ValueError):
+                render_prompt(template, team_name="demo", full=True)
+        script = str(ROOT / "scripts/render_prompt.py")
+        result = subprocess.run([sys.executable, script, "routine", "--full", "--lang", "zh-CN", "--team-name", "demo"],
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout, render_prompt("routine", "zh-CN", team_name="demo", full=True))
+        result = subprocess.run([sys.executable, script, "routine", "--full"], capture_output=True, text=True)
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
 
     def test_invalid_relay_names_are_refused(self):
         for bad in ("Bot", "a;rm", "a--b", "terminal", "", "x" * 35, "a b"):
@@ -194,111 +222,143 @@ ADDED_ENV = ("RN_BIN={home}/.local/bin/reason-network\nPERSON={person}\nOUTBOUND
 
 
 class AddedBotPrompts(unittest.TestCase):
-    def test_every_command_branch_selects_the_added_bot_in_both_languages(self):
+    def test_added_stub_selects_the_bot_in_both_commands(self):
+        plain = render_prompt("routine")
         for lang in ("en", "zh-CN"):
             with self.subTest(lang=lang):
-                legacy = render_prompt("routine", lang)
                 text = render_prompt("routine", lang, **SELECTOR)
+                step1, step3, version = stub_commands(text)
+                self.assertEqual(step1, "RN_BOT=alice bash /workspace/agent-mesh/box/rn-cloud.sh instructions 1 "
+                                        "'demo' '0123456789abcdef'")
+                plain3 = stub_commands(plain)[1]
+                self.assertEqual(step3, "RN_BOT=alice " + plain3.replace("inbox/", "bots/alice/inbox/"))
+                self.assertEqual(step3.count("bots/alice/inbox/"), 3)
+                self.assertIsNone(re.search(r"(?<!alice/)inbox/", step3))
+                changed = [(x, y) for x, y in zip(plain.split("\n"), text.split("\n")) if x != y]
+                self.assertEqual(len(changed), 2)
+                self.assertEqual(len(plain.split("\n")), len(text.split("\n")))
+                self.assertNotIn("rn-cloud-add-bot", text)
+
+    def test_every_command_in_the_complete_prompt_selects_the_added_bot(self):
+        for lang in ("en", "zh-CN"):
+            with self.subTest(lang=lang):
+                legacy = render_prompt("routine", lang, team_name="demo", relay_name="alice", full=True)
+                text = render_prompt("routine", lang, full=True, **SELECTOR)
                 command = "RN_BOT=alice /workspace/agent-mesh/box/rn-cloud.sh"
-                for sub in ("fetch <id...>", "done <id>", "working <id>", "send <from> <id>", "who"):
+                for sub in ("fetch <id...>", "done <id>", "working <id>", "send <from> <id>", "who", "request <id>"):
                     self.assertEqual(text.count(f"{command} {sub}"), legacy.count(f"rn-cloud.sh {sub}"), sub)
                     self.assertGreater(text.count(f"{command} {sub}"), 0, sub)
                 self.assertEqual(text.count("rn-cloud.sh"), legacy.count("rn-cloud.sh"))
-                self.assertEqual(text.count("rn-cloud.sh"), text.count(f"{command}"))
-                bare = [line for line in legacy.splitlines() if " rn-cloud.sh send" in line]
-                self.assertEqual(len(bare), 1)
-                self.assertIn(f"{command} send <from> <id>", next(l for l in text.splitlines() if l.startswith("4. ")))
-                self.assertNotIn(" rn-cloud.sh send", text)
+                self.assertEqual(text.count("rn-cloud.sh"), text.count(command))
                 self.assertNotIn("/workspace/agent-mesh/threads/", text)
                 self.assertEqual(text.count("/workspace/agent-mesh/bots/alice/threads/"),
                                  legacy.count("/workspace/agent-mesh/threads/"))
-                self.assertEqual(text.count("rn-cloud-update.sh '<tag>' '<commit>' '<req>'"), 1)
-                self.assertNotIn("RN_BOT=alice bash", text)
-                self.assertNotIn("RN_BOT=alice /workspace/agent-mesh/box/rn-cloud-update.sh", text)
+                self.assertEqual(full_command(text),
+                                 "RN_BOT=alice " + full_command(legacy).replace("inbox/", "bots/alice/inbox/"))
 
-    def test_step_zero_is_inserted_once_before_step_one_with_the_values_filled(self):
+    def test_step_zero_is_inserted_once_before_rule_one_with_the_values_filled(self):
         for lang in ("en", "zh-CN"):
             with self.subTest(lang=lang):
-                text = render_prompt("routine", lang, **SELECTOR)
-                lines = text.splitlines()
+                text = render_prompt("routine", lang, full=True, **SELECTOR)
+                lines = text.split("\n")
                 zero = [i for i, line in enumerate(lines) if line.startswith("0. ")]
                 self.assertEqual(len(zero), 1)
-                self.assertTrue(lines[zero[0] + 1].startswith("   - "))
-                self.assertTrue(lines[zero[0] + 2].startswith("1. "))
+                self.assertTrue(lines[zero[0] + 1].startswith("R1. "))
                 self.assertEqual(text.count("bash /workspace/agent-mesh/box/rn-cloud-add-bot.sh 'alice' 'demo' "
                                             "'0123456789abcdef'"), 1)
                 self.assertEqual(text.count("/workspace/agent-mesh/bots/alice/.registered"), 1)
-                self.assertEqual(text.count("bash /workspace/agent-mesh/box/rn-cloud-add-bot.sh --check 'alice' "
-                                            "'<req>'"), 1)
-                self.assertIn("agent-mesh add-bot alice <req>", text)
                 self.assertIn("demo/alice-cloud", text)
                 self.assertIn("demo/alice-inbox", text)
-                for placeholder in ("<team-name>", "<relay-name>", "<team-hash>"):
+                for placeholder in ("<team-name>", "<relay-name>", "<team-hash>", "<rn-cloud>", "<threads-dir>"):
                     self.assertNotIn(placeholder, text)
                 block = render_prompt("cloud-add-bot", lang, team_name="demo", relay_name="alice",
                                       team_hash="0123456789abcdef")
-                self.assertIn(block.rstrip("\n") + "\n1. ", text)
-                self.assertEqual(text.replace(block, ""), text.replace(block, "", 1))
+                self.assertIn(block.rstrip("\n") + "\nR1. ", text)
+                self.assertEqual(text.count(block.rstrip("\n")), 1)
 
-    def test_legacy_routine_is_unchanged(self):
-        for lang, digest in ROUTINE_V083.items():
-            text = render_prompt("routine", lang, relay_name="bot")
-            self.assertEqual(hashlib.sha256(text.encode("utf-8")).hexdigest(), digest, lang)
-            self.assertNotIn("RN_BOT", text)
-            self.assertNotIn("0. ", text)
-            self.assertNotIn("rn-cloud-add-bot", text)
+    def test_first_bot_prompts_have_no_selector(self):
+        for lang in ("en", "zh-CN"):
+            for text in (render_prompt("routine", lang, relay_name="bot"),
+                         render_prompt("routine", lang, team_name="demo", relay_name="bot", full=True)):
+                self.assertNotIn("RN_BOT", text)
+                self.assertFalse(any(line.startswith("0. ") for line in text.split("\n")))
+                self.assertNotIn("rn-cloud-add-bot", text)
+                self.assertNotIn("/bots/", text)
 
     def test_missing_or_invalid_values_are_refused(self):
         bad = ({"team_name": None}, {"team_hash": None}, {"team_name": "Demo"}, {"team_name": "a b"},
                {"team_hash": "0123456789ABCDEF"}, {"team_hash": "0123"}, {"team_hash": "0" * 17},
                {"bot_selector": "Alice"}, {"bot_selector": ""}, {"bot_selector": "terminal"},
                {"relay_name": "bob"})
-        for change in bad:
-            with self.subTest(change=change):
-                with self.assertRaises(ValueError):
-                    render_prompt("routine", "en", **dict(SELECTOR, **change))
+        for full in (False, True):
+            for change in bad:
+                with self.subTest(change=change, full=full):
+                    with self.assertRaises(ValueError):
+                        render_prompt("routine", "en", full=full, **dict(SELECTOR, **change))
+            self.assertEqual(render_prompt("routine", "en", relay_name="alice", full=full, **SELECTOR),
+                             render_prompt("routine", "en", full=full, **SELECTOR))
         for template in ("cloud-setup", "cloud-uninstall", "cloud-add-bot"):
             with self.assertRaises(ValueError):
                 render_prompt(template, bot_selector="alice", team_name="demo", team_hash="0" * 16)
         with self.assertRaises(ValueError):
             render_prompt("routine", team_hash="0" * 16)
-        self.assertEqual(render_prompt("routine", "en", relay_name="alice", **SELECTOR),
-                         render_prompt("routine", "en", **SELECTOR))
+
+    def escape(self, which, old, new, **kwargs):
+        import render_prompt as module
+        routine = module.routine_module()
+        originals = (module.prompt_block, routine.template)
+        source = originals[1](ROOT, "en") if which == "routine-body" else originals[0](which, "en")
+        self.assertIn(old, source)
+
+        def block(template, language):
+            text = originals[0](template, language)
+            return text.replace(old, new, 1) if template == which else text
+
+        def body(root, lang, name="routine-body"):
+            text = originals[1](root, lang, name)
+            return text.replace(old, new, 1) if name == which else text
+
+        render_prompt("routine", "en", **kwargs)
+        module.prompt_block, routine.template = block, body
+        try:
+            with self.assertRaises(ValueError):
+                render_prompt("routine", "en", **kwargs)
+        finally:
+            module.prompt_block, routine.template = originals
 
     def test_rendering_stops_when_a_template_change_escapes_the_selector(self):
-        import render_prompt as module
-        original = module.prompt_block
-
-        def changed(which, old, new):
-            def block(template, language):
-                text = original(template, language)
-                return text.replace(old, new, 1) if template == which else text
-            return block
-
-        who = "/workspace/agent-mesh/box/rn-cloud.sh who"
-        for which, old, new in (("routine", who, "~/agent-mesh/box/rn-cloud.sh who"),
-                                ("routine", who, "cd /workspace/agent-mesh/box && ./rn-cloud.sh who"),
-                                ("routine", who, who + "\n0. extra"),
-                                ("routine", "1. ", "1. <team-hash> "),
-                                ("routine", "1. ", "1) "),
+        step1 = "/workspace/agent-mesh/box/rn-cloud.sh instructions 1\n"
+        for old, new in ((step1, step1.replace("1\n", "1 x\n")),
+                         ("1. Load", "1. Load\n   bash " + step1.rstrip("\n")),
+                         ("inbox/*/claimed", "*/claimed")):
+            with self.subTest(which="routine", new=new[:40]):
+                self.escape("routine", old, new, **SELECTOR)
+        full = dict(SELECTOR, full=True)
+        for which, old, new in (("routine-body", "<rn-cloud> who", "/workspace/agent-mesh/box/rn-cloud.sh who"),
+                                ("routine-body", "<threads-dir>/", "/workspace/agent-mesh/threads/"),
+                                ("routine-body", "R5. ", "R5. <team-hash> "),
+                                ("routine-body", "R5. ", "R1. "),
+                                ("routine-body", "R5. ", "0. "),
+                                ("routine-full", '[ -f "inbox/$i/full.txt" ] && ', ""),
+                                ("routine-full", "<rn-cloud> request", "/workspace/agent-mesh/box/rn-cloud.sh request"),
+                                ("routine-full", "F1. ", "F1. <mac-home> "),
                                 ("cloud-add-bot", "first run", "read /workspace/agent-mesh/threads/x and first run"),
                                 ("cloud-add-bot", "first run", "run rn-cloud.sh who, then first run"),
                                 ("cloud-add-bot", "'<team-hash>'", "'<team-name>'"),
-                                ("cloud-add-bot", "--check '<relay-name>'", "--check '<name>'")):
+                                ("cloud-add-bot", "0. ", "0. x\n0. ")):
             with self.subTest(which=which, new=new[:40]):
-                module.prompt_block = changed(which, old, new)
-                try:
-                    with self.assertRaises(ValueError):
-                        render_prompt("routine", "en", **SELECTOR)
-                finally:
-                    module.prompt_block = original
+                self.escape(which, old, new, **full)
+        self.escape("routine-body", "R5. ", "R5. <mac-home> ", team_name="demo", full=True)
 
     def test_cli_renders_the_selector_variant(self):
         script = str(ROOT / "scripts/render_prompt.py")
-        result = subprocess.run([sys.executable, script, "routine", "--lang", "zh-CN", "--bot-selector", "alice",
-                                 "--team-name", "demo", "--team-hash", "0123456789abcdef"],
+        args = ["--bot-selector", "alice", "--team-name", "demo", "--team-hash", "0123456789abcdef"]
+        result = subprocess.run([sys.executable, script, "routine", "--lang", "zh-CN", *args],
                                 capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout, render_prompt("routine", "zh-CN", **SELECTOR))
+        result = subprocess.run([sys.executable, script, "routine", "--full", *args],
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout, render_prompt("routine", "en", full=True, **SELECTOR))
         result = subprocess.run([sys.executable, script, "routine", "--bot-selector", "alice", "--team-name", "demo"],
                                 capture_output=True, text=True)
         self.assertEqual((result.returncode, result.stdout), (1, ""))
@@ -384,6 +444,7 @@ class DeployStatePrompt(unittest.TestCase):
         self.env(self.home / ".config/agent-relay", "bot")
         self.env(self.home / ".config/agent-relay-bots/alice", "alice")
         self.record({"alice": {"team_hash": "0123456789abcdef", "stage": "configured", "added_ms": 1}})
+        digests = set()
         for lang in ("en", "zh-CN"):
             with self.subTest(lang=lang):
                 added = self.state("show-prompt", "--lang", lang, "--relay-name", "alice")
@@ -391,11 +452,23 @@ class DeployStatePrompt(unittest.TestCase):
                 self.assertEqual(added.stdout, render_prompt("routine", lang, **SELECTOR))
                 digest = self.state("digest", "prompt", "--lang", lang, "--relay-name", "alice")
                 self.assertEqual(digest.returncode, 0, digest.stderr)
-                self.assertEqual(digest.stdout.strip(), hashlib.sha256(added.stdout.encode()).hexdigest())
+                self.assertEqual(digest.stdout.strip(),
+                                 hashlib.sha256(f"{added.stdout}\0lang={lang}".encode()).hexdigest())
+                digests.add(digest.stdout)
+                full = self.state("--prompt-mode", "full", "show-prompt", "--lang", lang, "--relay-name", "alice")
+                self.assertEqual(full.returncode, 0, full.stderr)
+                self.assertEqual(full.stdout, render_prompt("routine", lang, full=True, **SELECTOR))
+                digest = self.state("--prompt-mode", "full", "digest", "prompt", "--lang", lang, "--relay-name", "alice")
+                self.assertEqual(digest.stdout.strip(), hashlib.sha256(full.stdout.encode()).hexdigest())
                 for args in ((), ("--relay-name", "bot")):
                     legacy = self.state("show-prompt", "--lang", lang, *args)
                     self.assertEqual(legacy.returncode, 0, legacy.stderr)
-                    self.assertEqual(legacy.stdout, render_prompt("routine", lang, relay_name="bot"))
+                    self.assertEqual(legacy.stdout, render_prompt("routine", lang))
+                    legacy = self.state("--prompt-mode", "full", "show-prompt", "--lang", lang, *args)
+                    self.assertEqual(legacy.returncode, 0, legacy.stderr)
+                    self.assertEqual(legacy.stdout, render_prompt("routine", lang, team_name="demo", relay_name="bot",
+                                                                  full=True))
+        self.assertEqual(len(digests), 2)
 
     def test_added_bot_without_team_hash_or_team_name_is_an_error(self):
         self.env(self.home / ".config/agent-relay", "bot")
@@ -414,4 +487,10 @@ class DeployStatePrompt(unittest.TestCase):
         self.env(self.home / ".config/agent-relay-bots/alice", "alice", person="")
         result = self.state("show-prompt", "--relay-name", "alice")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PERSON", result.stderr)
+        self.env(self.home / ".config/agent-relay", "bot", person="")
+        self.assertEqual(self.state("show-prompt").stdout, render_prompt("routine"))
+        result = self.state("--prompt-mode", "full", "show-prompt")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
         self.assertIn("PERSON", result.stderr)

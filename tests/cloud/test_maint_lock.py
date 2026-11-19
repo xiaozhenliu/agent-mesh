@@ -243,6 +243,10 @@ class UpdateChain(unittest.TestCase):
         text = (HERE / "rn-cloud-update.sh").read_text()
         self.assertEqual(text.count(ENGINE_STEP), 1)
         (box / "rn-cloud-update.sh").write_text(text.replace(ENGINE_STEP, PROBE))
+        (box / "rn-routine.py").write_bytes((HERE / "rn-routine.py").read_bytes())
+        (self.src / "prompts").mkdir()
+        for name in ("routine-body.md", "routine-body.zh-CN.md"):
+            (self.src / "prompts" / name).write_bytes((HERE.parent / "prompts" / name).read_bytes())
         (self.src / "VERSION").write_text("0.0.2\n")
         if gitignore:
             (self.src / ".gitignore").write_bytes((HERE.parent / ".gitignore").read_bytes())

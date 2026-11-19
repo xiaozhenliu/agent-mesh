@@ -14,6 +14,7 @@ check.path_bad	PATH 不含 ~/.local/bin
 check.path_fix	在 shell 启动文件里把 ~/.local/bin 加入 PATH；见 README.zh-CN.md「准备」
 check.relay_hint	允许直连整个 iroh.link 和 reasonmachines.com 域名（不做 HTTPS 解密）；见 README.zh-CN.md「常见问题」
 check.relay_ok	relay 可以连接：%s
+check.relay_ok_again	relay 可以连接：%s（第二次探测通过：%s）
 check.relay_bad	relay 无法连接（%s）：%s
 check.relay_unknown	无法确定 relay 是否可以连接
 check.relay_unknown_why	%s；%s
@@ -136,3 +137,5 @@ check.relay_python_ok	relay 的 Python：%s
 check.relay_python_odd	relay 的 Python：%s（位于虚拟环境或临时目录中；要更换请运行 ./install.sh --python <path>）
 check.relay_python_missing	relay 使用的 Python %s 不存在或已不能用
 check.relay_python_fix	./update.sh 会另选一个并重启 relay；也可以自己指定：./install.sh --python <path>
+check.prompt_recover	routine 里可能已经贴了桩，但它需要的云端更新没有得到证实：Grok Bot 可能没有在处理消息
+check.prompt_recover_fix	./update.sh（先查找云端的回信，没有就显示完整提示词请你贴回去）

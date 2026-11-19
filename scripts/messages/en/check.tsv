@@ -14,6 +14,7 @@ check.path_bad	PATH lacks ~/.local/bin
 check.path_fix	add ~/.local/bin to PATH using your shell's startup file; see README prerequisites
 check.relay_hint	allow direct connections (no HTTPS decryption) to the whole iroh.link and reasonmachines.com domains; see README.md: Troubleshooting (Chinese: README.zh-CN.md)
 check.relay_ok	relay reachable: %s
+check.relay_ok_again	relay reachable: %s (the second probe passed:%s)
 check.relay_bad	relay not reachable (%s):%s
 check.relay_unknown	relay reachability unknown
 check.relay_unknown_why	%s; %s
@@ -136,3 +137,5 @@ check.relay_python_ok	relay Python: %s
 check.relay_python_odd	relay Python: %s (in a virtual environment or a temporary directory; to move the relay: ./install.sh --python <path>)
 check.relay_python_missing	the relay's Python %s is missing or no longer works
 check.relay_python_fix	./update.sh picks another one and restarts the relay; or choose it yourself: ./install.sh --python <path>
+check.prompt_recover	the routine stub may be in the routine, but the cloud update it needs was not confirmed: Grok Bot may not be processing messages
+check.prompt_recover_fix	./update.sh (it looks for the cloud reply first, otherwise shows a complete prompt to paste back)

@@ -34,12 +34,21 @@
 #                                         # delete the other Bots' mail too).
 #   rn-cloud.sh register-bot             # internal, run by rn-cloud-add-bot.sh: register <name>-cloud and
 #                                         # <name>-inbox of the Bot in RN_BOT (needs bots/<name>/.claim)
+#   rn-cloud.sh instructions <n> [<team-name> <team-hash>]
+#                                         # step 1 of the routine prompt (stub version <n>): print the rules
+#                                         # rendered by rn-routine.py, ending with "agent-mesh-instructions OK <n>"
+#                                         # only when they are complete. An added Bot's stub passes its team name
+#                                         # and team hash; an unregistered added Bot is registered first
+#   rn-cloud.sh request <id>             # run the user's own maintenance request in message <id> once, reply and
+#                                         # record it as handled (rn-routine.py checks the sender and the request);
+#                                         # any other message: "agent-mesh-request ORDINARY"
 # Environment (optional): RN_CLAIM_LEASE  seconds a claim/working/replying mark holds an id (default 3600)
 #   RN_ORPHANS=0      no orphan scan          RN_ORPHAN_DAYS     orphan scan window in days (default 7)
 #   RN_DONE_LOCK_WAIT seconds working/done/send wait for the inbox lock (default 300)
 #   RN_GOT=0          no receipts (RN-GOT) and no "caps: got1" in RN-REFWD; also set GOT_TIMEOUT_SECONDS=0 on the relay
 #   FETCH_TIMEOUT, FETCH_TIMEOUT_OFFLINE (15 s), REFWD_TIMEOUT, REFWD (see fetch)
-# Bots: RN_BOT=<name> selects a Bot added with rn-cloud-add-bot.sh (bots/<name>/.registered must exist); its mail
+# Bots: RN_BOT=<name> selects a Bot added with rn-cloud-add-bot.sh (bots/<name>/.registered must exist, except for
+# instructions, which registers it); its mail
 # and thread notes live in /workspace/agent-mesh/bots/<name>/inbox and threads. RN_BOT cannot be combined with
 # AGENT_RELAY_NAME, RN_CLOUD_NAME, RN_INBOX_NAME, RN_INBOX_DIR or RN_THREADS_DIR, and a Bot removed from this cloud
 # (box/bots-removed/<name>) is refused; nothing falls back to the first Bot. Without RN_BOT, those overrides work as
@@ -65,7 +74,11 @@ export REASON_NETWORK_HOME="$BASE/state"
 export REASON_NETWORK_NO_UPDATE=1
 export REASON_NETWORK_NO_PROMPT=1
 export REASON_NETWORK_MACHINE="${MACHINE_NAME:-cloud}"   # same machine name as rn-cloud-setup.sh used to join
-case "${1:-}" in who|init-inbox|fetch|send|working|done|purge|register-bot) ;; *) sed -n '2,/^# Names:/p' "$0" | sed '$d'; exit 2 ;; esac
+case "${1:-}" in
+  who|init-inbox|fetch|send|working|done|purge|register-bot) ;;
+  instructions|request) exec python3 -I "$BASE/rn-routine.py" "$@" ;;
+  *) sed -n '2,/^# Names:/p' "$0" | sed '$d'; exit 2 ;;
+esac
 if [ -z "${RN_MAINT_FD:-}" ]; then
   exec python3 -I "$BASE/rn-engine.py" hold --shared --wait "${RN_MAINT_WAIT:-600}" "$ROOT/.maint.lock" -- "$BASH" "$0" "$@"
 fi
