@@ -80,7 +80,7 @@
 
 这台 Mac 上有多个 Grok Bot 时（见[多个 Grok Bot](README.zh-CN.md#多个-grok-bot)），一次 `./update.sh` 覆盖所有 Bot；只有一个 Bot 的 Mac 看到的输出和以前一样。
 
-- **计划。** 结果行是所有 Bot 合起来的结果，后面按顺序每个 Bot 一行，写出它的 relay 和提示词状态。还在等云端登记的 Bot 会附上 `./install.sh --relay-name <name> --wake-bot`，用它唤醒。
+- **计划。** 结果行是所有 Bot 合起来的结果，后面按顺序每个 Bot 一行，写出它的 relay 和提示词状态。还在等云端登记的 Bot 会附上 `./install.sh --relay-name <name> --wake-bot`，用它叫醒。
 - **未完成的添加。** 显示计划之前，`./update.sh` 为每个云端登记仍未确认的添加 Bot（例如 `./install.sh --add-bot` 停止等待之后）查找回信，已经到达的就记录下来。
 - **Routine 提示词。** 每个 Bot 有自己的 routine 提示词。变化了的提示词逐个显示，并写明属于哪个 Bot；把它粘贴进那个 Bot 的 routine 并确认。每个 Bot 的桩随后经它自己的读回确认。云端登记还没确认的 Bot 会跳过。中途停下时，已确认的提示词保持记录，下次只问其余的。切换语言不用重贴，由每个 Bot 的读回带过去。
 - **引擎和 relay。** 一次引擎步骤覆盖每个已安装 Bot 的 relay：一起停止，引擎只切换或重启一次，再一起启动（见 [Reason Network 引擎](#reason-network-引擎)）。失败时每个 relay 都回到之前的状态。
@@ -113,7 +113,7 @@ agent-mesh 0.7.0 把固定的引擎从 Reason Network 0.10.7 换成 0.12.17（0.
 
 云端引擎放在 `box/bin/engine/reason-network`；`box/bin/reason-network` 是手动运行命令用的启动器，没有 `REASON_NETWORK_HOME` 时拒绝运行，并始终关闭自动更新。这一步把仍在 `box/bin/reason-network` 的引擎（v0.8.0 及更早）移到 `box/bin/engine`，并写入启动器。现有引擎是否可信只看字节、不运行它：不属于 `box/rn-engine.py` 固定构建的二进制（例如被自动更新替换过的，或早先固定的 0.10.7，它没有固定构建值）不运行就直接换成固定版本，原二进制留在备份里，永不放回。固定版本已经放好之后才失败时，打印只使用新二进制的手动步骤；固定版本没能放好时，启动引擎的文件都不改动，这一步提示排除原因后重新运行。Grok Bot 的回复必须包含 `engine: reason-network 0.12.17 running (daemon pid …)`、属于固定构建的 `engine: pinned build <sha256> at box/bin/engine/reason-network` 和 `engine: launcher ok` 三行；`./update.sh` 自动比对，一致才记录云端引擎已确认。`engine: note: other engine daemons run from box/bin` 一行列出此前从旧路径启动的守护进程；它们已无法替换引擎，这一步也不会停止它们（[故障排除](README.zh-CN.md#常见问题)）。云端引擎是比 0.12.17 新的固定构建时保持不动，这一步失败。
 
-一边是 0.10.7、另一边是 0.12.17 时（哪边先升级都一样），收发、回执和重投都正常：agent-mesh 0.6.0 起能读懂两个引擎的输出。能在同一次运行里升级 Mac 和云端最好。升级之后适用 Reason Network 0.12 的规则：默认中继在 `compute.reasonmachines.com` 下（[网络](README.zh-CN.md#网络)），离线超过一天的普通会话会连同未读信一起被遗忘（[网络与用量](README.zh-CN.md#网络与用量)）。
+一边是 0.10.7、另一边是 0.12.17 时（哪边先升级都一样），收发、回执和补寄都正常：agent-mesh 0.6.0 起能读懂两个引擎的输出。能在同一次运行里升级 Mac 和云端最好。升级之后适用 Reason Network 0.12 的规则：默认中继在 `compute.reasonmachines.com` 下（[网络](README.zh-CN.md#网络)），离线超过一天的普通会话会连同未读信一起被遗忘（[网络与用量](README.zh-CN.md#网络与用量)）。
 
 **引擎设置。**agent-mesh 在 `~/.reason/network/config.toml` 里关闭引擎的 `auto_update` 和 `lan`。引擎只读取这个文件第一个 `[table]` 行之前的这两个键。第一次安装在 v0.8.0 及更早的 Mac 上，这两行可能落在某个表里，起不到关闭的作用，所以自动更新和局域网发现一直开着，而 `./check.sh` 报告已关闭。从 v0.9.1 起，`./check.sh` 和 `./update.sh` 检查整个文件：这两个键要在第一个表之前关闭，任何表里都不能再出现它们。不符合时，计划里显示 `安全加固：修正引擎设置并重启引擎`，并问那唯一的一次（`--yes` 代为回答）。这一步和重启守护进程一样进行：写入升级记录，删掉早期版本追加在表里的 `auto_update = false` 和 `lan = false` 两行，把这两行放到文件开头，重启守护进程，重新启动每个 relay 并核对它们的注册。本次运行同时要升级引擎时，设置在切换之前修正。
 

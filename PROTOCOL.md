@@ -38,7 +38,7 @@ Several Grok Bots on one Mac share the team, the Reason Network engine on both c
 | Login service | `com.local.agent-relay` | `com.local.agent-relay.<name>` |
 | Relay state | `~/Library/Application Support/agent-relay/` | `~/Library/Application Support/agent-relay-bots/<name>/` |
 | Relay log | `~/Library/Logs/agent-relay.log` | `~/Library/Logs/agent-relay-<name>.log` |
-| Mail and thread notes on `[BOT-CLOUD]` | `/workspace/agent-mesh/inbox/`, `threads/`; relay name in `box/relay` | `/workspace/agent-mesh/bots/<name>/inbox/`, `threads/` |
+| Mail and thread notes on `[BOT-CLOUD]` | `/workspace/agent-mesh/inbox/`, `threads/`; Bot address name in `box/relay` | `/workspace/agent-mesh/bots/<name>/inbox/`, `threads/` |
 
 **Selector.** An added Bot's routine stub and the rules it loads run every `rn-cloud.sh` command as `RN_BOT=<name> /workspace/agent-mesh/box/rn-cloud.sh …`. The command then uses `<name>-cloud`, `<name>-inbox` and the paths under `bots/<name>/`, and needs `bots/<name>/.registered`. `RN_BOT` cannot be combined with `AGENT_RELAY_NAME`, `RN_CLOUD_NAME`, `RN_INBOX_NAME`, `RN_INBOX_DIR` or `RN_THREADS_DIR`, and nothing falls back to the first Bot. Without `RN_BOT` the first Bot is used as before.
 
@@ -175,7 +175,7 @@ Test vector:
 
 ### RN-REFWD v1
 
-`bot-cloud` requests redelivery from `bot`; no body:
+`bot-cloud` sends `bot` a re-forward request; no body:
 
 ```text
 RN-REFWD v1

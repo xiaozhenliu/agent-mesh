@@ -2,7 +2,7 @@
 
 [English](AGENT-INSTALL.md) | **简体中文**
 
-你是在用户 Mac 上运行的 coding agent（如 Claude Code、Codex）。用户希望把本地会话和云端 Grok Bot 接入同一个 Reason Network 私有团队，实现双向唤醒。按本手册执行；原理和参考见[中文指南](README.zh-CN.md)或[英文指南](README.md)。
+你是在用户 Mac 上运行的 coding agent（如 Claude Code、Codex）。用户希望把本地会话和云端 Grok Bot 接入同一个 Reason Network 私有团队，实现双向叫醒。按本手册执行；原理和参考见[中文指南](README.zh-CN.md)或[英文指南](README.md)。
 
 使用用户的语言交流，简短汇报。从公开发行版根目录运行命令。按用户偏好选择 `--lang en` 或 `--lang zh-CN`，每次调用安装器都传入；下例使用中文。语言参数控制生成的提示词，终端诊断仍为英文。
 
@@ -41,15 +41,15 @@
 ## 第 3 阶段：会话与连通验证
 
 1. **`[LOCAL]` 用户：**关闭并重新打开第 1 阶段之前启动的 Claude Code、Codex 会话。Codex 会询问一次，选 Trust all and continue。
-2. **`[LOCAL]` 安装 agent：**运行 `reason-network send <team-name>/<relay-name> "test 1"`。这里的 `<relay-name>` 是 Mac 上的 relay 地址（安装器以 `Bot address:` 打印；v0.8.0 以前的安装通常是 `bot`）。预期 30 秒内本地 `~/Library/Logs/agent-relay.log` 新增 `forwarded` 和 `POST … code=200`。Grok Bot 醒来，在 `[BOT-CLOUD]` 取正文并回复；回复可以进入用户本地会话，也可由 `[LOCAL]` 的 `reason-network listen --as terminal --wait 120` 收取。
-3. **`[GROK-UI]` 用户 → `[BOT-CLOUD]` Grok Bot：**请 Bot 在它的云电脑运行 `/workspace/agent-mesh/box/rn-cloud.sh who` 并给具体的 `[LOCAL]` 会话（如 `<team-name>/<folder>-claude`）发一句话。预期本地空闲会话也收到；本地会话回复后 Grok Bot 再次被唤醒。
+2. **`[LOCAL]` 安装 agent：**运行 `reason-network send <team-name>/<relay-name> "test 1"`。这里的 `<relay-name>` 是 Bot 地址名（安装器把 Bot 地址以 `Bot address:` 打印；v0.8.0 以前的安装通常是 `bot`）。预期 30 秒内本地 `~/Library/Logs/agent-relay.log` 新增 `forwarded` 和 `POST … code=200`。Grok Bot 醒来，在 `[BOT-CLOUD]` 取正文并回复；回复可以进入用户本地会话，也可由 `[LOCAL]` 的 `reason-network listen --as terminal --wait 120` 收取。
+3. **`[GROK-UI]` 用户 → `[BOT-CLOUD]` Grok Bot：**请 Bot 在它的云电脑运行 `/workspace/agent-mesh/box/rn-cloud.sh who` 并给具体的 `[LOCAL]` 会话（如 `<team-name>/<folder>-claude`）发一句话。预期本地空闲会话也收到；本地会话回复后 Grok Bot 再次被叫醒。
 4. 按实际观察汇报两项结果，未观察到的测试不宣称成功。
 
 ## 可选
 
 以下操作都在 `[LOCAL]` 用户本地电脑执行，修改的也是本地 App 或仓库文件。
 
-- dsh 自动唤醒：`dsh/mac-install.sh <team-name>`，然后用户完全退出并重开 App。见[插件指南](dsh/README.zh-CN.md)。
+- dsh 自动叫醒：`dsh/mac-install.sh <team-name>`，然后用户完全退出并重开 App。见[插件指南](dsh/README.zh-CN.md)。
 - 回复约定：把填好的副本 `~/.local/lib/agent-mesh/templates/AGENTS.reason-network.zh-CN.md`（或 `AGENTS.reason-network.md`）追加到用户常用仓库的 `AGENTS.md`，副本里写明本团队的 Bot 地址和 Bot 在 Grok 里的名字；Claude Code 还需在该仓库 `CLAUDE.md` 加上 `@AGENTS.md`。没有安装时用[中文模板](templates/AGENTS.reason-network.zh-CN.md)或[英文模板](templates/AGENTS.reason-network.md)，自己填地址。
 - Grok 名字：已有安装用 `./install.sh --grok-name '<grok-name>'` 记录或修改，地址不变。之后对每个放了回复约定副本的仓库运行 `python3 scripts/reply_convention.py refresh <仓库>/AGENTS.md`，它只替换 `agent-mesh:bot-address` 标记之间的行。
 

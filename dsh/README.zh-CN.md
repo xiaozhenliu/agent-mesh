@@ -6,7 +6,7 @@
 
 这个插件让 DeepSeek Harness（dsh）的会话像 Claude Code、Codex、pi 一样，能即时收到 Reason Network 的消息。它是一个 dsh 主机插件，没有任何包依赖，需要的 dsh 模块在运行时直接从 App 安装包里解析。
 
-为什么需要它：Reason Network 自带的 `setup` 只给 dsh 接了一个 MCP，所有会话共用同一个地址，而且消息只有会话自己去查收件箱才看得到。这个插件补上了两样东西：每个会话一个独立地址，以及自动唤醒。
+为什么需要它：Reason Network 自带的 `setup` 只给 dsh 接了一个 MCP，所有会话共用同一个地址，而且消息只有会话自己去查收件箱才看得到。这个插件补上了两样东西：每个会话一个独立地址，以及自动叫醒。
 
 插件、会话和 Reason Network 之间的关系：
 

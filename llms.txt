@@ -6,7 +6,7 @@ agent-mesh version: 0.10.0 (VERSION). ./install.sh --version prints it offline. 
 
 If you are an agent asked to install this: read AGENT-INSTALL.md (English) or AGENT-INSTALL.zh-CN.md (Simplified Chinese) and follow it stage by stage. Speak the user's language. Pass --lang en or --lang zh-CN on every installer invocation to select prompts; diagnostics and protocol fields stay English. Never read env or key files.
 
-Execution location labels: [LOCAL] = the user's local computer (Mac), where the installing agent, engine and relay run; [BOT-CLOUD] = Grok Bot's cloud computer (machine name cloud), where the Bot runs /workspace/agent-mesh/box/rn-cloud*.sh; [GROK-UI] = the Grok Bot interface, where the user creates routines and approves CopyToBox. install.sh, check.sh, update.sh and uninstall.sh run on [LOCAL]. Each computer has its own clone and state. CopyToBox copies the signing key from [LOCAL] to [BOT-CLOUD]; never print its contents. The <team-name>/<relay-name> address (the Bot address name, normally the Bot's own name, chosen once with install.sh --relay-name and never changed; a new installation has no default, older ones often use bot) is the relay on [LOCAL], not a cloud process. install.sh --grok-name stores the Bot's name as Grok shows it; check.sh shows <team-name>/<relay-name> → Grok: <name>. Several Grok Bots can share one Mac, team and cloud computer: ./install.sh --add-bot --grok-name <name> [--relay-name <address>] adds one (in the user's own terminal, never with --yes); each Bot has its own relay, webhook, routine and address, and per-Bot options take --relay-name <address>.
+Execution location labels: [LOCAL] = the user's local computer (Mac), where the installing agent, engine and relay run; [BOT-CLOUD] = the Bot's cloud computer (machine name cloud), where the Bot runs /workspace/agent-mesh/box/rn-cloud*.sh; [GROK-UI] = the Grok Bot interface, where the user creates routines and approves CopyToBox. install.sh, check.sh, update.sh and uninstall.sh run on [LOCAL]. Each computer has its own clone and state. CopyToBox copies the signing key from [LOCAL] to [BOT-CLOUD]; never print its contents. The <team-name>/<relay-name> address (the Bot address name, normally the Bot's own name, chosen once with install.sh --relay-name and never changed; a new installation has no default, older ones often use bot) is the relay on [LOCAL], not a cloud process. install.sh --grok-name stores the Bot's name as Grok shows it; check.sh shows <team-name>/<relay-name> → Grok: <name>. Several Grok Bots can share one Mac, team and cloud computer: ./install.sh --add-bot --grok-name <name> [--relay-name <address>] adds one (in the user's own terminal, never with --yes); each Bot has its own relay, webhook, routine and address, and per-Bot options take --relay-name <address>.
 
 ## Install (for agents)
 
@@ -18,7 +18,7 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 - [check.sh](check.sh): read-only self-check, including that the team holds only this machine and cloud.
 - [update.sh](update.sh): updates an existing installation. Compares the relay, dsh plugin, cloud scripts and routine prompt with what is deployed; updates local parts itself and guides the user through cloud and prompt steps in a terminal. ./update.sh --plan changes nothing; exit 3 means a terminal answer is needed.
 - [prompts/routine.md](prompts/routine.md): the Grok Bot routine prompt (install.sh prints it).
-- [prompts/cloud-setup.md](prompts/cloud-setup.md): what the user sends to Grok Bot so it joins from its cloud machine (install.sh prints it filled in).
+- [prompts/cloud-setup.md](prompts/cloud-setup.md): what the user sends to Grok Bot so it joins from its cloud computer (install.sh prints it filled in).
 - [prompts/routine.zh-CN.md](prompts/routine.zh-CN.md): Simplified Chinese routine prompt.
 - [prompts/cloud-setup.zh-CN.md](prompts/cloud-setup.zh-CN.md): Simplified Chinese cloud setup prompt.
 - [prompts/cloud-add-bot.md](prompts/cloud-add-bot.md): the step an added Bot's routine prompt carries to register it on the shared cloud (install.sh --add-bot prints the whole prompt).
@@ -26,7 +26,7 @@ Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), 
 
 ## Reference (English and Simplified Chinese)
 
-- [README.md](README.md): what it is, how it works, install, verify, security, troubleshooting, and summaries of uninstall and upgrade.
+- [README.md](README.md): what it is, the terms it uses, how it works, install, verify, security, troubleshooting, and summaries of uninstall and upgrade.
 - [README.zh-CN.md](README.zh-CN.md): Simplified Chinese user guide.
 - [UNINSTALL.md](UNINSTALL.md): what each uninstall level removes and keeps, checks before uninstalling, the steps on both computers, how to confirm the result.
 - [UNINSTALL.zh-CN.md](UNINSTALL.zh-CN.md): Simplified Chinese uninstall guide.

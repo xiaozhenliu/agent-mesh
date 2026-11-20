@@ -6,7 +6,7 @@
 
 ## 补寄与回执
 
-relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到正文时，会自动发出一条带签名的重投请求，relay 按副本重发，每条消息最多重发 2 次。第一次转发就失败的消息，也靠这条路补回来。云端还会给 relay 发带签名的回执（RN-GOT），说明哪些消息已落盘、哪些已处理；带 `reply_to` 的回信也算已处理。消息在 relay 上一直记为待办，直到确认处理完。门铃送达后 `GOT_TIMEOUT_SECONDS`（默认 15 分钟）仍没有落盘回执，relay 重发正文并补按门铃；已落盘但 `GOT_DONE_SECONDS`（默认 2 小时）后仍未处理，只补按门铃，等上一轮的领取过期后由云端重新交出。每条消息最多补按 `GOT_MAX_RERINGS`（2）次，不占重投次数；之后 relay 给 Grok Bot 发一条点名这条消息的提醒，Bot 确认之前会重复发送。`GOT_TIMEOUT_SECONDS=0` 对新来信关闭补按。已知限制：
+relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到正文时，会自动发出一条带签名的补寄请求，relay 按副本重发，每条消息最多重发 2 次。第一次转发就失败的消息，也靠这条路补回来。云端还会给 relay 发带签名的回执（RN-GOT），说明哪些消息已落盘、哪些已处理；带 `reply_to` 的回信也算已处理。消息在 relay 上一直记为待办，直到确认处理完。门铃送达后 `GOT_TIMEOUT_SECONDS`（默认 15 分钟）仍没有落盘回执，relay 重发正文并补按门铃；已落盘但 `GOT_DONE_SECONDS`（默认 2 小时）后仍未处理，只补按门铃，等上一轮的领取过期后由云端重新交出。每条消息最多补按 `GOT_MAX_RERINGS`（2）次，不占补寄次数；之后 relay 给 Grok Bot 发一条点名这条消息的提醒，Bot 确认之前会重复发送。`GOT_TIMEOUT_SECONDS=0` 对新来信关闭补按。已知限制：
 
 - 云端停发回执（云端脚本是旧版或设了 `RN_GOT=0`）时，relay 多补按一次后察觉，发一条提醒，并在收到下一条回执之前不再盯新来信。这期间，某一轮领取了新来信、还没处理就中断的情况，只能靠孤儿扫描或发件人重发补回。当时已有的待办仍会按期补按，直到处理完或逐条提醒。
 - 回执关闭期间，只有回信能证明消息已处理，只记了 `done` 的消息会以一条提醒结束：属于误报，不丢信。
@@ -19,7 +19,7 @@ relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到�
 
 ## 领取与中断
 
-两次唤醒可能重叠，webhook 重试也可能为同一个 id 按两次门铃。`fetch` 交出的每条正文都会被领取一小时（`RN_CLAIM_LEASE`），重叠的另一轮拿到 `claimed` 就跳过；处理完的消息报告 `handled`。Bot 动手之前先运行 `rn-cloud.sh working <id>`，`rn-cloud.sh send` 在交给引擎之前记下"开始回复"。一轮在这两步之后中断、没有记完成的，之后的轮次报告 `uncertain`：Bot 查 thread 笔记或问用户，不会自己再做一次。每次 `fetch` 还会交出最近 7 天内没有门铃要过、也没人处理的已核对正文，例如门铃丢失的信（`"orphan": true`；天数由 `RN_ORPHAN_DAYS` 设置，`RN_ORPHANS=0` 关闭）。这不保证"恰好一次"：在 `working` 之前中断的消息，领取过期后会被再次交出；在那之后中断的，等用户决定。
+两次叫醒可能重叠，webhook 重试也可能为同一个 id 按两次门铃。`fetch` 交出的每条正文都会被领取一小时（`RN_CLAIM_LEASE`），重叠的另一轮拿到 `claimed` 就跳过；处理完的消息报告 `handled`。Bot 动手之前先运行 `rn-cloud.sh working <id>`，`rn-cloud.sh send` 在交给引擎之前记下"开始回复"。一轮在这两步之后中断、没有记完成的，之后的轮次报告 `uncertain`：Bot 查 thread 笔记或问用户，不会自己再做一次。每次 `fetch` 还会交出最近 7 天内没有门铃要过、也没人处理的已核对正文，例如门铃丢失的信（`"orphan": true`；天数由 `RN_ORPHAN_DAYS` 设置，`RN_ORPHANS=0` 关闭）。这不保证"恰好一次"：在 `working` 之前中断的消息，领取过期后会被再次交出；在那之后中断的，等用户决定。
 
 已知限制：
 
@@ -38,7 +38,7 @@ relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到�
 | 登录服务 | `com.local.agent-relay` | `com.local.agent-relay.<name>` |
 | relay 状态 | `~/Library/Application Support/agent-relay/` | `~/Library/Application Support/agent-relay-bots/<name>/` |
 | relay 日志 | `~/Library/Logs/agent-relay.log` | `~/Library/Logs/agent-relay-<name>.log` |
-| `[BOT-CLOUD]` 上的收件和 thread 笔记 | `/workspace/agent-mesh/inbox/`、`threads/`；relay 名字在 `box/relay` | `/workspace/agent-mesh/bots/<name>/inbox/`、`threads/` |
+| `[BOT-CLOUD]` 上的收件和 thread 笔记 | `/workspace/agent-mesh/inbox/`、`threads/`；Bot 地址名在 `box/relay` | `/workspace/agent-mesh/bots/<name>/inbox/`、`threads/` |
 
 **选择器。** 添加的 Bot 的 routine 桩和它加载的规则把每条 `rn-cloud.sh` 命令写成 `RN_BOT=<name> /workspace/agent-mesh/box/rn-cloud.sh …`。这样命令使用 `<name>-cloud`、`<name>-inbox` 和 `bots/<name>/` 下的路径，并要求 `bots/<name>/.registered` 存在。`RN_BOT` 不能和 `AGENT_RELAY_NAME`、`RN_CLOUD_NAME`、`RN_INBOX_NAME`、`RN_INBOX_DIR` 或 `RN_THREADS_DIR` 同时使用，也不会退回到第一个 Bot。不带 `RN_BOT` 时和以前一样使用第一个 Bot。
 
@@ -137,7 +137,7 @@ relay 为每个代发过的 nonce 保存一条发送记录：调用引擎之前�
 | 同一 `reply_to` 的两次不同回复 | nonce 不同，都会代发 |
 | 主动联系（无 `reply_to`） | 随机 nonce，都会代发 |
 | 超过 `NONCE_KEEP_SECONDS` 后重发 | 当作新消息代发 |
-| 新云端脚本 + 旧 relay | 1 小时内的重发被当作重放拒收并通知（多一次唤醒，不重复投递）；超过 1 小时会重复投递 |
+| 新云端脚本 + 旧 relay | 1 小时内的重发被当作重放拒收并通知（多一次叫醒，不重复投递）；超过 1 小时会重复投递 |
 | 旧云端脚本 + 新 relay | 随机 nonce，与以前相同 |
 | relay 升级前 1 小时内记下的 nonce，升级后同 nonce 重发 | 按结果未知处理：不代发，提醒一次；改动内容后可发 |
 | 引擎回答 `held`，或 relay 无法判断其结果 | 结果未知：提醒一次，同 nonce 重发不代发 |
@@ -175,7 +175,7 @@ caps: got1
 
 ### RN-REFWD v1
 
-`bot-cloud` 发给 `bot` 的重投请求，没有正文：
+`bot-cloud` 发给 `bot` 的补寄请求，没有正文：
 
 ```text
 RN-REFWD v1
@@ -185,7 +185,7 @@ nonce: <随机 hex>
 sig: <hex>
 ```
 
-签名：`sig = HMAC(key, "refwd1\n" + id + "\n" + ts + "\n" + nonce)`。relay 只看第一行就判断一条消息是不是重投请求。
+签名：`sig = HMAC(key, "refwd1\n" + id + "\n" + ts + "\n" + nonce)`。relay 只看第一行就判断一条消息是不是补寄请求。
 
 除非设了 `RN_GOT=0`，云端会在 `sig:` 之后加一行可选、不签名的 `caps: got1`。带这一行时，relay 只重发副本，因为云端这次 fetch 本身就在等它；不带时（旧版云端或 `RN_GOT=0`），relay 还会排一个带 `refwd` 的门铃。
 
@@ -202,7 +202,7 @@ relay 回给 `bot-inbox` 的回执：
 RN-REFWD-ACK v1
 id: <消息 id>
 status: <resent | no-copy | limit | failed>
-attempt: <第几次重投>
+attempt: <第几次补寄>
 reason: <原因，可为空>
 ts: <Unix 秒>
 sig: <hex>
@@ -253,4 +253,4 @@ relay POST 给 routine 的 JSON（值有省略）：
 }
 ```
 
-`messages[]` 的每一项还可能带三个可选字段：`refwd`（这是第几次重投）、`rering`（消息一直未确认时，relay 自己第几次补按）和 `forward_failed`（转发或重发副本失败的原因）。只有云端的重投请求没有声明 `caps: got1` 时才会出现带 `refwd` 的门铃。relay 自己发出的系统通知则是 `doorbell:false`，这时 `messages[]` 的每一项里直接带 `text`。relay 提醒以一个 id 以 `relay-alerts-` 开头的通知项送达；routine 用 `rn-cloud.sh done <id>` 确认，确认之前 relay 会重发。
+`messages[]` 的每一项还可能带三个可选字段：`refwd`（这是第几次补寄）、`rering`（消息一直未确认时，relay 自己第几次补按）和 `forward_failed`（转发或重发副本失败的原因）。只有云端的补寄请求没有声明 `caps: got1` 时才会出现带 `refwd` 的门铃。relay 自己发出的系统通知则是 `doorbell:false`，这时 `messages[]` 的每一项里直接带 `text`。relay 提醒以一个 id 以 `relay-alerts-` 开头的通知项送达；routine 用 `rn-cloud.sh done <id>` 确认，确认之前 relay 会重发。

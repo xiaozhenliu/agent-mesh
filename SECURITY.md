@@ -47,7 +47,7 @@ The [Security and privacy](README.md#security-and-privacy) section already docum
 - Grok Bot is the trust root: if content it reads in a web page or document steers it (prompt injection), it can send validly signed messages. Signatures only stop impersonation by sessions without the key.
 - Any program running as the same macOS user can read the keys and webhook key in `~/.config/agent-relay/`.
 - A local agent configured to approve automatically (for example Claude Code's `--dangerously-skip-permissions` or Codex's `--yolo`) acts on incoming text as if it were a command, including when it is woken unattended.
-- Message bodies are stored in plain text in both engines' databases, the relay's copies and the cloud inbox; see [Message bodies are stored in plain text](README.md#message-bodies-are-stored-in-plain-text) in the README for retention and cleanup.
+- Message bodies are stored in plain text in both engines' databases, the relay's copies and the cloud mail; see [Message bodies are stored in plain text](README.md#message-bodies-are-stored-in-plain-text) in the README for retention and cleanup.
 - Traffic may pass through iroh public relays, which this project has not independently audited.
 - Each wake-up consumes Grok Bot usage; the relay only rate-limits it.
 - Any team member can message and wake Grok Bot; the relay does not restrict senders within the team. Who joins the team is the boundary: `./check.sh` reports any member other than your local computer and `cloud`.

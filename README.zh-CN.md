@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | **版本** | agent-mesh **v0.10.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
-| **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证，但 Linux 本地安装尚不支持（见[准备](#准备)）· Bot 云端：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
+| **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证，但 Linux 本地安装尚不支持（见[准备](#准备)）· Bot 云电脑：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
 | **许可证** | MIT |
@@ -15,7 +15,7 @@
 > [!TIP]
 > 安装可以交给 agent 代劳：把本仓库的链接发给 Claude Code 或 Codex，说一句「读 [AGENT-INSTALL.zh-CN.md](AGENT-INSTALL.zh-CN.md)，照着装」。
 
-**目录：**[架构概览](#架构概览) · [解决什么问题](#解决什么问题) · [执行位置标识](#执行位置标识) · [怎么工作](#怎么工作) · [准备](#准备) · [安装](#安装) · [多个 Grok Bot](#多个-grok-bot) · [验证](#验证) · [各 agent 怎么收信](#各-agent-怎么收信) · [安全与隐私](#安全与隐私) · [常见问题](#常见问题) · [卸载](#卸载) · [升级](#升级) · [文档与语言](#文档与语言) · [附录：消息格式](#附录消息格式)
+**目录：**[架构概览](#架构概览) · [解决什么问题](#解决什么问题) · [执行位置标识](#执行位置标识) · [术语](#术语) · [怎么工作](#怎么工作) · [准备](#准备) · [安装](#安装) · [多个 Grok Bot](#多个-grok-bot) · [验证](#验证) · [各 agent 怎么收信](#各-agent-怎么收信) · [安全与隐私](#安全与隐私) · [常见问题](#常见问题) · [卸载](#卸载) · [升级](#升级) · [文档与语言](#文档与语言) · [附录：消息格式](#附录消息格式)
 
 ## 架构概览
 
@@ -23,19 +23,19 @@
 flowchart LR
     subgraph LOCAL["💻 本地电脑 (你的工作环境 · 无需公网 IP)"]
         direction TB
-        AGENT["🤖 本地 Coding Agent<br/>(Claude Code / Codex / dsh / pi)"]
-        RELAY["📮 本地 Relay (轻量传达室)<br/>常驻后台，负责代发与收件"]
+        AGENT["🤖 本地会话<br/>(Claude Code / Codex / dsh / pi)"]
+        RELAY["📮 relay (传达室)<br/>常驻后台，在 Bot 地址上收信，代发 Grok Bot 的回信"]
         AGENT <-->|"本地消息收发"| RELAY
     end
 
-    subgraph CLOUD["☁️ Grok Bot (云端环境)"]
+    subgraph CLOUD["☁️ 云端"]
         direction TB
-        DOORBELL["🔔 Webhook Routine (门铃)<br/>只传编号、长度、校验码和预览，不传完整正文，负责叫醒"]
-        BOT["🧠 Grok Bot (云电脑)<br/>平时休眠，被叫醒后核验取信"]
+        DOORBELL["🔔 routine (webhook)<br/>收到门铃就叫醒 Grok Bot；门铃只有编号、长度、校验码和预览，不含完整正文"]
+        BOT["🧠 Grok Bot · Bot 云电脑<br/>平时休眠，被叫醒的那一轮里取信并核对"]
         DOORBELL -->|"叫醒"| BOT
     end
 
-    RELAY -->|"① 完整正文直投 (Reason Network)"| BOT
+    RELAY -->|"① 完整正文投到云端收件 (Reason Network)"| BOT
     RELAY -->|"② Webhook POST 按门铃"| DOORBELL
     BOT -->|"③ 签名回信 (代发回本地会话)"| RELAY
 ```
@@ -43,12 +43,12 @@ flowchart LR
 ## 解决什么问题
 
 - **找得到人**：云端用脚本跑 `claude -p "..."` 能执行单次任务，但**每次拉起的都是全新、空白的进程**，碰不到你本地终端里已经开着、带着项目背景和改动记录的那个会话。agent-mesh 直接联系正在干活的那个会话，上下文留在原地。
-- **不用傻等**：复杂任务要来回提问、修改、过会儿接着聊。没有唤醒机制时，云端发完信只能挂着等或轮询；接上 agent-mesh 后，发完就休眠，对方一回信就像按门铃一样叫醒这边。两端都不空转（本地只有一个长轮询等信的轻量 relay），不白耗 Grok 额度，也用得上你本地已有的各家 agent 订阅。relay 默认两次叫醒至少间隔 20 秒、每小时最多 20 次；本地会话能否被叫醒见[各 agent 怎么收信](#各-agent-怎么收信)。
+- **不用傻等**：复杂任务要来回提问、修改、过会儿接着聊。没有叫醒机制时，云端发完信只能挂着等或轮询；接上 agent-mesh 后，发完就休眠，对方一回信就像按门铃一样叫醒这边。两端都不空转（本地只有一个长轮询等信的轻量 relay），不白耗 Grok Bot 的用量，也用得上你本地已有的各家 agent 订阅。relay 默认两次叫醒至少间隔 20 秒、每小时最多 20 次；本地会话能否被叫醒见[各 agent 怎么收信](#各-agent-怎么收信)。
 - **代码不用搬家**：代码、文档、依赖环境和会话记录都留在本地，不必为了用云端能力把项目打包搬到云电脑上。
-- **多会话协同**：本地可以同时开多个职责不同的会话（如代码重构、文档核对、运行日志），云端能同时联系它们；会话之间还可以先就分歧交叉核实，再向云端回报。
+- **多会话协同**：本地可以同时开多个职责不同的会话（如代码重构、文档核对、运行日志），Grok Bot 能同时联系它们；会话之间还可以先就分歧交叉核实，再向云端回报。
 - **不暴露公网**：基于 Reason Network 联机。本地电脑不开入站端口，不需要自建或租用服务器，只要能连上 iroh 中继，在家庭或公司局域网内都能收发。消息可能经过 iroh 公共中继，用 VPN 或代理时要给 `iroh.link` 放行，见[网络与用量](#网络与用量)和[常见问题](#常见问题)。
 - **不越权**：通道只传文字，**不额外授予任何本机执行权限**，本地能执行什么仍由 agent 自己的审批设置决定。要注意两点：开了自动批准的会话（Claude Code 的 `--dangerously-skip-permissions`、Codex 的 `--yolo` 之类），收到的文字就等于命令；云端 Grok Bot 是这条通道的信任根，它被读到的内容诱导时，也能发出签名有效的消息。详见[安全与隐私](#安全与隐私)。
-- **什么时候不需要它**：任务在 Grok Bot 的云电脑上就能做完（纯跑脚本、做调研、写独立文件）时，让它在云电脑上装各家 CLI 就够了，用不上本项目。
+- **什么时候不需要它**：任务在 Bot 云电脑上就能做完（纯跑脚本、做调研、写独立文件）时，让 Grok Bot 在云电脑上装各家 CLI 就够了，用不上本项目。
 
 ## 执行位置标识
 
@@ -57,10 +57,59 @@ flowchart LR
 | 标识 | 指哪一端 | 在这里做什么 |
 |---|---|---|
 | `[LOCAL]` | 用户本地电脑（默认机器名为 `mac`） | 本地 coding agent、Reason Network 引擎、relay；运行 `install.sh`、`check.sh`、`uninstall.sh` |
-| `[BOT-CLOUD]` | Grok Bot 的云电脑，机器名为 `cloud` | Grok Bot 运行 `/workspace/agent-mesh/box/rn-cloud*.sh`，保存云端状态和收件正文 |
-| `[GROK-UI]` | 用户打开的 Grok Bot 界面 | 创建或暂停 routine、粘贴提示词、批准 CopyToBox；这里的操作不是终端命令 |
+| `[BOT-CLOUD]` | Bot 云电脑：Grok Bot 执行命令的 Linux 电脑，机器名为 `cloud` | Grok Bot 运行 `/workspace/agent-mesh/box/rn-cloud*.sh`，保存云端状态和收件正文 |
+| `[GROK-UI]` | 用户打开的 Grok Bot 界面 | 创建或暂停 routine、粘贴 routine 提示词、发送云端提示词、批准 CopyToBox；这里的操作不是终端命令 |
 
 两台电脑各有一份仓库，文件不会自动同步。`[LOCAL]` 的 `~` 是本地电脑的 home 目录；`[BOT-CLOUD]` 的 `/workspace/agent-mesh/` 是 Bot 云电脑的目录。下文未另行标注的终端命令和 `~/…` 路径均属于 `[LOCAL]`。
+
+## 术语
+
+本指南按下面的意思使用这些词。
+
+**机器与角色**
+
+| 术语 | 含义 |
+|---|---|
+| 本地电脑 `[LOCAL]` | 你的 Mac，文中也叫本机。一直开着，运行引擎、relay 和本地会话。 |
+| Bot 云电脑 `[BOT-CLOUD]` | Grok Bot 执行命令的 Linux 电脑，机器名 `cloud`，简称云电脑。它会睡：不留常驻进程，只在被叫醒的那一轮里临时启动引擎。"云端"泛指这一侧：`/workspace/agent-mesh/` 里的仓库、云端脚本、引擎和它们的状态。 |
+| Grok Bot | 你在 Grok 里用的 Bot，简称 Bot，是这条通道的信任根。agent-mesh 里每个 Bot 有自己的 Bot 地址、relay 服务、routine 和云端会话；同一个 Grok Bot 另建一个 routine、用新的 Bot 地址名添加，就是另一个 Bot（见[多个 Grok Bot](#多个-grok-bot)）。 |
+| Grok Bot 界面 `[GROK-UI]` | 你操作 Grok Bot 的地方：建 routine、粘贴 routine 提示词、在对话里发提示词、批准 CopyToBox。 |
+| 本地会话 | 本地电脑上接入团队的 coding agent 会话（Claude Code、Codex、pi、dsh）。 |
+
+**名字**
+
+| 术语 | 含义 |
+|---|---|
+| 团队名 `<team-name>` | 只有你一个人的私有团队的名字，同时是你在团队里的 person 名；团队建好后不能改。 |
+| Bot 地址 `<team-name>/<name>` | 本地会话给 Grok Bot 写信用的地址。在这个地址上收信的是本地电脑上的 relay，不是 Bot 云电脑。 |
+| Bot 地址名 `<name>` | Bot 地址里的名字，安装时用 `--relay-name` 选定，之后不能改（v0.8.0 以前默认是 `bot`）。云端由它得出两个会话：用 `<name>-cloud` 发信，用 `<name>-inbox` 收正文。 |
+| Grok 名字 | Bot 在 Grok 里显示的名字，用 `--grok-name` 设置，只用于显示：`<team-name>/<name> → Grok: <Grok 名字>`。 |
+
+**部件**
+
+| 术语 | 含义 |
+|---|---|
+| 引擎 | Reason Network（固定 v0.12.17），两台电脑各一份，负责团队、会话和消息投递。 |
+| relay（传达室） | 本地电脑上常驻的服务，每个 Bot 一个。它在 Bot 地址上收信，把正文转给云端，按门铃叫醒 Grok Bot，再把 Grok Bot 的签名回信代发给本地会话。不要和引擎联机用的中继（iroh 或 Reason 的中继服务器）混淆。 |
+| routine | 在 Grok Bot 界面建的、由 webhook 触发的任务，每个 Bot 一个。relay 向它的 webhook 发一次 POST，Grok Bot 就醒来执行 routine 提示词。 |
+| routine 提示词、routine 桩 | routine 里保存的文字。默认是 routine 桩：一段固定的英文短文本，每次运行先从云端加载规则，所以规则变了不用重贴（见 [routine 桩](UPGRADE.zh-CN.md#routine-桩)）。用 `--full-prompt` 时保存的是完整提示词。 |
+| 规则 | routine 每一轮照做的处理步骤，在 `[BOT-CLOUD]` 上用云端仓库里的模板渲染。 |
+| 云端提示词 | 安装时和团队邀请链接一起发给 Grok Bot 的提示词。Bot 照着它在 Bot 云电脑上克隆发布版本、安装引擎并加入团队。 |
+| 签名密钥 | `outbound.key`，本地电脑和 Bot 云电脑各一份，用来签名两端之间的消息。 |
+| 部署记录 | 本地电脑记下的各部分已部署版本和确认状态，`./update.sh` 拿它和新版本比较。 |
+
+**消息**
+
+| 术语 | 含义 |
+|---|---|
+| 门铃 | relay 对 routine webhook 的一次 POST，只带消息编号、长度、校验码和可选预览，不带完整正文。 |
+| 叫醒、一轮 | 门铃让 routine 运行一次，Grok Bot 被叫醒；这一次运行叫一轮。本地会话怎样被新消息叫醒，见收信方式。 |
+| 用量 | 每叫醒一次 Grok Bot 就消耗一次它的用量。relay 默认每小时最多叫醒 20 次。 |
+| 云端收件 | 经 `<name>-inbox` 送到云端的正文。`fetch` 按编号取回、核对后存在 `inbox/<id>/`（添加的 Bot 在 `bots/<name>/inbox/` 下）。 |
+| 待办、已落盘、已处理 | relay 对每条转发消息的记录。云端用带签名的回执告诉 relay 哪条已落盘、哪条已处理；处理完之前，消息一直记为待办。 |
+| 补寄 | 云端取不到正文时发出带签名的补寄请求，relay 用保留 7 天的副本重发，每条最多 2 次。 |
+| thread 笔记 | 云端的 `threads/*.md`（添加的 Bot 在 `bots/<name>/threads/` 下），routine 每轮追加的会话摘要，Grok Bot 靠它了解上文。 |
+| 收信方式 | 本地会话怎样收到新消息：push、turn 或 pull，见[各 agent 怎么收信](#各-agent-怎么收信)。 |
 
 ## 怎么工作
 
@@ -68,37 +117,37 @@ flowchart LR
 
 | 角色 | 在线情况 | 做什么 |
 |---|---|---|
-| `[LOCAL]` 用户本地电脑 | 一直开着 | 运行 Reason Network 引擎和 relay。relay 用 `<team-name>/bot` 这个名字收信，所以在本地 agent 看来，它就是 Grok Bot。地址中的 `bot` 代表在本地电脑上收信的 relay，不是 Bot 云电脑。这里的 `bot` 指你的 [Bot 地址名](#grok-bot-与团队名)，通常就是 Bot 自己的名字（v0.8.0 以前默认是 `bot`）。 |
-| `[BOT-CLOUD]` Bot 云电脑 | 会睡 | 不留任何常驻进程，只在被叫醒的那一轮里临时启动引擎。它用 `<team-name>/bot-cloud` 发信，用 `<team-name>/bot-inbox` 收正文（Bot 地址名改为 `<name>` 时是 `<name>-cloud` 和 `<name>-inbox`），机器名是 `cloud`。 |
-| `[GROK-UI]` routine | 由 webhook 叫醒 | 在 Grok Bot 界面创建的 webhook 任务，醒来后由 Bot 在 `[BOT-CLOUD]` 执行提示词。`[LOCAL]` 的 relay 向这个 webhook 发一次 POST，Grok Bot 就会醒来。 |
+| `[LOCAL]` 本地电脑 | 一直开着 | 运行 Reason Network 引擎和 relay。relay 在 Bot 地址 `<team-name>/<name>` 上收信，所以在本地会话看来，它就是 Grok Bot。这个地址属于在本地电脑上收信的 relay，不属于 Bot 云电脑。`<name>` 是你的 [Bot 地址名](#grok-bot-与团队名)，通常就是 Bot 自己的名字（v0.8.0 以前默认是 `bot`）。 |
+| `[BOT-CLOUD]` Bot 云电脑 | 会睡 | 不留任何常驻进程，只在被叫醒的那一轮里临时启动引擎。它用 `<team-name>/<name>-cloud` 发信，用 `<team-name>/<name>-inbox` 收正文，机器名是 `cloud`。 |
+| `[GROK-UI]` routine | 由 webhook 叫醒 | 在 Grok Bot 界面创建的 webhook 任务，醒来后由 Bot 在 `[BOT-CLOUD]` 执行 routine 提示词。`[LOCAL]` 的 relay 向这个 webhook 发一次 POST（按门铃），Grok Bot 就会醒来。 |
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Local as [LOCAL] 本地 Agent
-    participant Relay as [LOCAL] Relay (传达室)
-    participant Webhook as [GROK-UI] Webhook 门铃
-    participant Cloud as [BOT-CLOUD] Grok Bot 云电脑
+    participant Local as [LOCAL] 本地会话
+    participant Relay as [LOCAL] relay (传达室)
+    participant Webhook as [GROK-UI] routine (webhook)
+    participant Cloud as [BOT-CLOUD] Grok Bot · Bot 云电脑
 
-    Note over Local,Cloud: 场景一：本地 Agent 回信给云端（正文与门铃分流）
-    Local->>Relay: 本地 Agent 回信
-    Relay->>Cloud: 先投递正文到 bot-inbox (RN-FWD)
+    Note over Local,Cloud: 场景一：本地会话回信给 Grok Bot（正文与门铃分流）
+    Local->>Relay: 本地会话回信到 Bot 地址
+    Relay->>Cloud: 先投递正文到云端收件 (RN-FWD)
     Relay->>Webhook: 再 POST 门铃 (id、长度、sha256、预览，不含完整正文，转发失败也照样按门铃)
     Webhook->>Cloud: 叫醒 Grok Bot
     Cloud->>Cloud: rn-cloud.sh fetch 取回正文并核对校验码
 
-    Note over Local,Cloud: 场景二：云端 Grok Bot 发信给本地（签名代发）
+    Note over Local,Cloud: 场景二：Grok Bot 发信给本地会话（签名代发）
     Cloud->>Relay: 发出签名信封 (RN-OUT)
-    Relay->>Local: 以 <team-name>/bot 代发至具体本地会话
+    Relay->>Local: 以 Bot 地址代发至具体本地会话
 ```
 
 背后有五个设计决定：
 
 1. **谁一直开着，谁就是中心。** 云端发出的每一封信都交给本地电脑代发，所以本机会话的回信总是落回本地电脑，而不是落到一台可能已经睡着的云电脑上。
-2. **webhook 只当门铃，不当快递。** 原部署中观察到 Grok Bot 醒来时只保留 webhook body 的前 4000 字左右，所以正文不走 webhook，而是通过 Reason Network 投进云端收件箱；webhook 携带消息编号、长度、校验码和可选预览。routine 醒来后按编号取回正文、核对无误再处理。在引擎字节限制内，一条 10000 字的消息也只需要叫醒一次。
-3. **两端都能补回丢失的信。** relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到正文时，会自动发出带签名的重投请求，relay 按副本重发，每条消息最多 2 次；第一次转发就失败的消息，也靠这条路补回来。云端还用带签名的回执告诉 relay 哪些消息已落盘、哪些已处理。消息在 relay 上一直记为待办，直到确认处理完；迟迟没有确认时 relay 会补按门铃，次数用尽后给 Grok Bot 发提醒，不会无限重试。时限、配置项和已知限制见[补寄与回执](PROTOCOL.zh-CN.md#补寄与回执)。
-4. **一条消息只交给一轮处理，中断了也不悄悄重做。** 两次唤醒可能重叠，webhook 重试也可能为同一个 id 按两次门铃。`fetch` 交出的每条正文都会被领取，重叠的另一轮会跳过它。一轮在动手之后中断、没有记完成的，之后的轮次报告 `uncertain`：Bot 查 thread 笔记或问用户，不会自己再做一次。`fetch` 还会交出门铃丢失的已核对正文。这不保证"恰好一次"，详见[领取与中断](PROTOCOL.zh-CN.md#领取与中断)。
-5. **所有跨端消息都签名。** 同一个团队里的任何会话都可以用别人的名字发信，所以 relay 代发的信封、转发的正文和重投请求都带 HMAC 签名；信封和重投请求还有 15 分钟时效并防重放。密钥只有两份，本地电脑和云电脑各一份。
+2. **webhook 只当门铃，不当快递。** 原部署中观察到 Grok Bot 醒来时只保留 webhook body 的前 4000 字左右，所以正文不走 webhook，而是通过 Reason Network 投给云端的 `<name>-inbox`；webhook 携带消息编号、长度、校验码和可选预览。routine 醒来后按编号取回正文、核对无误再处理。在引擎字节限制内，一条 10000 字的消息也只需要叫醒一次。
+3. **两端都能补回丢失的信。** relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到正文时，会自动发出带签名的补寄请求，relay 按副本重发，每条消息最多 2 次；第一次转发就失败的消息，也靠这条路补回来。云端还用带签名的回执告诉 relay 哪些消息已落盘、哪些已处理。消息在 relay 上一直记为待办，直到确认处理完；迟迟没有确认时 relay 会补按门铃，次数用尽后给 Grok Bot 发提醒，不会无限重试。时限、配置项和已知限制见[补寄与回执](PROTOCOL.zh-CN.md#补寄与回执)。
+4. **一条消息只交给一轮处理，中断了也不悄悄重做。** 两次叫醒可能重叠，webhook 重试也可能为同一个 id 按两次门铃。`fetch` 交出的每条正文都会被领取，重叠的另一轮会跳过它。一轮在动手之后中断、没有记完成的，之后的轮次报告 `uncertain`：Bot 查 thread 笔记或问用户，不会自己再做一次。`fetch` 还会交出门铃丢失的已核对正文。这不保证"恰好一次"，详见[领取与中断](PROTOCOL.zh-CN.md#领取与中断)。
+5. **所有跨端消息都签名。** 同一个团队里的任何会话都可以用别人的名字发信，所以 relay 代发的信封、转发的正文和补寄请求都带 HMAC 签名；信封和补寄请求还有 15 分钟时效并防重放。密钥只有两份，本地电脑和云电脑各一份。
 
 ## 准备
 
@@ -129,7 +178,7 @@ sequenceDiagram
 - 想好一个团队名，它同时也是你在团队里的名字：1 到 40 个字符，只能用 ASCII 小写字母、数字和 `-`，首尾不能是 `-`，别用真名。团队建好后名字不能改，只能删掉重建。
 - 团队名和机器名里的 `-` 不能连用：引擎会把连续的 `-` 合并，`a--b` 会变成 `a-b`，所以安装器拒绝这类名字。
 - 选定 Bot 地址名：用 Bot 自己的名字，本机 agent 才分得清你的各个 Grok Bot。relay 用 `<team-name>/<name>` 收信，云端用 `<name>-cloud` 和 `<name>-inbox`。全新安装没有默认名（v0.8.0 以前默认是 `bot`；已有安装保留原来的名字）。规则：1 到 34 个字符，ASCII 小写字母和数字，分段之间用单个 `-` 连接（首尾不能是 `-`，不能连用），不能是 `terminal` 或 `terminal-<n>`。别用真名。名字以后不能改，安装没完成时也不行：排队的消息、routine 提示词和云端设置都用这个名字。要换名字只能按 `identity` 或 `all` 级别卸载后重新安装，或者用新名字添加一个 Bot、再卸载旧的（见[多个 Grok Bot](#多个-grok-bot)）。
-- 用 `--grok-name` 给出 Bot 在 Grok 里显示的名字，任何语言都可以（最多 64 个字符，首尾不能有空格，不能有换行或其他控制字符）。它原样保存，不参与路由；安装器、`./check.sh` 和填好的回复约定会在地址旁显示 `<team-name>/<name> → Grok: <它的名字>`。名字里没有拉丁字母时，自己起一个地址，例如用拼音（「小助手」→ `xiaozhushou`）。
+- 用 `--grok-name` 给出 Grok 名字，即 Bot 在 Grok 里显示的名字，任何语言都可以（最多 64 个字符，首尾不能有空格，不能有换行或其他控制字符）。它原样保存，不参与路由；安装器、`./check.sh` 和填好的回复约定会在地址旁显示 `<team-name>/<name> → Grok: <它的名字>`。名字里没有拉丁字母时，自己起一个地址，例如用拼音（「小助手」→ `xiaozhushou`）。
 
 ### 网络
 
@@ -173,7 +222,7 @@ cd ~/agent-mesh
 
 ### 可选
 
-- **dsh 自动唤醒**：运行 `dsh/mac-install.sh <team-name>`，详见[插件指南](dsh/README.zh-CN.md)。
+- **dsh 自动叫醒**：运行 `dsh/mac-install.sh <team-name>`，详见[插件指南](dsh/README.zh-CN.md)。
 - **回信约定**：把 `~/.local/lib/agent-mesh/templates/` 里填好的副本（中文 `AGENTS.reason-network.zh-CN.md` 或英文 `AGENTS.reason-network.md`，安装器写入，带有你的 Bot 地址和 Grok 名字）整段追加到你常用仓库的 `AGENTS.md` 里（Claude Code 还需要在 `CLAUDE.md` 里写一行 `@AGENTS.md`）。这里的[中文模板](templates/AGENTS.reason-network.zh-CN.md)和[英文模板](templates/AGENTS.reason-network.md)用的是占位符。改了 Grok 名字之后，`python3 scripts/reply_convention.py refresh <仓库>/AGENTS.md` 会更新副本，只替换 `agent-mesh:bot-address` 标记之间的行。本机 agent 默认会按给人看的完整报告来写回信；这份模板要求经这条通道发出的消息结论先行、四项必填，细节留在会话里不发。
 
 ## 多个 Grok Bot
@@ -200,15 +249,15 @@ cd ~/agent-mesh
 
 1. 它问这个 Bot 在 Grok 里叫什么，并据此给出建议的地址名；名字里没有拉丁字母和数字时，建议第一个可用的 `bot-2`、`bot-3`……。直接回车接受，或者输入别的名字。agent 可以用 `--grok-name '<它在 Grok 里的名字>' --relay-name <name>` 一次给全，这时安装器只请你确认计划。团队从已有安装读取，不需要 `--name`（给了就必须是同一个团队）。它不重新接入 agent，不下载引擎，也不生成密钥。
 2. 它核对 `<name>`、`<name>-cloud`、`<name>-inbox` 都不是团队里仍列出的会话（任何机器，在线或离线），也没有在本机用过，并且这个名字没有被卸载过，然后显示计划 `Add Bot <team-name>/<name> (called “…” in Grok); <其他 Bot> stay as they are.`，请你确认。`--add-bot` 不接受 `--yes`；不在终端里时，只打印计划，不改动任何东西。
-3. `[GROK-UI]`：为新 Bot 建一个由 webhook 触发的 routine，把安装器打印的提示词贴进去，再把 Webhook URL 和 key 贴回 `[LOCAL]` 的终端。这个 Bot 的桩在第一条命令里写明 Bot、团队和团队哈希；它加载的规则在每条 `rn-cloud.sh` 命令前都加上 `RN_BOT=<name>`，thread 笔记放在 `bots/<name>/threads/` 下。用 `--full-prompt` 时，完整提示词改为多一个第 0 步（[第 0 步](prompts/cloud-add-bot.zh-CN.md)）。
-4. 其余步骤自动完成。安装器经新 Bot 的 webhook 唤醒它；桩的第一条命令在打印规则之前运行 `box/rn-cloud-add-bot.sh`，核对共用的云电脑并在上面登记这个 Bot 的两个会话，不需要 CopyToBox，也不需要新的邀请。两个会话都出现在团队里之后，安装器才启动这个 Bot 的 relay，再给它发一行请求 `agent-mesh add-bot <name> <req>`，等待确认登记和桩的回信。每一步最多等 10 分钟。
+3. `[GROK-UI]`：为新 Bot 建一个由 webhook 触发的 routine，把安装器打印的 routine 提示词贴进去，再把 Webhook URL 和 key 贴回 `[LOCAL]` 的终端。这个 Bot 的 routine 桩在第一条命令里写明 Bot、团队和团队哈希；它加载的规则在每条 `rn-cloud.sh` 命令前都加上 `RN_BOT=<name>`，thread 笔记放在 `bots/<name>/threads/` 下。用 `--full-prompt` 时，完整提示词改为多一个第 0 步（[第 0 步](prompts/cloud-add-bot.zh-CN.md)）。
+4. 其余步骤自动完成。安装器经新 Bot 的 webhook 叫醒它；桩的第一条命令在打印规则之前运行 `box/rn-cloud-add-bot.sh`，核对共用的云电脑并在上面登记这个 Bot 的两个会话，不需要 CopyToBox，也不需要新的邀请。两个会话都出现在团队里之后，安装器才启动这个 Bot 的 relay，再给它发一行请求 `agent-mesh add-bot <name> <req>`，等待确认登记和桩的回信。每一步最多等 10 分钟。
 
-等待超时时，这个 Bot 保持 pending，既不算失败，也不算完成；会话出现之前它的 relay 不会启动。之后 `./update.sh` 会自己查找回信。`./install.sh --relay-name <name> --wake-bot` 重新唤醒 Bot，并从停下的地方继续；`./install.sh --add-bot --relay-name <name>` 续接这次添加。有一个添加没完成时，不能再添加别的 Bot；先完成它，或用 `--level bot` 卸载它。
+等待超时时，这个 Bot 保持 pending，既不算失败，也不算完成；会话出现之前它的 relay 不会启动。之后 `./update.sh` 会自己查找回信。`./install.sh --relay-name <name> --wake-bot` 重新叫醒 Bot，并从停下的地方继续；`./install.sh --add-bot --relay-name <name>` 续接这次添加。有一个添加没完成时，不能再添加别的 Bot；先完成它，或用 `--level bot` 卸载它。
 
 ### 多个 Bot 时的日常使用
 
 - `./check.sh`、`./update.sh` 和 `./uninstall.sh --plan` 不需要新选项，自动覆盖所有 Bot。`./check.sh` 每个 Bot 一节，标题是 `Bot address: <team-name>/<name> → Grok: <它的名字>`。
-- `--webhook`、`--cloud-prompt`、`--purge-copies`、单独的 `--grok-name` 和 `--wake-bot` 作用于一个 Bot。只有一个 Bot 时用法不变；有多个 Bot 时用 `--relay-name <name>` 指定，否则安装器列出名单并停下。对添加的 Bot，`--cloud-prompt` 改为唤醒它，不打印云端提示词。
+- `--webhook`、`--cloud-prompt`、`--purge-copies`、单独的 `--grok-name` 和 `--wake-bot` 作用于一个 Bot。只有一个 Bot 时用法不变；有多个 Bot 时用 `--relay-name <name>` 指定，否则安装器列出名单并停下。对添加的 Bot，`--cloud-prompt` 改为叫醒它，不打印云端提示词。
 - `--restart-relay` 和 `--rotate-key` 总是作用于所有已设好 relay 的 Bot，因为 relay 代码和签名密钥是共用的；它们拒绝 `--relay-name`。任何一个 relay 没起来，所有 relay 都恢复原来的代码、plist 和运行状态。新密钥不回滚：`--rotate-key` 会说明哪些 relay 已用上新密钥、哪些没能启动，新密钥仍要复制到 `[BOT-CLOUD]` 一次。
 - 填好的回复约定列出每个 Bot 的地址和它在 Grok 里的名字。
 
@@ -226,10 +275,10 @@ Bot 的地址不能改名。要换名字，就用新名字添加一个 Bot（即
    ./check.sh
    ```
 
-2. **测试消息**：在终端给 Bot 地址发一条消息（下面用的是 `bot`；换成你的 Bot 地址名，`./check.sh` 以 `Bot address:` 打印），再另开一个窗口等回复：
+2. **测试消息**：在终端给 Bot 地址发一条消息（把 `<name>` 换成你的 Bot 地址名，`./check.sh` 以 `Bot address:` 打印），再另开一个窗口等回复：
 
    ```bash
-   reason-network send <team-name>/bot "测试 1"
+   reason-network send <team-name>/<name> "测试 1"
    reason-network listen --as terminal --wait 600   # 另开一个窗口运行
    ```
 
@@ -254,7 +303,7 @@ Bot 的地址不能改名。要换名字，就用新名字添加一个 Bot（即
 
 ### 信任根是 Grok Bot
 
-- 签名密钥有两份，其中一份在 `[BOT-CLOUD]`。签名防的是拿不到密钥的会话冒名发信，防不了被操纵的 Bot：Grok Bot 如果被它读到的网页或文档诱导（提示词注入），照样能生成签名有效的 RN-OUT 信封，以 `<team-name>/bot` 的名义给你本地的任何会话发信。所以本地 agent 要把 Bot 的来信当作外部输入，而不是你本人的指令。
+- 签名密钥有两份，其中一份在 `[BOT-CLOUD]`。签名防的是拿不到密钥的会话冒名发信，防不了被操纵的 Bot：Grok Bot 如果被它读到的网页或文档诱导（提示词注入），照样能生成签名有效的 RN-OUT 信封，以 Bot 地址 `<team-name>/<name>` 的名义给你的任何本地会话发信。所以本地 agent 要把 Bot 的来信当作外部输入，而不是你本人的指令。
 - 同一个 macOS 用户下运行的任何 agent 都读得到 `~/.config/agent-relay/` 里的密钥和 webhook key，项目文件夹并不是权限边界。
 
 ### 本地 agent 的权限
@@ -263,7 +312,7 @@ Bot 的地址不能改名。要换名字，就用新名字添加一个 Bot（即
 - 上一条成立的前提是本机 agent 没开自动批准。即使没开，会话的沙盒和权限设置本来就允许的操作（例如读文件、在工作目录里改文件）也不会再问你，只有需要人工批准的操作才会等你。下面这些模式会让更多操作不问就做，收到的文字就等于命令，这种会话只能在沙盒文件夹或隔离环境里开：
   - Claude Code：`--dangerously-skip-permissions`，或 `--permission-mode bypassPermissions`。
   - Codex：`--yolo`（即 `--dangerously-bypass-approvals-and-sandbox`，不问也不受沙盒限制）；`--sandbox danger-full-access`（不受沙盒限制）；`--ask-for-approval never`（从不询问：沙盒允许的直接执行，不允许的直接失败）；以及交给自动审查代为批准的 `--approve-for-me`。
-- **无人值守的唤醒**：push 档的会话在你不在电脑前时也会被叫醒。Reason Network v0.10.7 用 `codex queue --thread <id> --message` 唤醒 Codex：消息排进那个已经打开的会话，作为新的一轮执行，沿用这个会话启动时的审批和沙盒设置，不附加任何放宽权限的参数。实测（Codex 0.166.0，`--ask-for-approval on-request --sandbox read-only`，这个配置下写文件需要人工批准）：被叫醒的这一轮要写文件时，审批框出现在该会话的终端里等待，没人确认就不执行，等了约一分钟也没有自动批准。所以没开自动批准时，需要人工批准的操作会停在审批处等你回来，沙盒和权限设置已经允许的操作照常执行；开了自动批准时，没有人拦。Claude Code 的消息直接写进已打开的会话，本项目没有单独实测它在无人值守时的审批表现。
+- **无人值守的叫醒**：push 档的会话在你不在电脑前时也会被叫醒。Reason Network v0.10.7 用 `codex queue --thread <id> --message` 叫醒 Codex：消息排进那个已经打开的会话，作为新的一轮执行，沿用这个会话启动时的审批和沙盒设置，不附加任何放宽权限的参数。实测（Codex 0.166.0，`--ask-for-approval on-request --sandbox read-only`，这个配置下写文件需要人工批准）：被叫醒的这一轮要写文件时，审批框出现在该会话的终端里等待，没人确认就不执行，等了约一分钟也没有自动批准。所以没开自动批准时，需要人工批准的操作会停在审批处等你回来，沙盒和权限设置已经允许的操作照常执行；开了自动批准时，没有人拦。Claude Code 的消息直接写进已打开的会话，本项目没有单独实测它在无人值守时的审批表现。
 - 如果你不想让云端来信直接投递，可以在 `~/.reason/network/config.toml` 里设置 `[inbound] default = "hold"`，这样每条来信都要你 `reason-network approve` 之后才会投递。
 
 ### 正文以明文保存
@@ -276,7 +325,7 @@ Bot 的地址不能改名。要换名字，就用新名字添加一个 Bot（即
 | `[LOCAL]` `~/.local/lib/agent-mesh/engine-backup-*/state`、`[BOT-CLOUD]` `/workspace/agent-mesh/box/engine-backup-*/state` | 引擎升级前备份的引擎状态，含收到的消息 | 直到你删除；`./uninstall.sh --level identity` 会删除这两处 |
 | `[LOCAL]` `~/Library/Application Support/agent-relay/fwd-copies/` | relay 为补寄保留的正文副本 | 超过 `FWD_COPY_DAYS`（默认 7 天）就不再补寄，但要等之后有消息经过 relay 才删除（最多每小时检查一次），relay 空闲时会一直留着 |
 | `[BOT-CLOUD]` `/workspace/agent-mesh/inbox/<id>/full.txt`（添加的 Bot：`/workspace/agent-mesh/bots/<name>/inbox/<id>/full.txt`） | `fetch` 取回的正文 | 不自动删除 |
-| `[BOT-CLOUD]` `/workspace/agent-mesh/threads/*.md`（添加的 Bot：`/workspace/agent-mesh/bots/<name>/threads/*.md`） | routine 每轮追加的会话摘要 | 不自动删除 |
+| `[BOT-CLOUD]` `/workspace/agent-mesh/threads/*.md`（添加的 Bot：`/workspace/agent-mesh/bots/<name>/threads/*.md`） | thread 笔记：routine 每轮追加的会话摘要 | 不自动删除 |
 | `[LOCAL]` `~/Library/Application Support/agent-relay/state.json` | 等待送往 webhook 的门铃，每条带正文预览 | webhook 送达后移出；webhook 一直失败时留着，超过 `MAX_SPOOL` 条才丢弃最旧的。改 `DOORBELL_PREVIEW_CHARS` 只影响之后的门铃，修好 webhook 让积压送出即可清空 |
 | routine 的 webhook | 门铃里正文的前 200 字预览 | 保存多久取决于 Grok Bot；`DOORBELL_PREVIEW_CHARS=0` 可关闭预览 |
 
@@ -288,7 +337,7 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 
 ### 团队成员
 
-- 团队就是信任边界。relay 会把任何团队成员发来的消息转给 Bot 并唤醒它，不检查发件人是谁；转发的信封保留原始发件人，每小时唤醒上限照样生效。这样加一台电脑或一个 Bot 不用额外配置，所以团队里只放你自己的机器。
+- 团队就是信任边界。relay 会把任何团队成员发来的消息转给 Bot 并叫醒它，不检查发件人是谁；转发的信封保留原始发件人，每小时叫醒上限照样生效。这样加一台电脑或一个 Bot 不用额外配置，所以团队里只放你自己的机器。
 - 装好后，以及之后定期，运行 `reason-network team`，确认只有你的本地电脑和 `cloud` 两台机器。`./check.sh` 也会检查这一项，出现其他成员时报 FAIL。发现陌生的人或机器，用 `reason-network remove <person>/<machine>` 移除，再按下文更换签名密钥。
 - 团队成员能看到每个会话的名字、所在目录的最后一级、仓库名和分支。所以别在 `~` 下直接开 agent。团队邀请链接只在终端里用，不要在浏览器里打开。
 
@@ -322,7 +371,7 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 
 - **云电脑加入时报 couldn't reach the machine that made the invite**：通常是 Mac 这边的 VPN 或代理又把 `*.iroh.link` 拦住了。按上一条修好，在 Mac 上运行 `reason-network stop`，然后让 Grok Bot 用同一个邀请链接重试。
 - **who 里看不到某个会话**：在 `setup` 之前就开着的会话不会登记，关掉重开即可。Codex 还要先跑完一轮才会出现。
-- **fetch 报 missing**：先看结果里的 `refwd` 字段。`ack=resent` 表示 relay 已经重发，过一分钟再 `fetch` 一次；`no-copy`、`limit`、`failed` 或 `skipped` 表示补不回来了，请发送方重发；完全没有 `refwd` 字段，说明 Mac 没连上。
+- **fetch 报 missing**：先看结果里的 `refwd` 字段。`ack=resent` 表示 relay 已经补寄，过一分钟再 `fetch` 一次；`no-copy`、`limit`、`failed` 或 `skipped` 表示补不回来了，请发送方重发；完全没有 `refwd` 字段，说明 Mac 没连上。
 - **relay 日志出现 `webhook POST failed: 30x`**：`WEBHOOK_URL` 不是最终地址，relay 不跟随重定向。在 `[GROK-UI]` 的 routine 里重新复制 webhook URL，然后在 `[LOCAL]` 运行 `./install.sh --webhook --lang zh-CN`。
 - **消息被拒收 refused**：这是引擎的防循环机制，同一对 agent 之间 10 分钟内超过 12 条就会拒收。relay 自己的转发是以 terminal 身份发出的，不受这个限制。
 - **relay 的名字不是由同一个名字派生的，或 relay 注册成了别的名字**：`install.sh`、`update.sh` 或 `check.sh` 会这样报告。`~/.config/agent-relay/env` 里的三个名字（`LISTEN_NAME`、`CLOUD_NAME`、`INBOX_NAME`）必须是 `<name>`、`<name>-cloud` 和 `<name>-inbox`，由安装器写入，不要手改。注册成 `<team-name>/<name>-2` 这样的名字，说明本机或团队里已有会话占用了这个名字。即使对方离开，引擎也会让 relay 沿用这个名字，检查会一直失败；只能连同身份一起卸载（[`identity` 级别](UNINSTALL.zh-CN.md#卸载身份或全部)），再换一个 `--relay-name` 重新安装。
@@ -334,7 +383,7 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 - **Grok Bot 运行的命令块打印 `STOP:` 行，而不是 `READY <tag>` 或 `agent-mesh-result` 结果行**：命令块没有改动任何东西，或者已经恢复到原来的提交（它会打印 `restored …`）。提示 `the engine step failed` 时，仓库停在已核对的发布版本，引擎的情况见上方引擎步骤自己打印的行。把 Grok Bot 的完整输出连同这一行交给维护部署的人；提示 `could not restore` 时不要运行云端脚本。`/workspace/agent-mesh` 里的本地改动要先查看，不要盲目 reset。提示同名的另一个 tag 已经存在时，让 Grok Bot 用 `git -C /workspace/agent-mesh tag -d <tag>` 删掉它，再发同一个命令块；命令块照常核对提交号和校验值。
 - **`rn-cloud.sh` 停止并提示 `box/bin/engine/reason-network is not a Reason Network build pinned by agent-mesh`**：引擎字节不属于固定构建，所以没有运行它。在 `[GROK-UI]` 暂停 routine，在对话中直接让 Grok Bot 运行 `bash /workspace/agent-mesh/box/rn-cloud-setup.sh --upgrade-engine`，它不运行旧引擎，直接换成固定版本；然后恢复 routine。提示 `the engine has not been moved to box/bin/engine yet` 时，在 `[LOCAL]` 运行 `./update.sh`，它的云端更新会移动引擎。
 - **`rn-cloud.sh` 提示启动器被替换过，或 `--upgrade-engine` 打印 `engine: note: other engine daemons run from box/bin`**：有另一个在本版本之前从 `box/bin/reason-network` 启动的引擎守护进程自我更新了。它无法替换 `box/bin/engine` 里的引擎，`rn-cloud.sh` 每次都会把启动器恢复。不需要的守护进程用 `REASON_NETWORK_HOME=<它的状态目录> REASON_NETWORK_NO_UPDATE=1 /workspace/agent-mesh/box/bin/engine/reason-network stop` 逐个停止，状态目录取提示里打印的值；不要指向 `box/state`，那是云端自己的引擎。
-- **正文里的 `<` 变成了 `[`**：0.10.7 版的 `listen` 会对部分标签做防伪改写，字符数不变。重投是按 relay 保存的副本发的，保持原文。
+- **正文里的 `<` 变成了 `[`**：0.10.7 版的 `listen` 会对部分标签做防伪改写，字符数不变。补寄是按 relay 保存的副本发的，保持原文。
 
 ## 卸载
 

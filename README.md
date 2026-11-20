@@ -7,7 +7,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 | | |
 |---|---|
 | **Version** | agent-mesh **v0.10.0** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
-| **Platform** | Local: macOS (Apple Silicon or Intel) with a one-click installer · relay messaging verified on Debian Linux, but local installation on Linux is not supported yet (see [Prerequisites](#prerequisites)) · Bot cloud: Linux x86_64 or ARM64 · Python 3.9+ on both sides |
+| **Platform** | Local: macOS (Apple Silicon or Intel) with a one-click installer · relay messaging verified on Debian Linux, but local installation on Linux is not supported yet (see [Prerequisites](#prerequisites)) · Bot's cloud computer: Linux x86_64 or ARM64 · Python 3.9+ on both sides |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
 | **License** | MIT |
@@ -15,7 +15,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 > [!TIP]
 > To let an agent install it, give Claude Code or Codex this repository and say: **“Read [AGENT-INSTALL.md](AGENT-INSTALL.md) and install it.”**
 
-**Contents:** [Architecture overview](#architecture-overview) · [What problem it solves](#what-problem-it-solves) · [Execution location labels](#execution-location-labels) · [How it works](#how-it-works) · [Prerequisites](#prerequisites) · [Install](#install) · [Several Grok Bots](#several-grok-bots) · [Verify](#verify) · [How agents receive messages](#how-agents-receive-messages) · [Security and privacy](#security-and-privacy) · [Troubleshooting](#troubleshooting) · [Uninstall](#uninstall) · [Upgrade](#upgrade) · [Documentation and language](#documentation-and-language) · [Appendix: message formats](#appendix-message-formats)
+**Contents:** [Architecture overview](#architecture-overview) · [What problem it solves](#what-problem-it-solves) · [Execution location labels](#execution-location-labels) · [Terms](#terms) · [How it works](#how-it-works) · [Prerequisites](#prerequisites) · [Install](#install) · [Several Grok Bots](#several-grok-bots) · [Verify](#verify) · [How agents receive messages](#how-agents-receive-messages) · [Security and privacy](#security-and-privacy) · [Troubleshooting](#troubleshooting) · [Uninstall](#uninstall) · [Upgrade](#upgrade) · [Documentation and language](#documentation-and-language) · [Appendix: message formats](#appendix-message-formats)
 
 ## Architecture overview
 
@@ -23,19 +23,19 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 flowchart LR
     subgraph LOCAL["💻 Local Computer (Your workspace · No public IP needed)"]
         direction TB
-        AGENT["🤖 Local Coding Agent<br/>(Claude Code / Codex / dsh / pi)"]
-        RELAY["📮 Local Relay<br/>Lightweight daemon for proxying and inbox"]
+        AGENT["🤖 Local sessions<br/>(Claude Code / Codex / dsh / pi)"]
+        RELAY["📮 Relay<br/>Always-on service: receives at the Bot address, proxies Grok Bot's replies"]
         AGENT <-->|"Local session messaging"| RELAY
     end
 
-    subgraph CLOUD["☁️ Grok Bot (Cloud Environment)"]
+    subgraph CLOUD["☁️ Cloud"]
         direction TB
-        DOORBELL["🔔 Webhook Routine (Doorbell)<br/>Carries only id, length, checksum, and a preview, not the full body, to wake the bot"]
-        BOT["🧠 Grok Bot (Cloud Box)<br/>Sleeps when idle; wakes to fetch and verify"]
+        DOORBELL["🔔 Routine (webhook)<br/>A doorbell wakes Grok Bot; it carries only id, length, checksum and a preview, not the full body"]
+        BOT["🧠 Grok Bot · Bot's cloud computer<br/>Sleeps when idle; fetches and verifies during the turn it is woken for"]
         DOORBELL -->|"Wake up"| BOT
     end
 
-    RELAY -->|"① Full message body (Reason Network)"| BOT
+    RELAY -->|"① Full message body as cloud mail (Reason Network)"| BOT
     RELAY -->|"② Webhook POST doorbell"| DOORBELL
     BOT -->|"③ Signed replies (proxied to local session)"| RELAY
 ```
@@ -43,12 +43,12 @@ flowchart LR
 ## What problem it solves
 
 - **Reaches the live session**: Calling `claude -p "..."` from a remote script runs a one-off task, but it **spawns a new, blank process every time** and cannot touch the terminal session you already have open, with its project background, conversation history and pending edits. agent-mesh addresses that live session directly, so the context stays.
-- **No busy waiting**: Complex tasks need back-and-forth: questions, revisions, picking the thread up later. Without a wake-up mechanism the cloud has to hang or poll; with agent-mesh each side sleeps right after sending, and a reply rings the "doorbell" to wake the other. Neither side busy-polls (the local side runs only a lightweight relay that long-polls for mail), which saves Grok quota and puts your existing local agent subscriptions to use. By default the relay waits at least 20 seconds between wake-ups and wakes at most 20 times per hour; whether a local session wakes depends on its [delivery mode](#how-agents-receive-messages).
-- **Code stays where it is**: Your code, documents, dependencies and session history stay on the local computer; you do not need to pack a project and upload it to a cloud machine to work with the cloud.
-- **Several sessions at once**: Open several local sessions for different roles (e.g. refactoring code, auditing docs, inspecting logs); the cloud bot can talk to all of them, and local sessions can cross-check a disagreement among themselves before reporting back.
+- **No busy waiting**: Complex tasks need back-and-forth: questions, revisions, picking the thread up later. Without a wake-up mechanism the cloud has to hang or poll; with agent-mesh each side sleeps right after sending, and a reply rings the "doorbell" to wake the other. Neither side busy-polls (the local side runs only a lightweight relay that long-polls for mail), which saves Grok Bot usage and puts your existing local agent subscriptions to use. By default the relay waits at least 20 seconds between wake-ups and wakes at most 20 times per hour; whether a local session wakes depends on its [delivery mode](#how-agents-receive-messages).
+- **Code stays where it is**: Your code, documents, dependencies and session history stay on the local computer; you do not need to pack a project and upload it to a cloud computer to work with the cloud.
+- **Several sessions at once**: Open several local sessions for different roles (e.g. refactoring code, auditing docs, inspecting logs); Grok Bot can talk to all of them, and local sessions can cross-check a disagreement among themselves before reporting back.
 - **No public exposure**: Built on Reason Network. Your local computer opens no inbound port and needs no self-hosted or rented server; as long as it can reach the iroh relays, it works inside home or corporate networks. Messages may pass through iroh public relays, and a VPN or proxy must allow `iroh.link`; see [Network and usage](#network-and-usage) and [Troubleshooting](#troubleshooting).
 - **No extra privileges**: The channel carries text only and **grants no extra execution privileges**; what runs locally is still governed by the agent's own approval settings. Two caveats: for a session that auto-approves (Claude Code's `--dangerously-skip-permissions`, Codex's `--yolo` and similar modes), incoming text acts as a command; and Grok Bot in the cloud is the channel's trust root, so if content it reads steers it, it can still send validly signed messages. See [Security and privacy](#security-and-privacy).
-- **When you don't need it**: If the whole task can be done on Grok Bot's cloud computer (running scripts, research, writing standalone files), install the CLIs you need there; you do not need this project.
+- **When you don't need it**: If the whole task can be done on the Bot's cloud computer (running scripts, research, writing standalone files), install the CLIs you need there; you do not need this project.
 
 ## Execution location labels
 
@@ -57,10 +57,59 @@ This guide, the runbook, and the prompts use these labels. They are instructions
 | Label | Location | What runs or happens there |
 |---|---|---|
 | `[LOCAL]` | User's local computer (default machine name `mac`) | Local coding agents, the Reason Network engine, and relay; `install.sh`, `check.sh`, `uninstall.sh` |
-| `[BOT-CLOUD]` | Grok Bot's cloud computer, named `cloud` | Grok Bot runs `/workspace/agent-mesh/box/rn-cloud*.sh` and stores cloud state and message bodies |
-| `[GROK-UI]` | Grok Bot interface opened by the user | Create or pause routines, paste prompts, and approve CopyToBox; these are not terminal commands |
+| `[BOT-CLOUD]` | The Bot's cloud computer: the Linux computer where Grok Bot runs commands, named `cloud` | Grok Bot runs `/workspace/agent-mesh/box/rn-cloud*.sh` and stores cloud state and message bodies |
+| `[GROK-UI]` | Grok Bot interface opened by the user | Create or pause routines, paste the routine prompt, send the cloud setup prompt, and approve CopyToBox; these are not terminal commands |
 
 Each computer has its own repository clone; files do not sync automatically. On `[LOCAL]`, `~` is the user's home directory on their local computer; `/workspace/agent-mesh/` on `[BOT-CLOUD]` is a directory on the Bot's cloud computer. Unless labeled otherwise, terminal commands and `~/…` paths below belong to `[LOCAL]`.
+
+## Terms
+
+This guide uses these words as follows.
+
+**Machines and roles**
+
+| Term | Meaning |
+|---|---|
+| Local computer `[LOCAL]` | Your Mac, also called this computer. It stays on and runs the engine, the relay and the local sessions. |
+| Bot's cloud computer `[BOT-CLOUD]` | The Linux computer where Grok Bot runs commands, named `cloud`; the cloud computer for short. It sleeps: nothing stays running there, and the engine starts only during the turn it is woken for. "The cloud" means that side as a whole: the clone in `/workspace/agent-mesh/`, the cloud scripts, the engine and their state. |
+| Grok Bot | Your Bot in Grok, the Bot for short, and the trust root of this channel. In agent-mesh each Bot has its own Bot address, relay service, routine and cloud sessions; another routine of the same Grok Bot, added under a new Bot address name, is another Bot ([Several Grok Bots](#several-grok-bots)). |
+| Grok Bot interface `[GROK-UI]` | Where you work with Grok Bot: create routines, paste the routine prompt, send prompts in the chat, approve CopyToBox. |
+| Local session | A coding agent session on the local computer that is wired into the team (Claude Code, Codex, pi, dsh). |
+
+**Names**
+
+| Term | Meaning |
+|---|---|
+| Team name `<team-name>` | The name of your private one-person team, also your person name in it; it cannot change once the team exists. |
+| Bot address `<team-name>/<name>` | The address local sessions write to Grok Bot at. The relay on the local computer receives at this address, not the Bot's cloud computer. |
+| Bot address name `<name>` | The name in the Bot address, chosen with `--relay-name` at installation and fixed from then on (`bot` was the default before v0.8.0). The cloud derives two sessions from it: `<name>-cloud` sends, `<name>-inbox` receives full bodies. |
+| Grok name | The Bot's name as Grok shows it, set with `--grok-name` and used only for display: `<team-name>/<name> → Grok: <Grok name>`. |
+
+**Parts**
+
+| Term | Meaning |
+|---|---|
+| Engine | Reason Network (pinned v0.12.17), one copy on each computer; it handles the team, the sessions and message delivery. |
+| Relay | The always-on service on the local computer, one per Bot. It receives at the Bot address, forwards bodies to the cloud, rings the doorbell to wake Grok Bot, and proxies Grok Bot's signed replies to local sessions. Not to be confused with the network relays (iroh or Reason relay servers) the engine connects through. |
+| Routine | A webhook-triggered task created in the Grok Bot interface, one per Bot. One POST to its webhook wakes Grok Bot to run the routine prompt. |
+| Routine prompt, routine stub | The text saved in the routine. By default it is the routine stub: a fixed short English text that loads the rules from the cloud on every run, so a change of the rules needs no new paste ([Routine stub](UPGRADE.md#routine-stub)). With `--full-prompt` the routine holds the complete prompt instead. |
+| Rules | The steps the routine follows on every turn, rendered on `[BOT-CLOUD]` from templates in the cloud's clone. |
+| Cloud setup prompt | The prompt sent to Grok Bot with the team invite at installation. With it the Bot clones the release on its cloud computer, installs the engine and joins the team. |
+| Signing key | `outbound.key`, one copy on the local computer and one on the Bot's cloud computer; it signs the messages between the two. |
+| Deployment record | What the local computer records about the deployed version and confirmation state of each part; `./update.sh` compares it with the new release. |
+
+**Messages**
+
+| Term | Meaning |
+|---|---|
+| Doorbell | One POST from the relay to the routine's webhook, carrying only the message id, length, checksum and an optional preview, never the full body. |
+| Wake, turn | A doorbell runs the routine once and wakes Grok Bot; that run is a turn. For how new messages wake local sessions, see delivery mode. |
+| Usage | Every wake-up of Grok Bot consumes its usage. By default the relay wakes it at most 20 times per hour. |
+| Cloud mail | Bodies that reach the cloud through `<name>-inbox`. `fetch` retrieves and checks each by id and stores it under `inbox/<id>/` (an added Bot: `bots/<name>/inbox/`). |
+| Pending, stored, handled | How the relay tracks each forwarded message. The cloud tells the relay with signed receipts which messages it stored and which it handled; a message stays pending until it is handled. |
+| Re-forward | When the cloud cannot get a body, it sends a signed re-forward request, and the relay sends its copy again; copies are kept for 7 days, and each message is re-forwarded at most twice. |
+| Thread notes | The cloud's `threads/*.md` (an added Bot: `bots/<name>/threads/`), the conversation summaries the routine appends each turn; Grok Bot relies on them for context. |
+| Delivery mode | How a local session receives new messages: push, turn or pull ([How agents receive messages](#how-agents-receive-messages)). |
 
 ## How it works
 
@@ -68,34 +117,34 @@ There are three roles:
 
 | Role | Availability | What it does |
 |---|---|---|
-| `[LOCAL]` User's local computer | Kept awake | Runs the engine and relay. The relay listens as `<team-name>/bot`, representing Grok Bot to local agents. The `bot` address belongs to the relay on the local computer, not to the Bot's cloud computer. Here `bot` stands for your [Bot address name](#grok-bot-and-team-name), normally the Bot's own name (`bot` was the default before v0.8.0). |
-| `[BOT-CLOUD]` Bot's cloud computer | May sleep | Starts the engine on demand during a turn. It sends as `<team-name>/bot-cloud`, receives full bodies as `<team-name>/bot-inbox` (with another Bot address name `<name>`: `<name>-cloud` and `<name>-inbox`), and uses the machine name `cloud`. No always-on service is installed there. |
-| `[GROK-UI]` Routine | Woken by webhook | A webhook task created in the Grok Bot interface; when woken, the Bot executes its prompt on `[BOT-CLOUD]`. A POST from the `[LOCAL]` relay wakes it. |
+| `[LOCAL]` Local computer | Kept awake | Runs the engine and relay. The relay listens at the Bot address `<team-name>/<name>`, representing Grok Bot to local sessions. The address belongs to the relay on the local computer, not to the Bot's cloud computer. `<name>` is your [Bot address name](#grok-bot-and-team-name), normally the Bot's own name (`bot` was the default before v0.8.0). |
+| `[BOT-CLOUD]` Bot's cloud computer | May sleep | Starts the engine on demand during a turn. It sends as `<team-name>/<name>-cloud`, receives full bodies as `<team-name>/<name>-inbox`, and uses the machine name `cloud`. No always-on service is installed there. |
+| `[GROK-UI]` Routine | Woken by webhook | A webhook task created in the Grok Bot interface; when woken, the Bot executes its routine prompt on `[BOT-CLOUD]`. A POST from the `[LOCAL]` relay (the doorbell) wakes it. |
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Local as [LOCAL] Local Agent
+    participant Local as [LOCAL] Local session
     participant Relay as [LOCAL] Relay
-    participant Webhook as [GROK-UI] Webhook Doorbell
-    participant Cloud as [BOT-CLOUD] Grok Bot Cloud Box
+    participant Webhook as [GROK-UI] Routine (webhook)
+    participant Cloud as [BOT-CLOUD] Grok Bot · Bot's cloud computer
 
-    Note over Local,Cloud: Scenario 1: Local Agent replies to Cloud (Body & Doorbell split)
-    Local->>Relay: Local Agent replies
-    Relay->>Cloud: First, deliver body to bot-inbox (RN-FWD)
+    Note over Local,Cloud: Scenario 1: a local session replies to Grok Bot (body and doorbell split)
+    Local->>Relay: Local session replies to the Bot address
+    Relay->>Cloud: First, deliver the body as cloud mail (RN-FWD)
     Relay->>Webhook: Then POST doorbell (id, length, sha256, preview, no full body, rung even if forwarding failed)
     Webhook->>Cloud: Wake up Grok Bot
     Cloud->>Cloud: rn-cloud.sh fetch retrieves and verifies body
 
-    Note over Local,Cloud: Scenario 2: Cloud Grok Bot sends to Local (Signed proxy)
+    Note over Local,Cloud: Scenario 2: Grok Bot sends to a local session (signed proxy)
     Cloud->>Relay: Send signed envelope (RN-OUT)
-    Relay->>Local: Proxied as <team-name>/bot to target local session
+    Relay->>Local: Proxied as the Bot address to the target local session
 ```
 
 Five design choices make this work:
 
 1. **The always-on machine handles replies.** The local computer sends every cloud-originated message on Grok Bot's behalf, so replies return to the local computer rather than a sleeping cloud computer.
-2. **The webhook is a doorbell.** In the original deployment, Grok Bot retained roughly the first 4,000 characters of a wake-up body. Full text therefore travels over Reason Network; the webhook carries an id, length, checksum, and optional preview. The routine fetches and verifies the body. A 10,000-character message can use one wake-up, within the engine's byte limit.
+2. **The webhook is a doorbell.** In the original deployment, Grok Bot retained roughly the first 4,000 characters of a webhook body. Full text therefore travels over Reason Network to the cloud's `<name>-inbox`; the webhook carries an id, length, checksum, and optional preview. The routine fetches and verifies the body. A 10,000-character message can use one wake-up, within the engine's byte limit.
 3. **Both ends recover lost mail.** The relay keeps forwarded bodies for seven days. If `fetch` cannot retrieve one, the cloud requests a signed re-forward, at most twice per message; this also recovers a failed initial forward. The cloud also tells the relay with signed receipts which messages it stored and which were handled. A message stays pending on the relay until it is handled; the relay rings again for one that stays unconfirmed, a limited number of times, and then alerts Grok Bot instead of retrying forever. Timings, settings and known limitations are under [Recovery and receipts](PROTOCOL.md#recovery-and-receipts).
 4. **Each message goes to one turn, and an interrupted one is not redone silently.** Wake-ups can overlap, and a retried webhook can ring twice for the same id. `fetch` claims each body it hands out, so an overlapping turn skips it. If a turn stops after it started acting and before it recorded completion, later turns report `uncertain`: the Bot checks its thread notes or asks the user rather than acting again. `fetch` also hands out verified bodies whose doorbell was lost. This is not exactly-once; see [Claims and interrupted turns](PROTOCOL.md#claims-and-interrupted-turns).
 5. **Relay protocol messages are signed.** A team session can claim another sender name. Proxy envelopes, forwarded bodies, and re-forward requests therefore use HMAC signatures. Envelopes and requests have a 15-minute freshness window and replay protection. The signing key has one copy on each machine.
@@ -121,7 +170,7 @@ Five design choices make this work:
 ### `[BOT-CLOUD]` Bot's cloud computer
 
 - Linux x86_64 or ARM64, Bash, Git, Python 3.9+ with `ssl` and `sqlite3`, `curl`, `tar`, `sha256sum`, and a writable persistent `/workspace/agent-mesh/`.
-- The Bot prepares missing tools using the cloud system's package manager and explains any needed permissions to the user; do not install them on the local computer instead. The cloud script checks system, CPU, and runtime dependencies before downloads; the cloud prompt covers Git and directory checks.
+- The Bot prepares missing tools using the cloud system's package manager and explains any needed permissions to the user; do not install them on the local computer instead. The cloud script checks system, CPU, and runtime dependencies before downloads; the cloud setup prompt covers Git and directory checks.
 
 ### Grok Bot and team name
 
@@ -129,12 +178,12 @@ Five design choices make this work:
 - Choose a team name, also used as your person name: 1–40 lowercase ASCII letters, digits, or hyphens; no leading or trailing hyphen. Use a pseudonym. Renaming requires recreating the team.
 - Team and machine names use single hyphens only: the engine merges repeated hyphens, so `a--b` would become `a-b`, and the installer refuses such names.
 - Choose the Bot address name: use the Bot's own name, so your agents can tell your Grok Bots apart. The relay listens as `<team-name>/<name>`, and the cloud uses `<name>-cloud` and `<name>-inbox`. A new installation has no default (before v0.8.0 it was `bot`; existing installations keep their name). Rules: 1–34 lowercase ASCII letters and digits, in groups joined by a single hyphen (no leading, trailing or repeated hyphen), not `terminal` or `terminal-<n>`. Do not use your real name. The name cannot be changed later, not even for an unfinished installation: queued mail, the routine prompt and the cloud setup all use it. A different name needs an uninstall at level `identity` or `all` and a new install, or a new Bot added under the new name and the old Bot removed ([Several Grok Bots](#several-grok-bots)).
-- Give the Bot's name as Grok shows it, in any language, with `--grok-name` (up to 64 characters, no spaces at the start or end, no line breaks or other control characters). It is stored as given, not used for routing, and shown next to the address as `<team-name>/<name> → Grok: <its name>` by the installer, `./check.sh` and the filled-in reply convention. For a name without Latin letters, pick an address yourself, for example in pinyin (「小助手」 → `xiaozhushou`).
+- Give the Grok name, the Bot's name as Grok shows it, in any language, with `--grok-name` (up to 64 characters, no spaces at the start or end, no line breaks or other control characters). It is stored as given, not used for routing, and shown next to the address as `<team-name>/<name> → Grok: <its name>` by the installer, `./check.sh` and the filled-in reply convention. For a name without Latin letters, pick an address yourself, for example in pinyin (「小助手」 → `xiaozhushou`).
 
 ### Network
 
 - Both `[LOCAL]` and `[BOT-CLOUD]` need HTTPS access to GitHub repositories and release downloads, plus iroh relay connectivity.
-- The default public HTTPS clone URL needs no GitHub account or SSH key. For a public fork, pass `--repo-url https://…` on each installer command that generates a cloud prompt, and the same option to `./update.sh`; it must allow credential-free cloud reads and carry the release tag `v<VERSION>`, because the cloud installs only that tag. The local clone can live anywhere; the cloud clone must remain at `/workspace/agent-mesh/` because prompts use that fixed path.
+- The default public HTTPS clone URL needs no GitHub account or SSH key. For a public fork, pass `--repo-url https://…` on each installer command that generates a cloud setup prompt, and the same option to `./update.sh`; it must allow credential-free cloud reads and carry the release tag `v<VERSION>`, because the cloud installs only that tag. The local clone can live anywhere; the cloud clone must remain at `/workspace/agent-mesh/` because prompts use that fixed path.
 - Check connectivity to `*.iroh.link`, especially with a VPN or proxy. This probe should return HTTP 200:
 
   ```bash
@@ -142,7 +191,7 @@ Five design choices make this work:
   ```
 
   If it fails, see [Troubleshooting](#troubleshooting). The probe checks one endpoint, not worldwide availability.
-- Reason Network 0.12 uses Reason's own relays by default (`relay-sfo1`, `relay-iad1`, `relay-fra1` and `relay-sin1` under `compute.reasonmachines.com`) instead of n0's `*.iroh.link`. agent-mesh 0.7.0 pins 0.12.17, so allow `*.compute.reasonmachines.com`; an engine still on 0.10.7 uses n0's relays until `./update.sh` upgrades it, so allow both domains. `./check.sh` probes the relay the installed engine actually uses and names it.
+- Reason Network 0.12 uses Reason's own network relays by default (`relay-sfo1`, `relay-iad1`, `relay-fra1` and `relay-sin1` under `compute.reasonmachines.com`) instead of n0's `*.iroh.link`. agent-mesh 0.7.0 pins 0.12.17, so allow `*.compute.reasonmachines.com`; an engine still on 0.10.7 uses n0's network relays until `./update.sh` upgrades it, so allow both domains. `./check.sh` probes the network relay the installed engine actually uses and names it.
 
 ## Install
 
@@ -200,7 +249,7 @@ The installation must be complete and up to date first: every Bot has its webhoo
 
 1. It asks what the Bot is called in Grok and proposes an address name derived from it; for a name without Latin letters or digits it proposes the first free `bot-2`, `bot-3`, …. Press Enter to accept it or type another. An agent can give both at once with `--grok-name '<its name in Grok>' --relay-name <name>`; then the installer asks nothing but the plan. The team comes from the installation, so `--name` is not needed (if given, it must be the same team). It does not wire agents again, download the engine or generate a key.
 2. It checks that none of `<name>`, `<name>-cloud` and `<name>-inbox` is a session the team still lists (on any machine, online or offline) or was ever used on this Mac, and that the name was never removed, then shows the plan `Add Bot <team-name>/<name> (called “…” in Grok); <the other Bots> stay as they are.` for you to confirm. `--add-bot` never accepts `--yes`; outside a terminal it prints the plan and changes nothing.
-3. `[GROK-UI]`: create a webhook-triggered routine for the new Bot and paste the prompt the installer prints, then paste its Webhook URL and key into the `[LOCAL]` terminal. This Bot's stub names the Bot, the team and the team hash in its first command; the rules it loads put `RN_BOT=<name>` in front of every `rn-cloud.sh` command and keep its thread notes under `bots/<name>/threads/`. With `--full-prompt` the complete prompt has an extra step 0 instead ([step 0](prompts/cloud-add-bot.md)).
+3. `[GROK-UI]`: create a webhook-triggered routine for the new Bot and paste the routine prompt the installer prints, then paste its Webhook URL and key into the `[LOCAL]` terminal. This Bot's routine stub names the Bot, the team and the team hash in its first command; the rules it loads put `RN_BOT=<name>` in front of every `rn-cloud.sh` command and keep its thread notes under `bots/<name>/threads/`. With `--full-prompt` the complete prompt has an extra step 0 instead ([step 0](prompts/cloud-add-bot.md)).
 4. The rest is automatic. The installer wakes the new Bot through its webhook; the stub's first command runs `box/rn-cloud-add-bot.sh` before it prints the rules, which checks the shared cloud computer and registers the Bot's two sessions there, without CopyToBox or a new invite. Only once both sessions appear in the team does the installer start the Bot's relay; then it sends the Bot the one-line request `agent-mesh add-bot <name> <req>` and waits for the reply that confirms the registration and the stub. Each wait lasts up to 10 minutes.
 
 If a wait runs out, the Bot stays pending, neither failed nor done, and its relay is not started before the sessions appear. `./update.sh` later looks for the reply by itself. `./install.sh --relay-name <name> --wake-bot` wakes the Bot again and continues where it stopped, and `./install.sh --add-bot --relay-name <name>` resumes the addition. While one addition is unfinished, no other Bot can be added; finish it or remove it with `--level bot`.
@@ -208,7 +257,7 @@ If a wait runs out, the Bot stays pending, neither failed nor done, and its rela
 ### Daily use with several Bots
 
 - `./check.sh`, `./update.sh` and `./uninstall.sh --plan` cover every Bot without new options. `./check.sh` shows one section per Bot, headed `Bot address: <team-name>/<name> → Grok: <its name>`.
-- `--webhook`, `--cloud-prompt`, `--purge-copies`, `--grok-name` alone and `--wake-bot` act on one Bot. With one Bot they work as before; with several, choose one with `--relay-name <name>`, or the installer lists the Bots and stops. For an added Bot, `--cloud-prompt` wakes it instead of printing a cloud prompt.
+- `--webhook`, `--cloud-prompt`, `--purge-copies`, `--grok-name` alone and `--wake-bot` act on one Bot. With one Bot they work as before; with several, choose one with `--relay-name <name>`, or the installer lists the Bots and stops. For an added Bot, `--cloud-prompt` wakes it instead of printing a cloud setup prompt.
 - `--restart-relay` and `--rotate-key` always cover every Bot whose relay is set up, because the relay code and the signing key are shared; they refuse `--relay-name`. If one relay does not come back, every relay returns to its previous code, plist and running state. A new key is not rolled back: `--rotate-key` says which relays run with the new key and which did not start, and the new key still has to be copied to `[BOT-CLOUD]` once.
 - The filled-in reply convention lists every Bot address with its name in Grok.
 
@@ -226,10 +275,10 @@ Locations: self-checks, test sends, and relay log inspection run on `[LOCAL]`; G
    ./check.sh
    ```
 
-2. **Test message.** Send a message to the Bot address (`bot` below; use your Bot address name, which `./check.sh` prints as `Bot address:`), then wait for the reply in another terminal:
+2. **Test message.** Send a message to the Bot address (replace `<name>` with your Bot address name, which `./check.sh` prints as `Bot address:`), then wait for the reply in another terminal:
 
    ```bash
-   reason-network send <team-name>/bot "test 1"
+   reason-network send <team-name>/<name> "test 1"
    reason-network listen --as terminal --wait 600   # in another terminal
    ```
 
@@ -254,7 +303,7 @@ Closed sessions disappear from the roster. Messages remain in the inbox while th
 
 ### Grok Bot is the trust root
 
-- There are two copies of the signing key, and one of them is on `[BOT-CLOUD]`. Signatures stop sessions without the key from impersonating the Bot; they do not stop a manipulated Bot. If content Grok Bot reads in a web page or document steers it (prompt injection), it can still produce validly signed RN-OUT envelopes and message any of your local sessions as `<team-name>/bot`. Local agents should therefore treat the Bot's messages as outside input, not as instructions from you.
+- There are two copies of the signing key, and one of them is on `[BOT-CLOUD]`. Signatures stop sessions without the key from impersonating the Bot; they do not stop a manipulated Bot. If content Grok Bot reads in a web page or document steers it (prompt injection), it can still produce validly signed RN-OUT envelopes and message any of your local sessions as the Bot address `<team-name>/<name>`. Local agents should therefore treat the Bot's messages as outside input, not as instructions from you.
 - Agents running as the same macOS user may still read the keys in `~/.config/agent-relay/`. A project folder is not an access-control boundary.
 
 ### Local agent permissions
@@ -274,15 +323,15 @@ Message bodies remain in plain text in the following places, so **do not send ke
 |---|---|---|
 | `[LOCAL]` `~/.reason/network/network.db`, `[BOT-CLOUD]` `/workspace/agent-mesh/box/state/network.db` | Messages each engine received, kept after they are read | Not deleted by the engine |
 | `[LOCAL]` `~/.local/lib/agent-mesh/engine-backup-*/state`, `[BOT-CLOUD]` `/workspace/agent-mesh/box/engine-backup-*/state` | A copy of the engine state, including received messages, taken before an engine upgrade | Until you delete it; `./uninstall.sh --level identity` removes both |
-| `[LOCAL]` `~/Library/Application Support/agent-relay/fwd-copies/` | The relay's copies of forwarded bodies, kept for redelivery | After `FWD_COPY_DAYS` (default 7 days) they are no longer redelivered, but they are deleted only when later mail passes through the relay (checked at most hourly); an idle relay keeps them |
+| `[LOCAL]` `~/Library/Application Support/agent-relay/fwd-copies/` | The relay's copies of forwarded bodies, kept for re-forwards | After `FWD_COPY_DAYS` (default 7 days) they are no longer re-forwarded, but they are deleted only when later mail passes through the relay (checked at most hourly); an idle relay keeps them |
 | `[BOT-CLOUD]` `/workspace/agent-mesh/inbox/<id>/full.txt` (an added Bot: `/workspace/agent-mesh/bots/<name>/inbox/<id>/full.txt`) | Bodies retrieved by `fetch` | Not deleted automatically |
-| `[BOT-CLOUD]` `/workspace/agent-mesh/threads/*.md` (an added Bot: `/workspace/agent-mesh/bots/<name>/threads/*.md`) | Conversation summaries the routine appends each turn | Not deleted automatically |
+| `[BOT-CLOUD]` `/workspace/agent-mesh/threads/*.md` (an added Bot: `/workspace/agent-mesh/bots/<name>/threads/*.md`) | Thread notes: the conversation summaries the routine appends each turn | Not deleted automatically |
 | `[LOCAL]` `~/Library/Application Support/agent-relay/state.json` | Doorbells waiting for the webhook, each with its body preview | Removed once the webhook delivers them; while the webhook keeps failing they stay, and only the oldest are dropped past `MAX_SPOOL`. Changing `DOORBELL_PREVIEW_CHARS` affects later doorbells only; fix the webhook so the backlog goes out |
 | The routine's webhook | A preview of the first 200 characters in each doorbell | Up to Grok Bot; `DOORBELL_PREVIEW_CHARS=0` turns previews off |
 
 The relay log records message ids, lengths and checksums, not bodies. `FWD_COPY_DAYS` and `DOORBELL_PREVIEW_CHARS` are set in `~/.config/agent-relay/env`; restart the relay with `launchctl kickstart -k "gui/$(id -u)/com.local.agent-relay"` for a change to take effect. An added Bot keeps its own settings, relay state and copies in the paths listed under [Several Grok Bots](#several-grok-bots), and its service is `com.local.agent-relay.<name>`. To clean up:
 
-- On `[LOCAL]`, run `./install.sh --purge-copies` to delete all copies the relay kept (with several Bots, add `--relay-name <name>`; it deletes that Bot's copies). Redelivery requests for those messages then get `no-copy`, and the sender has to send again.
+- On `[LOCAL]`, run `./install.sh --purge-copies` to delete all copies the relay kept (with several Bots, add `--relay-name <name>`; it deletes that Bot's copies). Re-forward requests for those messages then get `no-copy`, and the sender has to send again.
 - For `[BOT-CLOUD]`, ask Grok Bot in `[GROK-UI]` to run `/workspace/agent-mesh/box/rn-cloud.sh purge <days>`. It stops the cloud engine, then deletes received messages (the cloud `network.db`), `inbox/<id>/`, misdirected mail logs in `inbox/_stray/`, and `threads/*.md` older than that many days; `0` deletes all of them. The thread notes give the routine its context, so the Bot no longer remembers earlier conversations afterwards. The cloud clone must first be updated to a version that has this command. It is refused while the cloud computer serves more than one Bot, because it cannot tell their mail apart.
 - The engine manages the local `network.db`; this project offers no partial cleanup for it. `./uninstall.sh --level identity` and `--level all` remove all of `~/.reason/network`.
 
@@ -294,30 +343,30 @@ The relay log records message ids, lengths and checksums, not bodies. `FWD_COPY_
 
 ### Replacing keys
 
-- **Signing key**: on `[LOCAL]`, run `./install.sh --rotate-key --lang en`. It generates a new `outbound.key`, restarts the relay (with several Bots, every relay, since they share the key), and prints the CopyToBox steps: in `[GROK-UI]`, have Grok Bot use CopyToBox to copy the new key from `[LOCAL]` `~/.config/agent-relay/outbound.key` to `[BOT-CLOUD]` `/workspace/agent-mesh/box/outbound.key`, approve the copy, and run `chmod 600` on the cloud copy. Until the cloud has the new key, signature checks fail in both directions. Messages forwarded before the rotation that the cloud has not fetched yet keep their old-key signature: after the rotation `fetch` reports them as `mismatch` (bad signature) and requests no redelivery; each is reported again whenever a doorbell asks for it, and once by the scans no doorbell asked for. If the old key did not leak, have the Bot fetch pending mail before rotating; otherwise ask the senders to resend, and clean up the old messages with `rn-cloud.sh purge`.
+- **Signing key**: on `[LOCAL]`, run `./install.sh --rotate-key --lang en`. It generates a new `outbound.key`, restarts the relay (with several Bots, every relay, since they share the key), and prints the CopyToBox steps: in `[GROK-UI]`, have Grok Bot use CopyToBox to copy the new key from `[LOCAL]` `~/.config/agent-relay/outbound.key` to `[BOT-CLOUD]` `/workspace/agent-mesh/box/outbound.key`, approve the copy, and run `chmod 600` on the cloud copy. Until the cloud has the new key, signature checks fail in both directions. Messages forwarded before the rotation that the cloud has not fetched yet keep their old-key signature: after the rotation `fetch` reports them as `mismatch` (bad signature) and requests no re-forward; each is reported again whenever a doorbell asks for it, and once by the scans no doorbell asked for. If the old key did not leak, have the Bot fetch pending mail before rotating; otherwise ask the senders to resend, and clean up the old messages with `rn-cloud.sh purge`.
 - **Webhook URL or key**: regenerate the routine's key in `[GROK-UI]`; if the interface cannot, delete and recreate the routine. Then run `./install.sh --webhook --lang en` on `[LOCAL]` and enter the new values.
 - The complete leak response is in the [security policy](SECURITY.md#if-you-suspect-a-credential-leak).
 
 ### Network and usage
 
-- The pinned open-source engine runs locally in account-free mode, and in that mode it sends no data to Reason. Messages are end-to-end encrypted between the engines and a relay only forwards them, as upstream describes it; this project has not independently audited the relays.
-- Relays: version 0.10.7 uses n0's public iroh relays by default, 0.12 uses Reason's. A team can pick its own relay with `reason-network relay <URL>` (`reason-network relay default` goes back to the engine's default). Every machine in the team, including `[BOT-CLOUD]`, must run the same command (there: `REASON_NETWORK_HOME=/workspace/agent-mesh/box/state /workspace/agent-mesh/box/bin/reason-network relay <URL>`; the engine daemon stops and starts again with the next command); a machine that was offline must run it when it comes back. With an explicit relay, short invite codes do not work; use the long invite form, which `./install.sh --cloud-prompt` prints anyway.
+- The pinned open-source engine runs locally in account-free mode, and in that mode it sends no data to Reason. Messages are end-to-end encrypted between the engines and a network relay only forwards them, as upstream describes it; this project has not independently audited the network relays.
+- Network relays: version 0.10.7 uses n0's public iroh relays by default, 0.12 uses Reason's. A team can pick its own network relay with `reason-network relay <URL>` (`reason-network relay default` goes back to the engine's default). Every machine in the team, including `[BOT-CLOUD]`, must run the same command (there: `REASON_NETWORK_HOME=/workspace/agent-mesh/box/state /workspace/agent-mesh/box/bin/reason-network relay <URL>`; the engine daemon stops and starts again with the next command); a machine that was offline must run it when it comes back. With an explicit network relay, short invite codes do not work; use the long invite form, which `./install.sh --cloud-prompt` prints anyway.
 - **Forgotten sessions (Reason Network 0.12 only):** an ordinary agent session that has been offline for more than a day is forgotten, and its unread messages are deleted with it. The engine starts doing this once its daemon has been running for six hours. The relay's mailbox on `[LOCAL]` and the cloud's mailboxes on `[BOT-CLOUD]` (sessions started with `listen --as`) are exempt. Version 0.10.7 never forgets sessions, so the rule applies only after an upgrade. Read a session's messages before leaving it offline for long.
 - Each Grok Bot wake-up consumes usage. The relay defaults to at most 20 wake-ups per hour.
 - Report security problems privately as described in the [security policy](SECURITY.md), not in a public issue.
 
 ## Troubleshooting
 
-- **Cannot reach the relay:** `./check.sh` and `install.sh` name the relay they probed. Retry the probe with the VPN/proxy disabled. If that resolves it, add a direct/bypass rule covering `iroh.link` and `reasonmachines.com` with all subdomains, including in TUN, virtual-NIC, enhanced, or global modes. Exclude both domains from HTTPS decryption/MITM too. Check the certificate issuer (use the probed relay's address in place of `aps1-1`):
+- **Cannot reach the network relay:** `./check.sh` and `install.sh` name the network relay they probed. Retry the probe with the VPN/proxy disabled. If that resolves it, add a direct/bypass rule covering `iroh.link` and `reasonmachines.com` with all subdomains, including in TUN, virtual-NIC, enhanced, or global modes. Exclude both domains from HTTPS decryption/MITM too. Check the certificate issuer (use the probed network relay's address in place of `aps1-1`):
 
   ```bash
   curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer
   ```
 
-  Expect a public certificate authority (currently Let's Encrypt) rather than your proxy's CA. If it still fails without the proxy, investigate DNS, firewall rules, or the network. The engine can use several relays; allowing only the probe host is insufficient. `check.sh` reports SKIP `relay reachability unknown` when it cannot tell which relay a 0.12 engine uses (it has not logged one yet); allow both domains and run it again later.
+  Expect a public certificate authority (currently Let's Encrypt) rather than your proxy's CA. If it still fails without the proxy, investigate DNS, firewall rules, or the network. The engine can use several network relays; allowing only the probe host is insufficient. `check.sh` reports SKIP `relay reachability unknown` when it cannot tell which network relay a 0.12 engine uses (it has not logged one yet); allow both domains and run it again later.
 - **Cloud join reports `couldn't reach the machine that made the invite`:** usually the Mac's VPN or proxy is intercepting `*.iroh.link` again. Fix it as in the previous item, run `reason-network stop` on the Mac, then have Grok Bot retry with the same invite while valid.
 - **Session missing from `who`:** reopen sessions started before `setup`. Codex also needs to complete a turn before appearing.
-- **`fetch` reports `missing`:** inspect `refwd`. `ack=resent` means the relay resent it; retry after 60 seconds. `no-copy`, `limit`, `failed`, or `skipped` means recovery did not succeed; ask the sender to resend. No `refwd` field means the Mac was not connected.
+- **`fetch` reports `missing`:** inspect `refwd`. `ack=resent` means the relay re-forwarded it; retry after 60 seconds. `no-copy`, `limit`, `failed`, or `skipped` means recovery did not succeed; ask the sender to resend. No `refwd` field means the Mac was not connected.
 - **Relay log shows `webhook POST failed: 30x`:** `WEBHOOK_URL` is not the final address; the relay does not follow redirects. Copy the webhook URL again from the routine in `[GROK-UI]`, then run `./install.sh --webhook --lang en` on `[LOCAL]`.
 - **Message `refused`:** the engine's loop guard refuses more than 12 messages between a pair of agents within ten minutes. Body forwarding uses the exempt terminal identity.
 - **The relay names are not derived from one name, or the relay registered under another name:** `install.sh`, `update.sh` or `check.sh` says so. The three names in `~/.config/agent-relay/env` (`LISTEN_NAME`, `CLOUD_NAME`, `INBOX_NAME`) must be `<name>`, `<name>-cloud` and `<name>-inbox`; the installer writes them, do not edit them. A registration such as `<team-name>/<name>-2` means another session on this computer or in the team already had the name. The engine keeps that pick for the relay even after the other session is gone, so the check keeps failing; remove the installation including its identity ([level `identity`](UNINSTALL.md#remove-the-identity-or-everything)) and install again with another `--relay-name`.
@@ -348,7 +397,7 @@ Levels `program`, `identity` and `all` cover every Bot on this Mac. Levels `bot`
 
 ## Upgrade
 
-The local repository, the clone on the Bot cloud computer and the saved routine prompt are separate: changing files on the Mac does not update the other two. A reply convention already appended to a project's `AGENTS.md` is not updated either; copy the template again. The [changelog](CHANGELOG.md) says which parts each version changes.
+The local repository, the clone on the Bot's cloud computer and the saved routine prompt are separate: changing files on the Mac does not update the other two. A reply convention already appended to a project's `AGENTS.md` is not updated either; copy the template again. The [changelog](CHANGELOG.md) says which parts each version changes.
 
 In the repository on `[LOCAL]`, run:
 
