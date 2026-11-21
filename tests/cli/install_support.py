@@ -98,6 +98,10 @@ class InstallHarness:
             if found:
                 (self.bin / name).symlink_to(found)
         (self.bin / "python3").symlink_to(sys.executable)
+        real_ps = shutil.which("ps")
+        if real_ps:
+            self.tool("ps", 'if [ -n "$MOCK_PS" ] && [ "$*" = "-axo pid=,ppid=,command=" ]; then cat "$MOCK_PS"; exit 0; fi\n'
+                      f'exec "{real_ps}" "$@"')
         self.env = {"PATH": str(self.bin), "HOME": str(self.home),
                     "MOCK_OS": "Darwin", "MOCK_ARCH": "arm64", "MOCK_VERSION": "0.12.17", "AGENT_MESH_REGISTER_WAIT": "2",
                     "CALL_LOG": str(self.base / "calls"),
@@ -719,11 +723,14 @@ if stub:
                (os.urandom(8).hex(), sys.argv[1], text, int(time.time() * 1000)))
     db.commit()
     sys.exit(0)
-found = re.search(r"^agent-mesh update \S+ \S+ ([0-9a-f]{16})$|REQ=([0-9a-f]{16})$|^agent-mesh add-bot \S+ ([0-9a-f]{16})$",
+found = re.search(r"^agent-mesh update \S+ \S+ ([0-9a-f]{16})$|REQ=([0-9a-f]{16})$|^agent-mesh add-bot \S+ ([0-9a-f]{16})$"
+                  r"|^agent-mesh rename \S+ \S+ \S+ ([0-9a-f]{16})$|^agent-mesh history \S+ accept \S+ ([0-9a-f]{16})$",
                   body, re.M)
 req = conf.get("req") or next(g for g in found.groups() if g)
+claim = re.search(r"^agent-mesh history \S+ accept (\S+) ", body, re.M)
+text = conf["body"].replace("{req}", req).replace("{claim}", claim.group(1) if claim else "")
 db.execute("INSERT INTO messages VALUES (?, ?, 'demo/terminal', ?, ?, ?)",
-           (os.urandom(8).hex(), conf.get("sender", "demo/bot"), conf["body"].replace("{req}", req),
+           (os.urandom(8).hex(), conf.get("sender", "demo/bot").replace("{to}", sys.argv[1]), text,
             int(time.time() * 1000) - conf.get("ago_ms", 0), conf.get("held", 0)))
 db.commit()
 '''.replace("TABLE", repr(BOT_TABLE))
@@ -836,6 +843,8 @@ if cmd == "print":
         print(f"\tpid = {item['pid']}")
     sys.exit(0)
 if cmd == "bootout":
+    if once("stuck", sys.argv[2].rsplit("/", 1)[1]):
+        sys.exit(0)
     state.pop(sys.argv[2].rsplit("/", 1)[1], None)
     book.write_text(json.dumps(state))
     sys.exit(0)

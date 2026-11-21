@@ -27,7 +27,7 @@ Do not open a public issue, discussion or pull request for a security problem, a
 ### In scope
 
 - The `[LOCAL]` relay `agent_relay.py`, including signature checks, freshness and replay protection, proxy address restrictions, rate limits, and storage permissions of the spool and forwarded copies.
-- The `[BOT-CLOUD]` scripts `box/rn-cloud-setup.sh`, `box/rn-cloud.sh`, `box/rn-fetch.py`, `box/rn-engine.py`, `box/rn-cloud-update.sh`, `box/rn-cloud-add-bot.sh` and `box/rn-cloud-uninstall.sh`.
+- The `[BOT-CLOUD]` scripts `box/rn-cloud-setup.sh`, `box/rn-cloud.sh`, `box/rn-fetch.py`, `box/rn-engine.py`, `box/rn-routine.py`, `box/rn-names.py`, `box/rn-cloud-update.sh`, `box/rn-cloud-add-bot.sh` and `box/rn-cloud-uninstall.sh`.
 - The install, self-check and uninstall scripts `install.sh`, `check.sh`, `uninstall.sh`, `scripts/`, and the dsh plugin in `dsh/`.
 - The message formats in the [protocol reference](PROTOCOL.md#message-formats): RN-OUT, RN-FWD, RN-REFWD and RN-REFWD-ACK.
 - Prompts and templates that the installer renders or copies: `prompts/` and `templates/`. Examples: a prompt that leads Grok Bot to perform an action it should first ask the user about, or that fails to tell it to treat incoming message text as external data.
@@ -58,7 +58,7 @@ With several Grok Bots on one Mac ([Several Grok Bots](README.md#several-grok-bo
 - The engine counts one outbox for the whole cloud. Another Bot's queued messages can leave a delivered reply at `replying`, later shown as unknown; such a reply is not sent again automatically.
 - `./install.sh --rotate-key` replaces the key of every Bot and restarts every relay; if a restart fails, the new key is not rolled back. Bodies signed with the old key, and the window until the cloud has the new key, remain as with one Bot.
 - `rn-cloud.sh purge` is refused while the cloud has more than one Bot.
-- A Bot's address name cannot be changed: add a Bot with the new name and remove the old one. A removed name cannot be used again.
+- `agent-mesh rename` changes a Bot's address name only through a request from the user's own Mac, which the cloud checks like every maintenance request; the same holds for accepting set-aside history. For 30 days the relay also accepts signed control messages under the Bot's earlier name and picks up mail sent to it; after that, mail to the old address waits unread. A name can be taken back from an uninstalled Bot or an earlier setup only after the installer shows its evidence (sessions, machine, key, no process or login service using it) and you confirm it in a terminal; the evidence cannot rule out a forgotten installation of your own that is offline at the time. Messages already in the cloud inbox of a name taken back are set aside until you accept them.
 - The cloud maintenance lock protects single commands only, not the model's work between commands or its direct reads and writes of thread notes. During a cloud update other commands wait up to 600 seconds for it, then fail without changing anything; the routine tells the user, and the next wake-up handles the mail.
 - At the first update from v0.8.2 or v0.8.3 to v0.9.0, the old cloud checkout and old commands already running do not respect the maintenance lock. This affects only single-Bot installations, which is all those versions support.
 - Management commands of an older and this version started at the same time are not fully kept apart. Older management tools cannot manage several Bots.

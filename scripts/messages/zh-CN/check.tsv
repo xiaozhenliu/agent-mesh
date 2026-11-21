@@ -139,3 +139,9 @@ check.relay_python_missing	relay 使用的 Python %s 不存在或已不能用
 check.relay_python_fix	./update.sh 会另选一个并重启 relay；也可以自己指定：./install.sh --python <path>
 check.prompt_recover	routine 里可能已经贴了桩，但它需要的云端更新没有得到证实：Grok Bot 可能没有在处理消息
 check.prompt_recover_fix	./update.sh（先查找云端的回信，没有就显示完整提示词请你贴回去）
+check.rename_open	%s 改名为 %s 还没有完成（阶段 %s）
+check.rename_open_fix	运行 agent-mesh rename 完成它，或运行 agent-mesh rename --cancel 撤销
+check.rename_damaged	deployed.json 里的改名记录无法读取
+check.former_live	旧地址 %s 仍能送达 %s，直到 %s
+check.former_expired	旧地址 %s 已不再送达 %s（自 %s 起）；发往它的消息会一直未读
+check.former_expired_fix	把新地址告诉发件人；想重新使用旧地址：%s

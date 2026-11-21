@@ -62,7 +62,7 @@ class BotBox:
         (self.box / "state").mkdir(parents=True)
         (self.box / "person").write_text("demo\n")
         (self.box / "outbound.key").write_text(KEY + "\n")
-        for name in ("rn-engine.py", "rn-fetch.py", "rn-cloud.sh", "rn-cloud-setup.sh"):
+        for name in ("rn-engine.py", "rn-fetch.py", "rn-cloud.sh", "rn-cloud-setup.sh", "rn-routine.py", "rn-names.py"):
             (self.box / name).symlink_to(HERE / name)
         self.engine = self.box / "bin" / "engine" / "reason-network"
         self.engine.parent.mkdir(parents=True)

@@ -117,7 +117,7 @@ class CloudSetup(InstallHarness, unittest.TestCase):
         (self.box / "relay").write_text("alice\n")
         result = self.setup(invite(), "demo", "bob")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("uses the Bot address name alice; renaming is not supported", result.stderr)
+        self.assertIn("uses the Bot address name alice; setup does not change it: run agent-mesh rename", result.stderr)
         self.assertNotIn("curl", self.calls())
         self.assertEqual(self.names_files(), {"relay": "alice\n", "person": "demo\n"})
 

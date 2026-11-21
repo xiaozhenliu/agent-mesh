@@ -17,6 +17,12 @@
                                        Bot named NAME cannot be added: NAME, NAME-cloud or NAME-inbox is a session of
                                        PERSON on any machine (online or offline) or a cli: key in this Mac's session
                                        table, or NAME is a Bot here or was removed; 2 if it cannot be checked
+  relay_names.py name-check PERSON NAME [--slot SLOT] [--relay-pid PID] [--db PATH] [--ps-file PATH]
+                                       read `reason-network who --all --json` on stdin and decide whether NAME can
+                                       become the address name of the Bot SLOT (- for the first Bot; without --slot,
+                                       a Bot being added). Prints "class new|own|removed|left", then "evidence TEXT",
+                                       "unread N" and "sender ADDRESS N" lines for a name taken back; exit 1 with the
+                                       reasons if NAME cannot be used, 2 if it cannot be checked
   relay_names.py cloud-sessions PERSON NAME
                                        read `reason-network who --all --json` on stdin; exit 0 if NAME-cloud and
                                        NAME-inbox are both sessions of PERSON on the machine cloud, 1 if not, 2 if
@@ -24,13 +30,21 @@
   relay_names.py grok-check NAME       exit 0 if NAME can be stored as the Bot's name in Grok, else 1 with the reason
   relay_names.py suggest GROK_NAME     print a Bot address name derived from the Bot's name in Grok; exit 1 if none
                                        can be derived (for example a name without Latin letters or digits)
-Only names are printed, never other values from the env file.
+  relay_names.py webhook PATH          exit 0 if the env file PATH sets a webhook (WEBHOOK_URL starting with https://
+                                       and a WEBHOOK_KEY of at least 8 characters), else 1
+  relay_names.py env-values PATH NAME...
+                                       print NAME=value for each NAME the env file PATH sets (the last line wins;
+                                       OUTBOUND_KEY_FILE with ~ expanded)
+Apart from env-values, only names are printed, never other values from the env file.
 """
 import json
 import os
+import plistlib
 import re
 import sqlite3
+import subprocess
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -44,6 +58,9 @@ KEYS = ("LISTEN_NAME", "CLOUD_NAME", "INBOX_NAME")
 RELAY_DEFAULTS = {"LISTEN_NAME": "bot", "CLOUD_NAME": "bot-cloud", "INBOX_NAME": "bot-inbox"}
 CLOUD_MACHINE = "cloud"
 GROK_MAX_LEN = 64
+OFFLINE_MS = 24 * 3600 * 1000
+RELAY_LABEL = "com.local.agent-relay"
+ENV_VARS = ("PATH", "REASON_NETWORK_HOME", "AGENT_RELAY_ENV", "AGENT_RELAY_STATE", "AGENT_RELAY_LOG")
 
 
 def problem(name):
@@ -90,6 +107,18 @@ def parse_env(text):
             k, v = line.split("=", 1)
             cfg[k.strip()] = v.strip().strip('"').strip("'")
     return cfg
+
+
+def webhook_set(cfg):
+    return cfg.get("WEBHOOK_URL", "").startswith("https://") and len(cfg.get("WEBHOOK_KEY", "")) >= 8
+
+
+def has_webhook(env):
+    try:
+        cfg = parse_env(Path(env).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+    return webhook_set(cfg)
 
 
 def from_env(path):
@@ -215,6 +244,40 @@ def add_conflicts(directory, person, name, db, home):
     removed = data.get("removed_bots")
     if isinstance(removed, list) and name in removed:
         found.append(t("names.add_removed", name))
+    return found + taken(directory, person, name, db)
+
+
+def former_of(data):
+    value = data.get("former")
+    if not isinstance(value, list):
+        return []
+    return [f for f in value if isinstance(f, dict) and isinstance(f.get("name"), str) and problem(f["name"]) is None
+            and isinstance(f.get("slot"), str) and isinstance(f.get("since_ms"), int)
+            and isinstance(f.get("until_ms"), int) and f.get("reserved", False) in (False, True)]
+
+
+def removed_of(data):
+    value = data.get("removed_bots")
+    return [n for n in value if isinstance(n, str)] if isinstance(value, list) else []
+
+
+def owner(data, roster, name, slot):
+    for b in roster:
+        if b["slot"] != slot and name in (b["address"], b["name"] if b["kind"] == "added" else None):
+            return "other", b["address"]
+    for f in former_of(data):
+        if f["name"] == name and f["slot"] != slot:
+            return "other", next((b["address"] for b in roster if b["slot"] == f["slot"]), f["slot"])
+    if slot is not None and ((slot != "-" and name == slot)
+                             or any(f["name"] == name and f["slot"] == slot for f in former_of(data))):
+        return "own", None
+    if name in removed_of(data):
+        return "removed", None
+    return None, None
+
+
+def taken(directory, person, name, db):
+    found = []
     wanted = derived(name)
     for s in sessions_of(directory):
         if s.get("person") == person and s["name"] in wanted:
@@ -223,6 +286,195 @@ def add_conflicts(directory, person, name, db, home):
     for key, session in local_keys(db, wanted):
         found.append(t("names.add_key_taken", f"cli:{key}", session))
     return found
+
+
+def reserved_only(data, name, slot):
+    mine = [f for f in former_of(data) if f["name"] == name and f["slot"] == slot]
+    return bool(mine) and all(f.get("reserved") is True for f in mine) and name != slot
+
+
+def taken_elsewhere(directory, person, name, db):
+    found = []
+    wanted = derived(name)
+    for s in sessions_of(directory):
+        if s.get("person") != person or s["name"] not in wanted:
+            continue
+        if s["name"] != name and s.get("machine") == CLOUD_MACHINE:
+            continue
+        found.append(t("names.taken", f"{person}/{s['name']}", s.get("machine") or t("names.unknown"),
+                       s.get("status") or t("names.unknown")))
+    for key, session in local_keys(db, wanted):
+        found.append(t("names.add_key_taken", f"cli:{key}", session))
+    return found
+
+
+def when(ms):
+    if not isinstance(ms, int) or isinstance(ms, bool) or ms <= 0:
+        return t("names.unknown")
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000))
+
+
+def session_problems(directory, person, name, cls, now_ms):
+    me = directory.get("machine")
+    problems, evidence = [], []
+    for wanted, machine in zip(derived(name), (me, CLOUD_MACHINE, CLOUD_MACHINE)):
+        rows = [s for s in sessions_of(directory) if s.get("person") == person and s["name"] == wanted]
+        if not rows:
+            problems.append(t("names.reclaim_missing", f"{person}/{wanted}"))
+            continue
+        for s in rows:
+            status, since = s.get("status") or t("names.unknown"), s.get("since")
+            evidence.append(t("names.evidence_session", f"{person}/{wanted}", s.get("machine") or t("names.unknown"),
+                              status, when(since)))
+            if s.get("machine") != machine:
+                problems.append(t("names.reclaim_machine", f"{person}/{wanted}", s.get("machine") or t("names.unknown"),
+                                  machine))
+            elif cls == "left":
+                if status != "offline":
+                    problems.append(t("names.reclaim_online", f"{person}/{wanted}", status))
+                elif not (isinstance(since, int) and now_ms - since >= OFFLINE_MS):
+                    problems.append(t("names.reclaim_recent", f"{person}/{wanted}", when(since)))
+    return problems, evidence
+
+
+def key_problems(db, name):
+    if not Path(db).exists():
+        return [t("names.reclaim_key", name)], []
+    problems = []
+    if registered(db, name) != name:
+        problems.append(t("names.reclaim_key", name))
+    for key, session in local_keys(db, derived(name)[1:]):
+        problems.append(t("names.add_key_taken", f"cli:{key}", session))
+    con = open_ro(db)
+    try:
+        row = con.execute("SELECT key FROM sessions WHERE name = ?", (name,)).fetchone()
+    finally:
+        con.close()
+    if row is not None and row[0] != f"cli:{name}":
+        problems.append(t("names.reclaim_key_other", name, row[0]))
+    return problems, ([] if problems else [t("names.evidence_key", name)])
+
+
+def listening(ps_text, name, relay_pid):
+    found = []
+    for line in ps_text.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        if relay_pid is not None and relay_pid in (parts[0], parts[1]):
+            continue
+        words = parts[2].split()
+        if "listen" not in words:
+            continue
+        names = {words[i + 1] for i, w in enumerate(words[:-1]) if w == "--as"}
+        names |= {w[5:] for w in words if w.startswith("--as=")}
+        if names & set(derived(name)):
+            found.append(t("names.reclaim_listening", parts[0], name, parts[2][:120]))
+    return found
+
+
+def env_names(path):
+    try:
+        cfg = parse_env(Path(path).expanduser().read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return set()
+    names = {cfg.get(k) for k in KEYS}
+    for item in cfg.get("FORMER_NAMES", "").split(","):
+        names.add(item.split(":", 1)[0].strip())
+    return {n for n in names if n}
+
+
+def plist_users(agents, name, skip, home):
+    found = []
+    word = re.compile(r"(?<![A-Za-z0-9-])" + re.escape(name) + r"(?![A-Za-z0-9-])")
+    try:
+        paths = sorted(Path(agents).glob("*.plist"))
+    except OSError:
+        paths = []
+    for path in paths:
+        if str(path) in skip:
+            continue
+        try:
+            with open(path, "rb") as stream:
+                data = plistlib.load(stream)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        label = str(data.get("Label") or path.name[:-6])
+        env = data.get("EnvironmentVariables") if isinstance(data.get("EnvironmentVariables"), dict) else {}
+        target = env.get("AGENT_RELAY_ENV") or (Path(home) / ".config/agent-relay/env" if label == RELAY_LABEL else None)
+        hit = bool(target) and bool(set(derived(name)) & env_names(target))
+        if not label.startswith(RELAY_LABEL):
+            args = data.get("ProgramArguments") if isinstance(data.get("ProgramArguments"), list) else []
+            words = [str(a) for a in args] + [str(data.get("Program") or "")]
+            words += [str(v) for k, v in env.items() if k not in ENV_VARS]
+            hit = hit or any(word.search(w) for w in words)
+        if hit:
+            found.append(t("names.reclaim_plist", path, name))
+    return found
+
+
+def unread_of(db, address):
+    if not Path(db).exists():
+        return []
+    con = open_ro(db)
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(messages)")}
+        if not {"recipient", "sender", "read_at"} <= cols:
+            return []
+        return con.execute("SELECT sender, COUNT(*) FROM messages WHERE recipient = ? AND read_at IS NULL "
+                           "GROUP BY sender ORDER BY sender", (address,)).fetchall()
+    finally:
+        con.close()
+
+
+def own_paths(home, roster, slot, name):
+    import bots
+    if slot is None:
+        return {bots.paths(home, name, bots.ADDED)["plist"]}
+    return {b["plist"] for b in roster if b["slot"] == slot}
+
+
+def name_check(directory, person, name, slot, db, home, ps_text, relay_pid=None, now_ms=None):
+    import bots
+    why = problem(name)
+    if why:
+        return None, [why], [], []
+    sessions_of(directory)
+    data = bots.load_record(home)
+    roster = bots.roster(home, data)
+    if slot is not None and any(b["slot"] == slot and b["address"] == name for b in roster):
+        return None, [t("names.same", name)], [], []
+    cls, holder = owner(data, roster, name, slot)
+    if cls == "other":
+        return None, [t("names.add_is_bot", name) if slot is None else t("names.other_slot", name, holder)], [], []
+    if cls == "own" and reserved_only(data, name, slot):
+        return "own", taken_elsewhere(directory, person, name, db), [], []
+    if cls is None:
+        if not taken(directory, person, name, db):
+            return "new", [], [], []
+        cls = "left"
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    problems, evidence = session_problems(directory, person, name, cls, now_ms)
+    more, keys = key_problems(db, name)
+    problems += more
+    evidence += keys
+    problems += listening(ps_text, name, relay_pid)
+    problems += plist_users(Path(home) / "Library/LaunchAgents", name, own_paths(home, roster, slot, name), home)
+    unread = unread_of(db, f"{person}/{name}") if not problems else []
+    return cls, problems, evidence, unread
+
+
+def ps_listing():
+    try:
+        done = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError(t("names.ps_failed", error))
+    if done.returncode != 0:
+        raise ValueError(t("names.ps_failed", done.stderr.decode("utf-8", "replace").strip()[:120] or done.returncode))
+    return done.stdout.decode("utf-8", "replace")
 
 
 def cloud_sessions(directory, person, name):
@@ -272,6 +524,16 @@ def main(argv):
             return 1
         print(name or "")
         return 0
+    if cmd == "webhook" and len(args) == 1:
+        return 0 if has_webhook(args[0]) else 1
+    if cmd == "env-values" and args:
+        with open(args[0], encoding="utf-8") as stream:
+            cfg = parse_env(stream.read())
+        for k in args[1:]:
+            if k in cfg:
+                v = os.path.expanduser(cfg[k]) if k == "OUTBOUND_KEY_FILE" else cfg[k]
+                print(f"{k}={v}")
+        return 0
     if cmd == "marker" and len(args) <= 1:
         path = Path(args[0]) if args else default_marker()
         try:
@@ -281,6 +543,35 @@ def main(argv):
         except ValueError as error:
             print(error, file=sys.stderr)
             return 2
+        return 0
+    if cmd == "name-check":
+        db = option(args, "--db") or default_db()
+        slot = option(args, "--slot")
+        pid = option(args, "--relay-pid")
+        ps_file = option(args, "--ps-file")
+        if len(args) != 2 or (slot is not None and slot != "-" and problem(slot)):
+            print(__doc__, file=sys.stderr)
+            return 2
+        person, name = args
+        home = Path(os.environ.get("HOME", "~")).expanduser()
+        try:
+            directory = json.loads(sys.stdin.read())
+            text = Path(ps_file).read_text(encoding="utf-8") if ps_file else ps_listing()
+            cls, problems, evidence, unread = name_check(directory, person, name, slot, db, home, text,
+                                                         pid if pid and pid.isdigit() else None)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            print(t("names.check_failed", error), file=sys.stderr)
+            return 2
+        if problems:
+            print("\n".join(problems), file=sys.stderr)
+            return 1
+        print(f"class {cls}")
+        for line in evidence:
+            print(f"evidence {line}")
+        if cls != "new":
+            print(f"unread {sum(n for _, n in unread)}")
+            for sender, n in unread:
+                print(f"sender {sender} {n}")
         return 0
     if cmd in ("add-check", "cloud-sessions"):
         db = option(args, "--db") or default_db()

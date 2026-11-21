@@ -56,7 +56,7 @@ class Roster(unittest.TestCase):
         p = bots.paths(self.home, "bot", bots.LEGACY)
         h = str(self.home)
         self.assertEqual(p, {
-            "name": "bot", "kind": "legacy", "conf_dir": f"{h}/.config/agent-relay",
+            "name": "bot", "kind": "legacy", "slot": "-", "address": "bot", "conf_dir": f"{h}/.config/agent-relay",
             "env": f"{h}/.config/agent-relay/env", "label": "com.local.agent-relay",
             "plist": f"{h}/Library/LaunchAgents/com.local.agent-relay.plist",
             "state_dir": f"{h}/Library/Application Support/agent-relay",
@@ -67,7 +67,8 @@ class Roster(unittest.TestCase):
         p = bots.paths(self.home, "luna", bots.ADDED)
         h = str(self.home)
         self.assertEqual(p, {
-            "name": "luna", "kind": "added", "conf_dir": f"{h}/.config/agent-relay-bots/luna",
+            "name": "luna", "kind": "added", "slot": "luna", "address": "luna",
+            "conf_dir": f"{h}/.config/agent-relay-bots/luna",
             "env": f"{h}/.config/agent-relay-bots/luna/env", "label": "com.local.agent-relay.luna",
             "plist": f"{h}/Library/LaunchAgents/com.local.agent-relay.luna.plist",
             "state_dir": f"{h}/Library/Application Support/agent-relay-bots/luna",
@@ -100,9 +101,9 @@ class Roster(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 lines = dict(line.split("\t", 1) for line in r.stdout.splitlines())
                 self.assertEqual(list(lines), ["KIND", "CONF_DIR", "ENV_FILE", "LABEL", "PLIST", "STATE_DIR",
-                                               "MARKER", "LOG", "LAUNCHD_LOG", "STAGE"])
-                self.assertEqual((lines["KIND"], lines["LABEL"], lines["STAGE"]),
-                                 ("legacy", "com.local.agent-relay", "relay"))
+                                               "MARKER", "LOG", "LAUNCHD_LOG", "STAGE", "SLOT", "ADDRESS"])
+                self.assertEqual((lines["KIND"], lines["LABEL"], lines["STAGE"], lines["SLOT"], lines["ADDRESS"]),
+                                 ("legacy", "com.local.agent-relay", "relay", "-", want[0]))
                 self.assertEqual(self.cli("paths", "--kind", "legacy").stdout, r.stdout)
 
     def test_order_stage_cloud_and_removing_come_from_the_record(self):
@@ -128,11 +129,28 @@ class Roster(unittest.TestCase):
         self.assertEqual((grok["bot"], grok["zed"], grok["found"]), ("Main", "Zed", None))
         r = self.cli("list")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.splitlines()[0], "bot\tlegacy\trelay\t-\t0\tok")
-        self.assertEqual(r.stdout.splitlines()[3], "amy\tadded\tconfigured\tpending\t1\tok")
+        self.assertEqual(r.stdout.splitlines()[0], "bot\tlegacy\trelay\t-\t0\tok\tbot")
+        self.assertEqual(r.stdout.splitlines()[3], "amy\tadded\tconfigured\tpending\t1\tok\tamy")
         lines = dict(line.split("\t", 1) for line in self.cli("paths", "found").stdout.splitlines())
         self.assertEqual((lines["KIND"], lines["STAGE"], lines["LABEL"]),
                          ("added", "relay", "com.local.agent-relay.found"))
+
+    def test_a_renamed_added_bot_keeps_its_slot_and_is_found_by_either_name(self):
+        self.legacy_env()
+        self.added_env("luna", plist=True)
+        self.record({"schema": 1, "relay_name": "bot",
+                     "bots": {"luna": {"stage": "relay", "cloud": {"state": "confirmed"}, "added_ms": 1, "name": "moon"}}})
+        [first, added] = bots.roster(self.home)
+        self.assertEqual((added["name"], added["slot"], added["address"]), ("luna", "luna", "moon"))
+        self.assertEqual((first["slot"], first["address"]), ("-", "bot"))
+        self.assertEqual(self.cli("list").stdout.splitlines()[1], "luna\tadded\trelay\tconfirmed\t0\tok\tmoon")
+        for name in ("luna", "moon"):
+            lines = dict(line.split("\t", 1) for line in self.cli("paths", name).stdout.splitlines())
+            self.assertEqual((lines["LABEL"], lines["SLOT"], lines["ADDRESS"]),
+                             ("com.local.agent-relay.luna", "luna", "moon"), name)
+        self.record({"schema": 1, "relay_name": "bot",
+                     "bots": {"luna": {"stage": "relay", "added_ms": 1, "name": "Bad_Name"}}})
+        self.assertEqual(bots.roster(self.home)[1]["address"], "luna")
 
     def test_a_recovered_added_bot_without_a_plist_is_only_configured(self):
         self.added_env("luna")
@@ -166,7 +184,7 @@ class Roster(unittest.TestCase):
         data = bots.load_record(self.home)
         self.assertTrue(bots.legacy_suppressed(self.home, data))
         self.assertEqual([b["name"] for b in bots.roster(self.home)], ["luna"])
-        self.assertEqual(self.cli("paths", "--kind", "legacy").stdout.splitlines()[-1], "STAGE\tnew")
+        self.assertIn("STAGE\tnew", self.cli("paths", "--kind", "legacy").stdout.splitlines())
         self.legacy_env()
         self.assertFalse(bots.legacy_suppressed(self.home, {}))
         self.assertEqual([b["name"] for b in bots.roster(self.home, {})], ["bot", "luna"])
@@ -176,7 +194,7 @@ class Roster(unittest.TestCase):
         r = self.cli("paths", "--kind", "legacy")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"ENV_FILE\t{self.home}/.config/agent-relay/env\n", r.stdout)
-        self.assertTrue(r.stdout.endswith("STAGE\tnew\n"))
+        self.assertTrue(r.stdout.endswith("STAGE\tnew\nSLOT\t-\nADDRESS\t\n"))
         r = self.cli("paths", "luna", "--kind", "added")
         self.assertIn("LABEL\tcom.local.agent-relay.luna\n", r.stdout)
         self.assertEqual(self.cli("paths", "luna").returncode, 3)

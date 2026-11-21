@@ -286,7 +286,7 @@ uninstall.plan_bot_logs	这个 Bot 的 relay 日志
 uninstall.plan_bot_record	deployed.json 中这个 Bot 的记录
 uninstall.plan_bot_shared	团队、引擎、identity、密钥、relay 程序、其他 Bot
 uninstall.action_bot_removes_bot	由另一个 Bot（见下）删除
-uninstall.action_bot_record	删除；这个名字以后不能再添加
+uninstall.action_bot_record	删除；它的名字只能通过收回再次使用
 uninstall.plan_bots	这台 Mac 上的 Bot：%s
 uninstall.level_bot_named	bot：移除 Bot %s；其他 Bot、团队和密钥保留
 uninstall.plan_executor	云端步骤发给 %s 的 Grok Bot 执行。
@@ -326,3 +326,4 @@ uninstall.plan_bot_hint	只移除一个 Bot：./uninstall.sh --plan --level bot 
 uninstall.bot_engine_unfinished	上次引擎升级没有完成（%s）；先运行 ./update.sh，再移除 Bot
 uninstall.bot_rollback_unfinished	上次 relay 切换没有完成（存在 %s）；先运行 ./install.sh --restart-relay 或 ./update.sh，再移除 Bot
 uninstall.bot_update_unfinished	上次更新没有完成；先运行 ./update.sh，再移除 Bot
+uninstall.rename_open	有一次 Bot 改名还没有完成；请先用 agent-mesh rename 完成，或用 agent-mesh rename --cancel 撤销，再卸载

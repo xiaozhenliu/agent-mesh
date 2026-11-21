@@ -206,6 +206,9 @@ class Instructions(CloudClone):
         self.assertEqual(tuple(listed), CLOUD_FILES)
         self.assertEqual(set(deploy_state.CLOUD_DIGEST),
                          set(CLOUD_FILES) - {"box/rn-cloud-setup.sh", "box/rn-engine.py"} | {UPDATE})
+        for lang in ("", ".zh-CN"):
+            setup = (ROOT / f"prompts/cloud-setup{lang}.md").read_text()
+            self.assertEqual(setup.count(f'[ "$n" = {len(CLOUD_FILES)} ]'), 1, lang)
 
     def assert_stop(self, p, text):
         self.assertNotEqual(p.returncode, 0)
@@ -216,7 +219,7 @@ class Instructions(CloudClone):
     def test_refusals(self):
         self.assert_stop(self.cloud("instructions", "2"), "stub version 2 is not supported")
         self.assert_stop(self.cloud("instructions"), "stub version (none)")
-        self.assert_stop(self.cloud("instructions", "1", "demo", TEAM_HASH, "reclaim"), "update agent-mesh first")
+        self.assert_stop(self.cloud("instructions", "1", "demo", TEAM_HASH, "reclaim"), "the first Bot's stub passes neither")
         self.assert_stop(self.cloud("instructions", "1", "demo", TEAM_HASH), "the first Bot's stub passes neither")
         (self.box / "lang").write_text("fr\n")
         self.assert_stop(self.cloud("instructions", "1"), "box/lang must hold en or zh-CN")
@@ -745,7 +748,7 @@ class Bootstrap(CloudClone):
         self.assertEqual(reply[0], f"agent-mesh-result request {R}")
         self.assertEqual(reply[-3:], ["agent-mesh-result lang zh-CN", "agent-mesh-result stub 1",
                                       f"agent-mesh-result DONE {NEXT}"])
-        self.assertEqual(len([l for l in reply if l.startswith("agent-mesh-result sum ")]), 8)
+        self.assertEqual(len([l for l in reply if l.startswith("agent-mesh-result sum ")]), len(CLOUD_FILES))
         self.assertIn(f'"id": "{plain}", "released": true', boot)
         self.assertIn(f'"id": "{other}", "released": true', boot)
         self.assertFalse((self.root / "inbox" / plain / "claimed").exists())

@@ -197,7 +197,7 @@ if [ -e "$BASE/relay" ]; then
   old="$(cat "$BASE/relay")" || die "cannot read $BASE/relay"
   if valid_relay_name "$old"; then
     [ "$old" = "$RELAY_NAME" ] \
-      || die "this cloud directory uses the Bot address name $old; renaming is not supported (README: Troubleshooting)"
+      || die "this cloud directory uses the Bot address name $old; setup does not change it: run agent-mesh rename on the Mac (README: Troubleshooting)"
   else
     damaged=1
     echo "cloud-setup: box/relay is damaged ($(printf '%q' "${old:0:60}")); treating it as missing" >&2
@@ -205,7 +205,7 @@ if [ -e "$BASE/relay" ]; then
 fi
 if { [ ! -e "$BASE/relay" ] || [ -n "$damaged" ]; } && [ -f "$BASE/person" ] && [ "$RELAY_NAME" != bot ]; then
   used_name "$RELAY_NAME" \
-    || die "this cloud was set up with the default name bot or the name cannot be proven; renaming is not supported (README: Troubleshooting)"
+    || die "this cloud was set up with the default name bot or the name cannot be proven; setup does not change it: run agent-mesh rename on the Mac (README: Troubleshooting)"
 fi
 
 export REASON_NETWORK_HOME="$BASE/state" REASON_NETWORK_NO_UPDATE=1 REASON_NETWORK_NO_PROMPT=1 \

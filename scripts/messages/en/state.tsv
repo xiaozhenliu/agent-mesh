@@ -1,7 +1,7 @@
 state.unreadable_unknown	update: %s is unreadable (%s); treating cloud and prompt as unknown
 state.format_unknown	update: %s has an unknown format; treating cloud and prompt as unknown
 state.txn_damaged	update: the record of an unfinished update is damaged and was ignored; if the routine is still paused in Grok Bot, resume it
-state.renamed_not_recorded	update: the Bot address name changed from %s (recorded when this Mac was installed) to %s; renaming is not supported, nothing was recorded
+state.renamed_not_recorded	update: the Bot address name changed from %s (recorded when this Mac was installed) to %s in the env file; nothing was recorded. A Bot is renamed only with agent-mesh rename: put LISTEN_NAME=%s back in the env file, then run agent-mesh rename %s
 state.checkout_moved	update: this checkout changed after %s was shown; nothing was recorded, run ./update.sh again
 state.record_moved	update: the %s record changed after it was shown; nothing was recorded, run ./update.sh again
 state.env_name_differs	%s uses the Bot address name %s, not %s
@@ -9,7 +9,7 @@ state.unreadable_strict	%s is unreadable (%s); nothing was recorded. Run ./updat
 state.unreadable_plain	%s is unreadable (%s). Run ./update.sh --plan to see what it reports, or restore the file from a backup
 state.format_strict	%s has an unknown format; nothing was recorded
 state.format_plain	%s has an unknown format
-state.renamed	the Bot address name changed from %s to %s; renaming is not supported, nothing was recorded
+state.renamed	the Bot address name changed from %s to %s in the env file; nothing was recorded. A Bot is renamed only with agent-mesh rename: put LISTEN_NAME=%s back in the env file, then run agent-mesh rename %s
 state.no_txn	update: no unfinished update to change
 release.fetch_failed	the release %s could not be fetched from %s (not published yet, or a network problem): %s; nothing was changed
 release.not_commit	the release %s at %s does not point to a commit; nothing was changed
@@ -58,7 +58,22 @@ state.stub_other	the reply reports routine stub v%s, not v%s
 state.stub_mismatch	%s answered the read-back, but the reply does not confirm the routine stub:
 state.stub_missing	%s answered, but did not load its rules through the routine stub in that run: the routine prompt stays unconfirmed. Run ./update.sh: it shows the stub again to paste into the routine, then asks the Bot to confirm it
 state.stub_confirmed	%s loaded its rules through routine stub v%s: the routine prompt is confirmed.
-entry.usage	usage: agent-mesh update|check [options]; runs ./update.sh or ./check.sh in your agent-mesh checkout
+entry.usage	usage: agent-mesh update|check|rename [options]; runs ./update.sh, ./check.sh or ./install.sh --rename in your agent-mesh checkout
 entry.gone	agent-mesh: the recorded checkout %s is gone; run ./update.sh once in your new agent-mesh checkout
 entry.foreign	%s exists and was not written by agent-mesh; left it as it is (run ./update.sh and ./check.sh in the checkout instead)
 entry.no_path	%s is not in PATH; add it to run agent-mesh update and agent-mesh check from any folder
+state.rename_damaged	the rename record in %s is damaged; nothing was changed. Run ./check.sh to see the state of the Bot, then fix the "rename" field of that file by hand
+state.rename_exists	a rename is already in progress; run agent-mesh rename to finish it, or agent-mesh rename --cancel to undo it
+state.rename_old_differs	%s is not the current address name of this Bot in both deployed.json and its env file; nothing was changed, run ./check.sh
+state.rename_reply_mismatch	the Bot cloud (%s) did not accept the rename; nothing was changed on this Mac and the rename record was dropped:
+state.rename_pending	the Bot cloud (%s) accepted the rename and switches to the new name when the first message arrives there
+state.rename_not_replied	the Bot cloud has not accepted the rename yet; run agent-mesh rename again
+state.rename_backup_bad	the rename backup in %s is missing or damaged, so the old name cannot be restored; nothing was changed. Run agent-mesh rename to finish the rename instead
+state.rename_launched	the relay has already started under the new name, so the rename cannot be undone; run agent-mesh rename to finish it, then rename the Bot back if you want the old name
+state.rename_not_launched	the relay has not started under the new name yet; run agent-mesh rename again
+state.rename_env_differs	%s does not use the new address name %s yet; run agent-mesh rename again
+state.rename_full_prompt	this Bot uses the full routine prompt, which contains the Bot address; run %s and paste the new prompt into Grok
+state.held_note	%s earlier messages to the reclaimed name were set aside and not given to the Bot; to have the Bot process them, run %s
+state.history_none	this Bot has no set-aside messages to accept
+state.history_mismatch	the Bot cloud (%s) did not accept the request; nothing was changed:
+state.history_accepted	%s set-aside messages are now given to the Bot (%s)

@@ -286,7 +286,7 @@ uninstall.plan_bot_logs	this Bot's relay logs
 uninstall.plan_bot_record	this Bot's entry in deployed.json
 uninstall.plan_bot_shared	team, engine, identity, key, relay program, other Bots
 uninstall.action_bot_removes_bot	another Bot (see below) removes them
-uninstall.action_bot_record	remove; the name cannot be added again
+uninstall.action_bot_record	remove; its names can be used again only by taking them back
 uninstall.plan_bots	Bots on this Mac: %s
 uninstall.level_bot_named	bot: remove the Bot %s; the other Bots, the team and the key stay
 uninstall.plan_executor	The cloud step is sent to the Grok Bot of %s.
@@ -326,3 +326,4 @@ uninstall.plan_bot_hint	To remove one Bot only: ./uninstall.sh --plan --level bo
 uninstall.bot_engine_unfinished	an engine upgrade did not finish (%s); run ./update.sh first, then remove the Bot
 uninstall.bot_rollback_unfinished	an earlier relay switch did not finish (%s exists); run ./install.sh --restart-relay or ./update.sh first, then remove the Bot
 uninstall.bot_update_unfinished	an update did not finish; run ./update.sh first, then remove the Bot
+uninstall.rename_open	a Bot rename is not finished; finish it with agent-mesh rename or undo it with agent-mesh rename --cancel, then uninstall

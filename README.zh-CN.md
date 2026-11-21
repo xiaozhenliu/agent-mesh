@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| **版本** | agent-mesh **v0.10.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
+| **版本** | agent-mesh **v0.11.0** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
 | **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证，但 Linux 本地安装尚不支持（见[准备](#准备)）· Bot 云电脑：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
@@ -82,7 +82,7 @@ flowchart LR
 |---|---|
 | 团队名 `<team-name>` | 只有你一个人的私有团队的名字，同时是你在团队里的 person 名；团队建好后不能改。 |
 | Bot 地址 `<team-name>/<name>` | 本地会话给 Grok Bot 写信用的地址。在这个地址上收信的是本地电脑上的 relay，不是 Bot 云电脑。 |
-| Bot 地址名 `<name>` | Bot 地址里的名字，安装时用 `--relay-name` 选定，之后不能改（v0.8.0 以前默认是 `bot`）。云端由它得出两个会话：用 `<name>-cloud` 发信，用 `<name>-inbox` 收正文。 |
+| Bot 地址名 `<name>` | Bot 地址里的名字，安装时用 `--relay-name` 选定，之后可以用 `agent-mesh rename` 修改（v0.8.0 以前默认是 `bot`）。云端由它得出两个会话：用 `<name>-cloud` 发信，用 `<name>-inbox` 收正文。 |
 | Grok 名字 | Bot 在 Grok 里显示的名字，用 `--grok-name` 设置，只用于显示：`<team-name>/<name> → Grok: <Grok 名字>`。 |
 
 **部件**
@@ -177,7 +177,7 @@ sequenceDiagram
 - 你的 Grok Bot 能创建由 webhook 触发的 routine，并且能用 CopyToBox 读取你电脑上的文件。
 - 想好一个团队名，它同时也是你在团队里的名字：1 到 40 个字符，只能用 ASCII 小写字母、数字和 `-`，首尾不能是 `-`，别用真名。团队建好后名字不能改，只能删掉重建。
 - 团队名和机器名里的 `-` 不能连用：引擎会把连续的 `-` 合并，`a--b` 会变成 `a-b`，所以安装器拒绝这类名字。
-- 选定 Bot 地址名：用 Bot 自己的名字，本机 agent 才分得清你的各个 Grok Bot。relay 用 `<team-name>/<name>` 收信，云端用 `<name>-cloud` 和 `<name>-inbox`。全新安装没有默认名（v0.8.0 以前默认是 `bot`；已有安装保留原来的名字）。规则：1 到 34 个字符，ASCII 小写字母和数字，分段之间用单个 `-` 连接（首尾不能是 `-`，不能连用），不能是 `terminal` 或 `terminal-<n>`。别用真名。名字以后不能改，安装没完成时也不行：排队的消息、routine 提示词和云端设置都用这个名字。要换名字只能按 `identity` 或 `all` 级别卸载后重新安装，或者用新名字添加一个 Bot、再卸载旧的（见[多个 Grok Bot](#多个-grok-bot)）。
+- 选定 Bot 地址名：用 Bot 自己的名字，本机 agent 才分得清你的各个 Grok Bot。relay 用 `<team-name>/<name>` 收信，云端用 `<name>-cloud` 和 `<name>-inbox`。全新安装没有默认名（v0.8.0 以前默认是 `bot`；已有安装保留原来的名字）。规则：1 到 34 个字符，ASCII 小写字母和数字，分段之间用单个 `-` 连接（首尾不能是 `-`，不能连用），不能是 `terminal` 或 `terminal-<n>`。别用真名。安装没完成时不能改名：排队的消息、routine 提示词和云端设置都用这个名字。安装完成后，用 `agent-mesh rename` 改名，不需要在 Grok 里做任何事（见[给 Bot 改名](#给-bot-改名)）。
 - 用 `--grok-name` 给出 Grok 名字，即 Bot 在 Grok 里显示的名字，任何语言都可以（最多 64 个字符，首尾不能有空格，不能有换行或其他控制字符）。它原样保存，不参与路由；安装器、`./check.sh` 和填好的回复约定会在地址旁显示 `<team-name>/<name> → Grok: <它的名字>`。名字里没有拉丁字母时，自己起一个地址，例如用拼音（「小助手」→ `xiaozhushou`）。
 
 ### 网络
@@ -203,7 +203,7 @@ cd ~/agent-mesh
 ./install.sh --name <team-name> --relay-name <name> --grok-name '<它在 Grok 里的名字>' --lang zh-CN
 ```
 
-`--relay-name` 是 Bot 地址名，`--grok-name` 是 Bot 在 Grok 里的名字（见 [Grok Bot 与团队名](#grok-bot-与团队名)）。全新安装不带 `--relay-name` 时，安装器在改动任何东西之前停下，并根据 `--grok-name` 给出建议地址。之后的运行（`--webhook`、`--cloud-prompt`、`update.sh`）从已有安装中读取名字，给出不同的 `--relay-name` 会被拒绝。本机有多个 Bot 时，用 `--relay-name` 选择其中一个（见[多个 Grok Bot](#多个-grok-bot)）。名字已被团队里的会话占用时，安装器在接入任何 agent 之前停止；启动 relay 之后，它核对引擎实际注册的地址正是 `<team-name>/<name>`。已有安装用 `./install.sh --grok-name '<它在 Grok 里的名字>'` 记录或修改 Grok 名字，地址不变。
+`--relay-name` 是 Bot 地址名，`--grok-name` 是 Bot 在 Grok 里的名字（见 [Grok Bot 与团队名](#grok-bot-与团队名)）。全新安装不带 `--relay-name` 时，安装器在改动任何东西之前停下，并根据 `--grok-name` 给出建议地址。之后的运行（`--webhook`、`--cloud-prompt`、`update.sh`）从已有安装中读取名字，给出不同的 `--relay-name` 会被拒绝；只有 `agent-mesh rename` 能改名字。本机有多个 Bot 时，用 `--relay-name` 选择其中一个（见[多个 Grok Bot](#多个-grok-bot)）。名字已被团队里的会话占用时，安装器在接入任何 agent 之前停止；启动 relay 之后，它核对引擎实际注册的地址正是 `<team-name>/<name>`。已有安装用 `./install.sh --grok-name '<它在 Grok 里的名字>'` 记录或修改 Grok 名字，地址不变。
 
 目标目录已存在时先核对它是不是同一仓库、有无未提交改动，不要覆盖或盲目 pull。云端默认克隆同一个公开发行仓库，其根目录必须包含 `box/rn-cloud-setup.sh`；安装器不会读取本地 origin 来推断云端仓库地址。
 
@@ -237,7 +237,7 @@ cd ~/agent-mesh
 | relay 日志 | `~/Library/Logs/agent-relay.log` | `~/Library/Logs/agent-relay-<name>.log` |
 | `[BOT-CLOUD]` 上的收件和 thread 笔记 | `/workspace/agent-mesh/inbox/`、`threads/` | `/workspace/agent-mesh/bots/<name>/inbox/`、`threads/` |
 
-已有安装不搬家：第一个 Bot 的路径、登录服务文件和 routine 提示词都不变。
+已有安装不搬家：第一个 Bot 的路径、登录服务文件和 routine 提示词都不变。添加的 Bot 一直使用添加时那个名字的路径，改名后也一样。
 
 ### 添加一个 Bot
 
@@ -248,7 +248,7 @@ cd ~/agent-mesh
 ```
 
 1. 它问这个 Bot 在 Grok 里叫什么，并据此给出建议的地址名；名字里没有拉丁字母和数字时，建议第一个可用的 `bot-2`、`bot-3`……。直接回车接受，或者输入别的名字。agent 可以用 `--grok-name '<它在 Grok 里的名字>' --relay-name <name>` 一次给全，这时安装器只请你确认计划。团队从已有安装读取，不需要 `--name`（给了就必须是同一个团队）。它不重新接入 agent，不下载引擎，也不生成密钥。
-2. 它核对 `<name>`、`<name>-cloud`、`<name>-inbox` 都不是团队里仍列出的会话（任何机器，在线或离线），也没有在本机用过，并且这个名字没有被卸载过，然后显示计划 `Add Bot <team-name>/<name> (called “…” in Grok); <其他 Bot> stay as they are.`，请你确认。`--add-bot` 不接受 `--yes`；不在终端里时，只打印计划，不改动任何东西。
+2. 它核对 `<name>`、`<name>-cloud`、`<name>-inbox` 都不是团队里仍列出的会话（任何机器，在线或离线），也没有在本机用过，并且这个名字不是其他 Bot 的当前名字或曾用名；已卸载 Bot 的名字或早先部署留下的名字，核对安装器列出的证据后可以收回（见 [Bot 能用哪些名字](#bot-能用哪些名字)）。然后显示计划 `Add Bot <team-name>/<name> (called “…” in Grok); <其他 Bot> stay as they are.`，请你确认。`--add-bot` 不接受 `--yes`；不在终端里时，只打印计划，不改动任何东西。
 3. `[GROK-UI]`：为新 Bot 建一个由 webhook 触发的 routine，把安装器打印的 routine 提示词贴进去，再把 Webhook URL 和 key 贴回 `[LOCAL]` 的终端。这个 Bot 的 routine 桩在第一条命令里写明 Bot、团队和团队哈希；它加载的规则在每条 `rn-cloud.sh` 命令前都加上 `RN_BOT=<name>`，thread 笔记放在 `bots/<name>/threads/` 下。用 `--full-prompt` 时，完整提示词改为多一个第 0 步（[第 0 步](prompts/cloud-add-bot.zh-CN.md)）。
 4. 其余步骤自动完成。安装器经新 Bot 的 webhook 叫醒它；桩的第一条命令在打印规则之前运行 `box/rn-cloud-add-bot.sh`，核对共用的云电脑并在上面登记这个 Bot 的两个会话，不需要 CopyToBox，也不需要新的邀请。两个会话都出现在团队里之后，安装器才启动这个 Bot 的 relay，再给它发一行请求 `agent-mesh add-bot <name> <req>`，等待确认登记和桩的回信。每一步最多等 10 分钟。
 
@@ -263,7 +263,35 @@ cd ~/agent-mesh
 
 ### 名字与卸载
 
-Bot 的地址不能改名。要换名字，就用新名字添加一个 Bot（即新建一个 routine，可以属于同一个 Grok Bot），改用它的 routine，再用 `./uninstall.sh --level bot --relay-name <旧名字>` 卸载旧的。新名字必须从没用过：引擎会保留所有会话，早先安装留下的地址同样不能再添加。卸载过的名字永远不能再添加：引擎会一直保留它的旧会话，发到旧地址的信在那里排队、没人读，云端也为它留有 tombstone。细节见[卸载指南](UNINSTALL.zh-CN.md#只卸载一个-bot)。共用一台云电脑的限制见[安全策略](SECURITY.zh-CN.md#已知限制不按漏洞处理)。
+`agent-mesh rename` 改 Bot 的地址，routine、收件和路径都保留（见[给 Bot 改名](#给-bot-改名)）。`./uninstall.sh --level bot --relay-name <name>` 卸载一个 Bot：引擎会一直保留它的旧会话，发到它各个地址的信在那里排队、没人读，云端也为它的每个名字留下 tombstone。这样的名字只能通过收回再次使用（见 [Bot 能用哪些名字](#bot-能用哪些名字)）。细节见[卸载指南](UNINSTALL.zh-CN.md#只卸载一个-bot)。共用一台云电脑的限制见[安全策略](SECURITY.zh-CN.md#已知限制不按漏洞处理)。
+
+## 给 Bot 改名
+
+安装完整且是最新的（这个 Bot 已设好 webhook、relay 正在运行，没有未完成的更新或添加）之后，在 `[LOCAL]` 运行：
+
+```bash
+agent-mesh rename <新名字>
+```
+
+有多个 Bot 时，用 `--relay-name <当前名字>` 指定一个（在代码目录里运行 `./install.sh --rename <新名字>` 效果相同）。不需要在 Grok 里做任何事：Bot 保留它的 routine、`[BOT-CLOUD]` 上的收件和 thread 笔记，以及历史。添加的 Bot 继续使用添加时那个名字的路径和登录服务。
+
+1. 它按[下面的规则](#bot-能用哪些名字)检查新名字，然后显示计划 `把 Bot <旧名字> 改名为 <新名字>。……`，请你确认。不在终端里时，可以在命令里加 `--yes` 确认；但收回已卸载 Bot 或早先部署留下的名字，或者本机有发往这个名字的未读消息时，必须在终端里确认。
+2. 它给 Bot 发一行请求 `agent-mesh rename …`，最多等 10 分钟回信（1 次 routine 运行）。云端登记 `<新名字>-cloud` 和 `<新名字>-inbox`；第一条消息到达 `<新名字>-inbox` 之前，Bot 仍以旧名字回信。
+3. 它以新名字重启 relay，核对引擎实际注册的地址正是 `<team-name>/<新名字>`，再更新部署记录和回复约定：`Bot <旧名字> 已改名为 <新名字>。`Bot 的回信从新地址发出，其他 agent 会自己改用新地址。
+
+发往旧地址的信 30 天内仍会送达 Bot：relay 大约每分钟取一次，像其他消息一样转发；旧名字下还在路上的回信和回执也照常认。`./check.sh` 显示到期时间。30 天后，发往旧地址的信在引擎里排队、没人读；`./check.sh` 会提醒，并给出重新使用旧名字的命令。
+
+等待超时时，本机什么都没有改：再运行 `agent-mesh rename` 继续等，或者用 `agent-mesh rename --cancel` 停止。云端可能已经为这个 Bot 登记了新名字，所以取消或被拒绝之后，这个名字仍归这个 Bot：其他 Bot 不能用它，以后运行 `agent-mesh rename <新名字>` 会接着完成这次改名（收回的名字会再按同样的条件检查一遍）。改名没完成时，`agent-mesh update` 和其他安装命令会停下并说明原因。relay 一旦以新名字运行，改名就只能完成、不能取消；想用回旧名字，完成后再改回去。
+
+### Bot 能用哪些名字
+
+- 团队里从未用过的名字。
+- 这个 Bot 自己以前用过的名字，也就是改回去。
+- 不能用这个安装里其他 Bot 的当前名字或曾用名，30 天到期后也不行。
+- 已从这台 Mac 卸载的 Bot 的名字，或早先部署留下、三个会话仍在团队里的名字，可以收回。安装器列出证据请你核对：这些会话属于你的团队，`<name>` 在本机、另外两个在 Bot 云电脑上，早先部署留下的名字还要三个会话都离线满 24 小时，本机引擎持有 `<name>` 的密钥，没有进程或登录服务在用它。本机排队等着发往这个名字的未读消息会连同发件人一起列出；改名后 Bot 把它们当作新消息收下。
+- 收回的名字在云端收件箱里已有的消息会被搁置，Bot 不会重复处理旧信；结果里写明有多少条。`agent-mesh rename --accept-history` 把它们交给 Bot（1 次 routine 运行）；收回过几个名字时，它把仍被搁置的各批一起交出。
+
+`./install.sh --add-bot` 用同样的规则检查名字，只是新 Bot 没有自己的曾用名。它收回早先安装留下的名字时，本机排队发往这个名字的未读消息会和已有的消息一起被搁置，不作为新消息收下；`agent-mesh rename --accept-history` 把它们交给 Bot。
 
 ## 验证
 
@@ -379,7 +407,7 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 - **已加入团队的云电脑重跑 `rn-cloud-setup.sh` 时停在 `join`**：改用完整的邀请链接（含 `tincan1…` 的那条，`./install.sh --cloud-prompt` 打印的就是）。只有短邀请码时，脚本无法确认云端在同一个团队里。
 - **check.sh 报引擎版本较旧、守护进程还在跑被替换前的二进制，或有未完成的引擎升级**：在终端运行 `./update.sh`。它会升级较旧的引擎，询问是否重启早于二进制替换启动的守护进程，并先回滚未完成的切换；每一步和备份的说明见[升级指南](UPGRADE.zh-CN.md#reason-network-引擎)。
 - **check.sh 报 `relay not registered on the running engine`**：守护进程或 relay 刚重启时，relay 正在重新注册，最多 11 分钟内报 SKIP。超过之后报 FAIL，说明 relay 没有在正在运行的守护进程上 listen：先看 `tail -n 30 ~/Library/Logs/agent-relay.log`，再运行 `./install.sh --restart-relay`，新 relay 注册不上时它会报失败并换回原来的 relay。
-- **`install.sh --cloud-prompt` 或 `./update.sh` 说发布 `v<VERSION>` 取不到，或某个文件与发布版本不同**：云端只安装已发布的 tag，本地仓库中的云端脚本（`box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`、`box/rn-cloud-add-bot.sh`、`box/rn-cloud-update.sh`）必须与它一致。检查网络，以及 `--repo-url` 是否就是云端安装来源的仓库；本地仓库领先于最新发布时，要等下一次发布，或者换回已发布的文件。什么都没有改动。
+- **`install.sh --cloud-prompt` 或 `./update.sh` 说发布 `v<VERSION>` 取不到，或某个文件与发布版本不同**：云端只安装已发布的 tag，本地仓库中的云端脚本（`box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`、`box/rn-cloud-add-bot.sh`、`box/rn-routine.py`、`box/rn-names.py`、`box/rn-cloud-update.sh` 和规则模板 `prompts/routine-body*.md`）必须与它一致。检查网络，以及 `--repo-url` 是否就是云端安装来源的仓库；本地仓库领先于最新发布时，要等下一次发布，或者换回已发布的文件。什么都没有改动。
 - **Grok Bot 运行的命令块打印 `STOP:` 行，而不是 `READY <tag>` 或 `agent-mesh-result` 结果行**：命令块没有改动任何东西，或者已经恢复到原来的提交（它会打印 `restored …`）。提示 `the engine step failed` 时，仓库停在已核对的发布版本，引擎的情况见上方引擎步骤自己打印的行。把 Grok Bot 的完整输出连同这一行交给维护部署的人；提示 `could not restore` 时不要运行云端脚本。`/workspace/agent-mesh` 里的本地改动要先查看，不要盲目 reset。提示同名的另一个 tag 已经存在时，让 Grok Bot 用 `git -C /workspace/agent-mesh tag -d <tag>` 删掉它，再发同一个命令块；命令块照常核对提交号和校验值。
 - **`rn-cloud.sh` 停止并提示 `box/bin/engine/reason-network is not a Reason Network build pinned by agent-mesh`**：引擎字节不属于固定构建，所以没有运行它。在 `[GROK-UI]` 暂停 routine，在对话中直接让 Grok Bot 运行 `bash /workspace/agent-mesh/box/rn-cloud-setup.sh --upgrade-engine`，它不运行旧引擎，直接换成固定版本；然后恢复 routine。提示 `the engine has not been moved to box/bin/engine yet` 时，在 `[LOCAL]` 运行 `./update.sh`，它的云端更新会移动引擎。
 - **`rn-cloud.sh` 提示启动器被替换过，或 `--upgrade-engine` 打印 `engine: note: other engine daemons run from box/bin`**：有另一个在本版本之前从 `box/bin/reason-network` 启动的引擎守护进程自我更新了。它无法替换 `box/bin/engine` 里的引擎，`rn-cloud.sh` 每次都会把启动器恢复。不需要的守护进程用 `REASON_NETWORK_HOME=<它的状态目录> REASON_NETWORK_NO_UPDATE=1 /workspace/agent-mesh/box/bin/engine/reason-network stop` 逐个停止，状态目录取提示里打印的值；不要指向 `box/state`，那是云端自己的引擎。
@@ -394,7 +422,7 @@ relay 日志只记消息 id、长度和校验码，不记正文。`FWD_COPY_DAYS
 | 级别 | 删除什么 |
 |---|---|
 | `--level program` | 只删 relay 程序和它的登录服务。团队、密钥和云端都保持原样，`./install.sh --restart-relay` 可以装回。这是唯一可以让 agent 代你运行的级别。 |
-| `--level bot --relay-name <name>` | 只删一个 Bot，并且至少还剩一个：它的 relay 服务、配置、状态、日志和部署记录中的条目，以及 `[BOT-CLOUD]` 上它的收件和 thread 笔记。团队、引擎、签名密钥和其他 Bot 都保留；云端步骤由另一个 Bot 执行。这个名字不能再添加。 |
+| `--level bot --relay-name <name>` | 只删一个 Bot，并且至少还剩一个：它的 relay 服务、配置、状态、日志和部署记录中的条目，以及 `[BOT-CLOUD]` 上它的收件和 thread 笔记。团队、引擎、签名密钥和其他 Bot 都保留；云端步骤由另一个 Bot 执行。它的名字只能通过收回再次使用。 |
 | `--level identity` | 另外删除团队身份、签名密钥、relay 配置和状态：本机和云端都退出团队，并删除 `~/.reason/network`。 |
 | `--level all`（或 `--all`） | 另外删除日志、引擎二进制，以及 `[BOT-CLOUD]` 上的 `inbox/`、`threads/` 和 `/workspace/agent-mesh`。 |
 

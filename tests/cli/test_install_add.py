@@ -1,9 +1,11 @@
 import hashlib
 import json
+import sqlite3
+import time
 import unittest
 
 import messages
-from tests.cli.install_support import TEAM_ID, InstallHarness
+from tests.cli.install_support import EMPTY_DIRECTORY, TEAM_ID, InstallHarness
 
 HOOK = "https://example.invalid/beta-hook"
 KEY = "beta-secret-key-0123"
@@ -329,8 +331,8 @@ class AddNames(AddSupport, unittest.TestCase):
             result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "beta")
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             session = listing["sessions"][0]
-            self.assertIn(m("names.taken", f"demo/{session['name']}", session["machine"], session["status"]),
-                          result.stderr)
+            self.assertIn(f"the session demo/{session['name']} ", result.stderr)
+            self.assertIn(m("names.reclaim_key", "beta"), result.stderr)
         (self.who / "all.json").write_text(json.dumps(self.cloud_listing()))
         self.sessions([("old", "cli:beta-inbox", 1)])
         result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "beta")
@@ -341,7 +343,7 @@ class AddNames(AddSupport, unittest.TestCase):
         self.write_record(data)
         result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "gone")
         self.assertEqual(result.returncode, 1)
-        self.assertIn(m("names.add_removed", "gone"), result.stderr)
+        self.assertIn(m("names.reclaim_missing", "demo/gone"), result.stderr)
         result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "alpha")
         self.assertEqual(result.returncode, 1)
         self.assertIn(m("install.add_exists", "alpha", "alpha"), result.stderr)
@@ -350,6 +352,71 @@ class AddNames(AddSupport, unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(m("install.add_who_failed"), result.stderr)
         self.assertNotIn("bots", self.record())
+
+    def test_a_removed_name_is_reclaimed_after_a_confirmation_and_its_set_aside_mail_is_recorded(self):
+        repo = self.two_ready()
+        ps = self.base / "ps.txt"
+        ps.write_text("")
+        self.env["MOCK_PS"] = str(ps)
+        data = self.record()
+        data["removed_bots"] = ["beta"]
+        self.write_record(data)
+        rows = [{"person": "demo", "machine": "mac", "name": "beta", "status": "offline", "since": 1},
+                {"person": "demo", "machine": "cloud", "name": "beta-cloud", "status": "online", "since": 1},
+                {"person": "demo", "machine": "cloud", "name": "beta-inbox", "status": "online", "since": 1}]
+        (self.who / "all.json").write_text(json.dumps(dict(EMPTY_DIRECTORY, sessions=rows)))
+        self.sessions([("beta", "cli:beta", 1)])
+        result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "beta")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn(m("install.name_class_removed"), result.stdout)
+        self.assertIn(m("names.evidence_key", "beta"), result.stdout)
+        self.assertNotIn("bots", self.record())
+        self.registers_on_wake("beta")
+        self.bot_replies(body=f"agent-mesh-result request {{req}}\nagent-mesh-result lang en\n"
+                              f"agent-mesh-result stub 1\nagent-mesh-result add-bot {{req}} ok beta {TEAM_HASH}\n"
+                              "agent-mesh-result held add 3\n", sender="demo/beta")
+        result = self.add(repo, "--relay-name", "beta",
+                          steps=[("OK to apply?", "y"), ("Webhook URL:", HOOK), ("(not echoed): ", KEY)])
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertRegex(out, r"RN_BOT=beta \S+ \S*rn-cloud\.sh instructions \S+ '[^']*' '[0-9a-f]{16}' reclaim\n")
+        self.assertIn(m("state.held_note", 3, "agent-mesh rename --accept-history --relay-name beta"), out)
+        data = self.record()
+        self.assertNotIn("removed_bots", data)
+        self.assertEqual(data["held"], {"beta": {"add": {"count": 3}}})
+        self.assertEqual(data["bots"]["beta"]["reclaim"], 1)
+
+    def test_unread_mail_to_a_name_left_by_an_earlier_setup_is_shown_as_set_aside(self):
+        repo = self.two_ready()
+        ps = self.base / "ps.txt"
+        ps.write_text("")
+        self.env["MOCK_PS"] = str(ps)
+        old = int(time.time() * 1000) - 2 * 86400 * 1000
+        rows = [{"person": "demo", "machine": "mac", "name": "beta", "status": "offline", "since": old},
+                {"person": "demo", "machine": "cloud", "name": "beta-cloud", "status": "offline", "since": old},
+                {"person": "demo", "machine": "cloud", "name": "beta-inbox", "status": "offline", "since": old}]
+        (self.who / "all.json").write_text(json.dumps(dict(EMPTY_DIRECTORY, sessions=rows)))
+        db = sqlite3.connect(self.sessions([("beta", "cli:beta", 1)]))
+        db.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, body TEXT, "
+                   "sent_at INTEGER, held INTEGER, read_at INTEGER)")
+        db.executemany("INSERT INTO messages VALUES (?, ?, 'demo/beta', 'x', 1, 0, ?)",
+                       [("m1", "demo/a", None), ("m2", "demo/a", None), ("m3", "demo/b", 5)])
+        db.commit()
+        db.close()
+        result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "beta")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn(m("install.name_class_left"), result.stdout)
+        self.assertIn(m("install.name_unread_held", 2, "demo/beta"), result.stdout)
+        self.assertNotIn(m("install.name_unread", 2, "demo/beta"), result.stdout)
+        self.assertIn("  demo/a 2", result.stdout)
+        data = self.record()
+        data["removed_bots"] = ["beta"]
+        self.write_record(data)
+        result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "beta")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn(m("install.name_class_removed"), result.stdout)
+        self.assertIn(m("install.name_unread", 2, "demo/beta"), result.stdout)
+        self.assertNotIn(m("install.name_unread_held", 2, "demo/beta"), result.stdout)
 
     def test_the_default_address_skips_names_in_use(self):
         repo = self.two_ready()
@@ -467,7 +534,7 @@ class SingleBot(AddSupport, unittest.TestCase):
         repo = self.two_ready()
         result = self.run_script("install.sh", "--name", "demo", "--relay-name", "other", "--yes", root=repo)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn(m("install.rename_refused", "alpha", "alpha"), result.stderr)
+        self.assertIn(m("install.rename_refused", "alpha", "other", "other"), result.stderr)
         self.assertIn(m("install.add_hint"), result.stderr)
         result = self.run_script("install.sh", "--webhook", "--relay-name", "other", root=repo)
         self.assertEqual(result.returncode, 1)

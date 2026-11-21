@@ -13,7 +13,7 @@ CFG = {"RN_BIN": "/nonexistent", "PERSON": "demo", "LISTEN_NAME": "bot", "CLOUD_
        "INBOX_NAME": "bot-inbox", "CLOUD_MACHINE": "cloud", "DOORBELL_PREVIEW_CHARS": 200,
        "WEBHOOK_URL": "http://127.0.0.1:9/", "WEBHOOK_KEY": "x", "OUTBOUND_KEY": KEY, "MAX_WAKES_PER_HOUR": 20,
        "MIN_SECONDS_BETWEEN_WAKES": 20, "MAX_BATCH": 10, "MAX_PROXY_PER_HOUR": 60,
-       "MAX_SPOOL": 50, "WEBHOOK_MAX_BODY_CHARS": 3500,
+       "MAX_SPOOL": 50, "WEBHOOK_MAX_BODY_CHARS": 3500, "FORMER_POLL_SECONDS": 60,
        "RN_DB": str(Path(tempfile.mkdtemp()) / "missing-network.db")}   # never the real engine database
 LIMIT = CFG["WEBHOOK_MAX_BODY_CHARS"]
 

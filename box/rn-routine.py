@@ -10,13 +10,16 @@
   rn-routine.py request ID
       rn-cloud.sh request: if message ID is the user's own maintenance request (the signed copy is verified
       again, the sender is box/person, the first line is "agent-mesh update <tag> <commit> <req>",
-      "agent-mesh add-bot <name> <req>" or "agent-mesh stub <req>" and every other line an allowed key=value),
-      run it once per <req>, reply with rn-cloud.sh send and print "agent-mesh-request DONE ID"; a failure prints
-      "STOP: <reason>". Any other message: "agent-mesh-request ORDINARY", nothing changed.
+      "agent-mesh add-bot <name> <req>", "agent-mesh stub <req>", "agent-mesh rename <slot> <old> <new> <req>"
+      or "agent-mesh history <slot> accept <claim> <req>" and every other line an allowed key=value), run it once
+      per <req>, reply with rn-cloud.sh send and print "agent-mesh-request DONE ID"; a failure prints
+      "STOP: <reason>". Any other message: "agent-mesh-request ORDINARY", nothing changed. A rename or history
+      request runs rn-names.py apply under the exclusive maintenance lock.
   rn-routine.py bootstrap N RUN-DIR|- ID TAG
       run by rn-cloud-update.sh --stdin of release TAG. Exit 3, nothing changed, unless ID is the user's update
       request to TAG (and, with RUN-DIR, complete in that run's fetch); otherwise update, reply, release the
       claims of that run and print "agent-mesh-bootstrap RELOAD" (with -: "agent-mesh-bootstrap DONE"), exit 0.
+Bot names, rename switches and held-back history live in rn-names.py, loaded from the same folder.
 The first 8 hex digits of <req> are the Mac's Unix time when it made the request. A request is recorded in
 .git/agent-mesh/requests/ before it runs; a run cut off part-way runs again from the start the next time (every
 step is safe to repeat; a language is written only if no request with a later time and id has written one).
@@ -27,52 +30,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
-BASE = Path(os.environ.get("RN_CLOUD_BASE", "/workspace/agent-mesh/box"))
-ROOT = BASE.parent
-CLOUD_ROOT = "/workspace/agent-mesh"
-STUBS = (1,)
-LANGS = ("en", "zh-CN")
-CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py",
-               "box/rn-cloud-add-bot.sh", "box/rn-routine.py", "prompts/routine-body.md",
-               "prompts/routine-body.zh-CN.md")
-UPDATE_SCRIPT = "box/rn-cloud-update.sh"
-OVERRIDES = ("AGENT_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME", "RN_INBOX_DIR", "RN_THREADS_DIR")
-NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-RESERVED = re.compile(r"terminal(?:-[0-9]+)?")
-REQ = r"[0-9a-f]{8,32}"
-VERBS = {
-    "update": (re.compile(rf"agent-mesh update (v[0-9]+\.[0-9]+\.[0-9]+) ([0-9a-f]{{40}}) ({REQ})"), ("lang",)),
-    "add-bot": (re.compile(rf"agent-mesh add-bot ([a-z0-9]+(?:-[a-z0-9]+)*) ({REQ})"), ()),
-    "stub": (re.compile(rf"agent-mesh stub ({REQ})"), ("lang",)),
-}
-PLACEHOLDERS = ("<team-name>", "<relay-name>", "<rn-cloud>", "<threads-dir>")
-RESULT = "agent-mesh-result"
-STUB_WINDOW = 900
-REQUEST_DAYS = 30
-RUN_DIR = re.compile(r"\.git/agent-mesh/boot/[A-Za-z0-9._-]+")
-ORIG_ENV = dict(os.environ)
-
-
-class Stop(Exception):
-    pass
-
-
-def valid_name(name):
-    return bool(NAME.fullmatch(name)) and len(name) <= 34 and not RESERVED.fullmatch(name)
-
-
-def valid_team(team):
-    return bool(NAME.fullmatch(team)) and len(team) <= 40
-
-
-def present(p):
-    return p.exists() or p.is_symlink()
-
-
-def child_env(**extra):
-    env = {k: v for k, v in ORIG_ENV.items() if k not in ("RN_MAINT_FD", "RN_MAINT_MODE")}
-    env.update(extra)
-    return env
 
 
 def module(name, path):
@@ -80,6 +37,37 @@ def module(name, path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+NM = module("rn_names", HERE / "rn-names.py")
+Stop, valid_name, valid_team, present, first_bot = NM.Stop, NM.valid_name, NM.valid_team, NM.present, NM.first_bot
+selector, read_person, state_dir, put = NM.selector, NM.read_person, NM.state_dir, NM.put
+maint_problem, read_or_stop = NM.maint_problem, NM.read_or_stop
+BASE, ROOT, CLOUD_ROOT, REQ, RESULT, ORIG_ENV = NM.BASE, NM.ROOT, NM.CLOUD_ROOT, NM.REQ, NM.RESULT, NM.ORIG_ENV
+STUBS = (1,)
+LANGS = ("en", "zh-CN")
+CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py",
+               "box/rn-cloud-add-bot.sh", "box/rn-routine.py", "box/rn-names.py", "prompts/routine-body.md",
+               "prompts/routine-body.zh-CN.md")
+UPDATE_SCRIPT = "box/rn-cloud-update.sh"
+N = NM.NAME.pattern
+VERBS = {
+    "update": (re.compile(rf"agent-mesh update (v[0-9]+\.[0-9]+\.[0-9]+) ([0-9a-f]{{40}}) ({REQ})"), ("lang",)),
+    "add-bot": (re.compile(rf"agent-mesh add-bot ({N}) ({REQ})"), ()),
+    "stub": (re.compile(rf"agent-mesh stub ({REQ})"), ("lang",)),
+    "rename": (re.compile(rf"agent-mesh rename (-|{N}) ({N}) ({N}) ({REQ})"), ("reclaim",)),
+    "history": (re.compile(rf"agent-mesh history (-|{N}) accept (add|{REQ}) ({REQ})"), ()),
+}
+PLACEHOLDERS = ("<team-name>", "<relay-name>", "<rn-cloud>", "<threads-dir>")
+STUB_WINDOW = 900
+REQUEST_DAYS = 30
+RUN_DIR = re.compile(r"\.git/agent-mesh/boot/[A-Za-z0-9._-]+")
+
+
+def child_env(**extra):
+    env = {k: v for k, v in ORIG_ENV.items() if k not in ("RN_MAINT_FD", "RN_MAINT_MODE")}
+    env.update(extra)
+    return env
 
 
 def template(root, lang, name="routine-body"):
@@ -114,105 +102,18 @@ def render_body(root, lang, team, name, slot, threads=None):
     return fill(template(root, lang), body_values(team, name, slot, threads))
 
 
-def first_bot():
-    p = BASE / "relay"
-    if not p.exists():
-        return "bot"
-    try:
-        name = p.read_text(encoding="utf-8").rstrip("\n")
-    except (OSError, UnicodeDecodeError) as e:
-        raise Stop(f"cannot read box/relay: {e}")
-    if not valid_name(name):
-        raise Stop("box/relay is damaged; it must hold the Bot address name the Mac uses (README: Troubleshooting)")
-    return name
-
-
-def selector(registered=True):
-    given = [k for k in OVERRIDES if ORIG_ENV.get(k)]
-    threads_shown = None
-    if "RN_BOT" in ORIG_ENV:
-        slot = ORIG_ENV["RN_BOT"]
-        if not valid_name(slot):
-            raise Stop(f"invalid RN_BOT {slot[:60]!r}: a Bot address name is 1-34 lowercase letters and digits, "
-                       "groups joined by a single '-', not terminal")
-        if given:
-            raise Stop(f"RN_BOT cannot be combined with {given[0]}; nothing was run")
-        if present(BASE / "bots-removed" / slot):
-            raise Stop(f"the Bot {slot} was removed from this cloud (box/bots-removed/{slot}); nothing was run")
-        bot = ROOT / "bots" / slot
-        if bot.is_symlink() or (registered and not (bot / ".registered").is_file()):
-            raise Stop(f"the Bot {slot} is not registered on this cloud; nothing was run")
-        name, inbox_dir, threads_dir = slot, bot / "inbox", bot / "threads"
-    else:
-        slot = "-"
-        if given:
-            name = first_bot()
-            inbox_dir = Path(ORIG_ENV.get("RN_INBOX_DIR") or f"{CLOUD_ROOT}/inbox")
-            threads_dir = Path(ORIG_ENV.get("RN_THREADS_DIR") or f"{CLOUD_ROOT}/threads")
-            threads_shown = str(threads_dir)
-        else:
-            if not (BASE / "relay").exists() and present(BASE / "relay.removed"):
-                raise Stop("the first Bot was removed from this cloud (box/relay.removed); select a Bot with "
-                           "RN_BOT=<name>")
-            name = first_bot()
-            if present(BASE / "bots-removed" / name):
-                raise Stop(f"the Bot {name} was removed from this cloud (box/bots-removed/{name}); nothing was run")
-            inbox_dir, threads_dir = ROOT / "inbox", ROOT / "threads"
-    return SimpleNamespace(slot=slot, name=name, inbox_dir=inbox_dir, threads_dir=threads_dir,
-                           threads_shown=threads_shown, relay=ORIG_ENV.get("AGENT_RELAY_NAME") or name,
-                           cloud=ORIG_ENV.get("RN_CLOUD_NAME") or f"{name}-cloud",
-                           inbox=ORIG_ENV.get("RN_INBOX_NAME") or f"{name}-inbox")
-
-
-def read_person():
-    try:
-        person = (BASE / "person").read_text(encoding="utf-8").rstrip("\n")
-    except (OSError, UnicodeDecodeError) as e:
-        raise Stop(f"cloud setup is incomplete; box/person cannot be read ({e})")
-    if not valid_team(person):
-        raise Stop("box/person does not hold a team name")
-    return person
-
-
 def read_lang():
     p = BASE / "lang"
     if not present(p):
         return "en"
-    try:
-        lang = p.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError) as e:
-        raise Stop(f"box/lang cannot be read ({e})")
+    lang = read_or_stop(p, lambda e: f"box/lang cannot be read ({e})").strip()
     if lang not in LANGS:
         raise Stop("box/lang must hold en or zh-CN")
     return lang
 
 
-def state_dir(*parts):
-    git = ROOT / ".git"
-    if git.is_symlink() or not git.is_dir():
-        raise Stop(f"{ROOT} is not a git clone")
-    d = git / "agent-mesh"
-    for p in (d, *[d.joinpath(*parts[:i + 1]) for i in range(len(parts))]):
-        if p.is_symlink():
-            raise Stop(f"{p} is a symlink; not touching it")
-    d = d.joinpath(*parts)
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def put(p, text):
-    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, p)
-
-
 def write_lang(lang):
-    tmp = state_dir() / f".lang.{os.getpid()}.tmp"
-    tmp.write_text(lang + "\n", encoding="utf-8")
-    os.replace(tmp, BASE / "lang")
+    put(BASE / "lang", lang + "\n", state_dir() / f".lang.{os.getpid()}.tmp", sync=False)
 
 
 def made(req):
@@ -273,28 +174,27 @@ def claim_hash(slot):
     return None
 
 
-def maint_problem(mode):
-    return module("rn_engine", HERE / "rn-engine.py").maint_problem(str(ROOT / ".maint.lock"), mode)
-
-
 def instructions(args):
     if not args or not re.fullmatch(r"[0-9]{1,4}", args[0]) or int(args[0]) not in STUBS:
         raise Stop(f"stub version {args[0][:20] if args else '(none)'} is not supported by this cloud computer "
                    f"(it supports {', '.join(map(str, STUBS))}); paste the routine prompt that ./update.sh shows")
     n, rest = int(args[0]), args[1:]
-    if len(rest) == 3 and rest[2] == "reclaim":
-        raise Stop("this cloud computer cannot take back an earlier Bot name; update agent-mesh first (./update.sh)")
+    reclaim = len(rest) == 3 and rest[2] == "reclaim"
+    if reclaim:
+        rest = rest[:2]
     if len(rest) not in (0, 2):
-        raise Stop("usage: rn-cloud.sh instructions N [TEAM-NAME TEAM-HASH]")
+        raise Stop("usage: rn-cloud.sh instructions N [TEAM-NAME TEAM-HASH [reclaim]]")
     added = "RN_BOT" in ORIG_ENV
     if added != bool(rest):
         raise Stop("an added Bot's stub passes its team name and team hash, the first Bot's stub passes neither")
     if added and not (valid_team(rest[0]) and re.fullmatch(r"[0-9a-f]{16}", rest[1])):
         raise Stop("invalid team name or team hash in the stub")
     if not os.environ.get("RN_MAINT_FD"):
-        sel = selector(registered=False)
-        if added and not (ROOT / "bots" / sel.slot / ".registered").is_file():
-            r = subprocess.run(["bash", str(BASE / "rn-cloud-add-bot.sh"), sel.slot, *rest], env=child_env(),
+        sel = selector(registered=False, reclaim=reclaim)
+        unfinished = reclaim and present(BASE / "bots-removed" / sel.slot)
+        if added and (unfinished or not (ROOT / "bots" / sel.slot / ".registered").is_file()):
+            r = subprocess.run(["bash", str(BASE / "rn-cloud-add-bot.sh"), sel.slot, *rest,
+                                *(["reclaim"] if reclaim else [])], env=child_env(),
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             if r.returncode:
                 raise Stop("registering this Bot on the cloud computer did not finish:\n" + r.stdout.rstrip())
@@ -326,19 +226,22 @@ def instructions(args):
     return 0
 
 
+def selected_env(sel, person):
+    return dict(RN_INBOX_DIR=str(sel.inbox_dir), RN_THREADS_DIR=str(sel.threads_dir), RN_BOX=str(BASE),
+                RN_PERSON=person, RN_KEY_FILE=str(BASE / "outbound.key"), RN_INBOX_NAME=sel.inbox,
+                RN_RELAY_NAME=sel.relay, RN_CLOUD_NAME=sel.cloud, REASON_NETWORK_HOME=str(BASE / "state"),
+                RN_OTHER_INBOXES=",".join(sel.others), RN_EXCLUDE_FILE=str(sel.exclude or ""))
+
+
 def load_fetch(sel, person):
-    os.environ.update(RN_INBOX_DIR=str(sel.inbox_dir), RN_THREADS_DIR=str(sel.threads_dir), RN_BOX=str(BASE),
-                      RN_PERSON=person, RN_KEY_FILE=str(BASE / "outbound.key"), RN_INBOX_NAME=sel.inbox,
-                      RN_RELAY_NAME=sel.relay, RN_CLOUD_NAME=sel.cloud, REASON_NETWORK_HOME=str(BASE / "state"))
+    os.environ.update(selected_env(sel, person))
     return module("rn_fetch", HERE / "rn-fetch.py")
 
 
 def fetch_env(sel, person):
     env = child_env()
     env.pop("RN_BOT", None)
-    env.update(RN_INBOX_DIR=str(sel.inbox_dir), RN_THREADS_DIR=str(sel.threads_dir), RN_BOX=str(BASE),
-               RN_PERSON=person, RN_KEY_FILE=str(BASE / "outbound.key"), RN_INBOX_NAME=sel.inbox,
-               RN_RELAY_NAME=sel.relay, RN_CLOUD_NAME=sel.cloud, REASON_NETWORK_HOME=str(BASE / "state"))
+    env.update(selected_env(sel, person))
     return env
 
 
@@ -388,9 +291,12 @@ def parse_request(text):
         if not km or km[1] not in keys or km[1] in extras:
             return None
         extras[km[1]] = km[2]
-    if extras.get("lang", "en") not in LANGS:
+    if extras.get("lang", "en") not in LANGS or extras.get("reclaim", "1") != "1":
         return None
     values = list(m.groups())
+    names = {"rename": values[:3], "history": values[:1]}.get(verb, [])
+    if any(v != "-" and not valid_name(v) for v in names):
+        return None
     return SimpleNamespace(verb=verb, args=values[:-1], req=values[-1], extras=extras)
 
 
@@ -437,34 +343,46 @@ def prune_records(oldest):
                 pass
 
 
+def run_step(cmd, env, what, done, head=None):
+    r = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True, errors="replace")
+    lines = r.stdout.rstrip("\n").split("\n") if r.stdout.strip() else []
+    if head is not None and lines[:1] == [head]:
+        lines = lines[1:]
+    ok = r.returncode == 0 and bool(lines) and done(lines[-1])
+    if not ok and not any(line.startswith("STOP: ") for line in lines):
+        lines.append(f"STOP: the {what} did not finish (exit {r.returncode})")
+    return ok, lines
+
+
 def run_update(parsed, script, env):
     tag, commit = parsed.args
-    r = subprocess.run(["bash", str(script), tag, commit, parsed.req], env=env, stdin=subprocess.DEVNULL,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
-    lines = r.stdout.rstrip("\n").split("\n") if r.stdout.strip() else []
-    if lines[:1] == [f"{RESULT} request {parsed.req}"]:
-        lines = lines[1:]
-    if r.returncode == 0 and lines[-1:] == [f"{RESULT} DONE {tag}"]:
-        return True, lines[:-1], tag
-    if not any(line.startswith("STOP: ") for line in lines):
-        lines.append(f"STOP: the update did not finish (exit {r.returncode})")
-    return False, lines, tag
+    ok, lines = run_step(["bash", str(script), tag, commit, parsed.req], env, "update",
+                         lambda last: last == f"{RESULT} DONE {tag}", head=f"{RESULT} request {parsed.req}")
+    return ok, lines[:-1] if ok else lines, tag
+
+
+def run_apply(parsed):
+    extra = ["reclaim"] if parsed.extras.get("reclaim") == "1" else []
+    ok, lines = run_step([sys.executable, "-I", str(HERE / "rn-engine.py"), "hold", "--exclusive", "--wait",
+                          os.environ.get("RN_MAINT_WAIT", "600"), str(ROOT / ".maint.lock"), "--",
+                          sys.executable, "-I", str(HERE / "rn-names.py"), "apply", parsed.verb, *parsed.args,
+                          parsed.req, *extra], child_env(), parsed.verb,
+                         lambda last: last.startswith(f"{RESULT} {parsed.verb} {parsed.req} "))
+    return ok, lines, parsed.verb
 
 
 def execute(parsed, sel, update_script, update_env):
     if parsed.verb == "update":
         ok, lines, word = run_update(parsed, update_script, update_env)
+    elif parsed.verb in ("rename", "history"):
+        ok, lines, word = run_apply(parsed)
     elif parsed.verb == "add-bot":
         name = parsed.args[0]
-        if sel.slot == "-" or name != sel.name:
+        if sel.slot == "-" or name != sel.slot:
             return False, [f"STOP: this request is for the Bot {name}, but it reached the Bot {sel.name}"], "add-bot"
-        r = subprocess.run(["bash", str(BASE / "rn-cloud-add-bot.sh"), "--check", name, parsed.req],
-                           env=child_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True, errors="replace")
-        lines = r.stdout.rstrip("\n").split("\n") if r.stdout.strip() else []
-        ok = r.returncode == 0 and bool(lines) and lines[-1].startswith(f"{RESULT} add-bot {parsed.req} ok {name} ")
-        if not ok and not any(line.startswith("STOP: ") for line in lines):
-            lines.append(f"STOP: the check did not finish (exit {r.returncode})")
+        ok, lines = run_step(["bash", str(BASE / "rn-cloud-add-bot.sh"), "--check", name, parsed.req], child_env(),
+                             "check", lambda last: last.startswith(f"{RESULT} add-bot {parsed.req} ok {name} "))
         word = "add-bot"
     else:
         ok, lines, word = True, [], "stub"

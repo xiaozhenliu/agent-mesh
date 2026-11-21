@@ -1208,10 +1208,15 @@ class Update(InstallHarness, unittest.TestCase):
 
         (repo / "check.sh").write_text('#!/bin/bash\nfor a in "$@"; do echo "CHECK [$a]"; done\n')
         self.assertEqual(run("check", "--lang", "zh-CN", "a b").stdout, "CHECK [--lang]\nCHECK [zh-CN]\nCHECK [a b]\n")
-        for args in ((), ("rename",), ("--help",)):
+        installer = (repo / "install.sh").read_bytes()
+        (repo / "install.sh").write_text('#!/bin/bash\nfor a in "$@"; do echo "INSTALL [$a]"; done\n')
+        self.assertEqual(run("rename", "new name", "--yes").stdout,
+                         "INSTALL [--rename]\nINSTALL [new name]\nINSTALL [--yes]\n")
+        (repo / "install.sh").write_bytes(installer)
+        for args in ((), ("renames",), ("--help",)):
             bad = run(*args)
             self.assertEqual((bad.returncode, bad.stdout), (2, ""), args)
-            self.assertIn("usage: agent-mesh update|check", bad.stderr)
+            self.assertIn("usage: agent-mesh update|check|rename", bad.stderr)
         moved = self.base / "moved repo"
         repo.rename(moved)
         gone = run("update", "--plan")

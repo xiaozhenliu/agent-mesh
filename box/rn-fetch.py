@@ -64,6 +64,9 @@ Writes $RN_INBOX_DIR/<id>/full.txt and meta.json.
 Env: REASON_NETWORK_HOME, RN_PERSON, RN_INBOX_NAME (default <name>-inbox), RN_KEY_FILE, RN_INBOX_DIR,
 RN_CLAIM_LEASE, RN_ORPHANS, RN_ORPHAN_DAYS, RN_DONE_LOCK_WAIT, RN_GOT (1; 0 = off); for fetch and receipts also
 RN_BIN, RN_CLOUD_NAME (<name>-cloud), RN_RELAY_NAME (<name>), RN_REFWD (1; 0 = off), RN_REFWD_MAX.
+After a rename, RN_OTHER_INBOXES (comma-separated) adds the Bot's earlier inboxes to every read, and the rows listed
+in RN_EXCLUDE_FILE (earlier messages of an address taken back) are skipped until the user accepts them; accepted rows
+are read even when their inbox is no longer one of the Bot's. purge drops the rows it deleted from that file.
 <name> is the Bot address name in $RN_BOX/relay (written by rn-cloud-setup.sh; bot if the file does not exist). It
 is read only if one of those three is unset; an empty or damaged file stops scan/wait/fetch and done.
 Standard library only.
@@ -78,7 +81,6 @@ ACK_HEAD = "RN-REFWD-ACK v1\n"
 CAPS = "got1"
 GOT_ID = re.compile(r"[A-Za-z0-9._-]{1,120}")
 GOT_MAX_IDS = 100
-GOT_FROM = None
 SEND_REFUSED = re.compile(r"refused|not on this machine|no session|nobody matches|ambiguous", re.I)
 SEND_UNSURE = re.compile(r"held|error", re.I)
 SEND_ACCEPTED = "→"
@@ -135,20 +137,26 @@ def read(p):
         return fh.read()
 
 
-def write(p, text):
-    tmp = p.with_name(p.name + ".tmp")
+def write(p, text, tmp=None, sync=False):
+    tmp = tmp or p.with_name(p.name + ".tmp")
     with open(tmp, "w", encoding="utf-8", newline="") as fh:   # keep \r exactly
         fh.write(text)
+        if sync:
+            fh.flush()
+            os.fsync(fh.fileno())
     tmp.replace(p)
 
 
+def sign_lines(key, lines):
+    return hmac.new(key.encode(), "\n".join(lines).encode(), hashlib.sha256).hexdigest()
+
+
 def sign_fwd(key, mid, frm, agent, thread, text_len, text_sha, ts):
-    msg = "\n".join(["fwd1", mid, frm, agent, thread, str(text_len), text_sha, ts]).encode()
-    return hmac.new(key.encode(), msg, hashlib.sha256).hexdigest()
+    return sign_lines(key, ["fwd1", mid, frm, agent, thread, str(text_len), text_sha, ts])
 
 
 def sign_refwd(key, mid, ts, nonce):
-    return hmac.new(key.encode(), "\n".join(["refwd1", mid, ts, nonce]).encode(), hashlib.sha256).hexdigest()
+    return sign_lines(key, ["refwd1", mid, ts, nonce])
 
 
 def receipts_on():
@@ -163,7 +171,7 @@ def refwd_body(key, mid, ts=None, nonce=None):
 
 
 def sign_got(key, stored, done, ts, nonce):
-    return hmac.new(key.encode(), "\n".join(["got1", stored, done, ts, nonce]).encode(), hashlib.sha256).hexdigest()
+    return sign_lines(key, ["got1", stored, done, ts, nonce])
 
 
 def got_body(key, stored, done, ts=None, nonce=None):
@@ -205,16 +213,20 @@ def wants_receipt(oid, d=None):
     return False
 
 
+def header_fields(text, strip=False):
+    f = {}
+    for line in text.split("\n")[1:]:
+        k, _, v = line.partition(":")
+        f[k.strip()] = v.strip() if strip else (v[1:] if v.startswith(" ") else v)
+    return f
+
+
 def parse_ack(body, key):
     """Signed RN-REFWD-ACK v1 -> {id, status, attempt, reason, ts} or None (bad/forged acks are ignored)."""
-    f = {}
-    for line in body.split("\n")[1:]:
-        k, _, v = line.partition(":")
-        f[k.strip()] = v.strip()
+    f = header_fields(body, strip=True)
     if not all(f.get(k) for k in ("id", "status", "attempt", "ts", "sig")):
         return None
-    msg = "\n".join(["refwdack1", f["id"], f["status"], f["attempt"], f["ts"]]).encode()
-    if not hmac.compare_digest(f["sig"], hmac.new(key.encode(), msg, hashlib.sha256).hexdigest()):
+    if not hmac.compare_digest(f["sig"], sign_lines(key, ["refwdack1", f["id"], f["status"], f["attempt"], f["ts"]])):
         return None
     try:
         f["ts"] = int(f["ts"])
@@ -228,10 +240,7 @@ def parse(body, key):
     if not body.startswith("RN-FWD v1\n"):
         return None, None, "not an RN-FWD v1 message"
     head, sep, rest = body.partition("\n---\n")
-    f = {}
-    for line in head.split("\n")[1:]:
-        k, _, v = line.partition(":")
-        f[k.strip()] = v[1:] if v.startswith(" ") else v
+    f = header_fields(head)
     need = ("id", "from", "agent", "thread", "text_len", "text_sha256", "ts", "sig")
     if not sep or any(k not in f for k in need):
         return f or None, None, "malformed header"
@@ -247,13 +256,80 @@ def parse(body, key):
     return f, text, None
 
 
-def rows(person, inbox):
+def exclusion_data(path=None):
+    path = os.environ.get("RN_EXCLUDE_FILE", "") if path is None else path
+    if not path:
+        return {"claims": {}, "accepted": {}}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"claims": {}, "accepted": {}}
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"rn-fetch: {path} cannot be read ({e}); nothing was fetched")
+    if not exclusion_valid(data):
+        raise SystemExit(f"rn-fetch: {path} is damaged; nothing was fetched")
+    return data
+
+
+def exclusion(person, path=None, data=None):
+    ids, srcs, accepted = set(), set(), set()
+    data = exclusion_data(path) if data is None else data
+    for kind in ("claims", "accepted"):
+        for c in data[kind].values():
+            who = f"{person}/{c['inbox']}"
+            for rid, src in c["rows"]:
+                if kind == "accepted":
+                    accepted.add(str(rid))
+                    continue
+                ids.add((who, str(rid)))
+                if src:
+                    srcs.add((who, str(src)))
+    return ids, srcs, accepted
+
+
+def exclusion_valid(data):
+    if not isinstance(data, dict) or set(data) != {"claims", "accepted"}:
+        return False
+    for section in data.values():
+        if not isinstance(section, dict):
+            return False
+        for claim, c in section.items():
+            if not (isinstance(claim, str) and claim and isinstance(c, dict) and isinstance(c.get("inbox"), str)
+                    and c["inbox"] and isinstance(c.get("rows"), list)):
+                return False
+            for row in c["rows"]:
+                if not (isinstance(row, list) and len(row) == 2 and isinstance(row[0], str) and row[0]
+                        and (row[1] is None or (isinstance(row[1], str) and row[1]))):
+                    return False
+    return True
+
+
+def inbox_rows(person, inboxes):
+    data = exclusion_data()
+    ids, srcs, _ = exclusion(person, data=data)
+    who = [f"{person}/{i}" for i in dict.fromkeys(inboxes)]
+    late = sorted({(f"{person}/{c['inbox']}", str(r[0])) for c in data["accepted"].values() for r in c["rows"]
+                   if f"{person}/{c['inbox']}" not in who})
     db = sqlite3.connect(f"file:{HOME / 'network.db'}?mode=ro", uri=True, timeout=5)
     try:
-        return db.execute("SELECT id, sender, body, sent_at FROM messages WHERE recipient = ? ORDER BY sent_at, id",
-                          (f"{person}/{inbox}",)).fetchall()
+        found = db.execute("SELECT id, sender, body, sent_at, recipient FROM messages WHERE recipient IN "
+                           f"({','.join('?' * len(who))}) ORDER BY sent_at, id", who).fetchall()
+        for i in range(0, len(late), 400):
+            part = late[i:i + 400]
+            found += db.execute("SELECT id, sender, body, sent_at, recipient FROM messages WHERE "
+                                + " OR ".join(["(recipient = ? AND id = ?)"] * len(part)),
+                                [v for pair in part for v in pair]).fetchall()
     finally:
         db.close()
+    if late:
+        found.sort(key=lambda r: (r[3] or 0, str(r[0])))
+    return [(rid, frm, body, sent) for rid, frm, body, sent, to in found
+            if (to, str(rid)) not in ids and (to, header_id(body)) not in srcs]
+
+
+def rows(person, inbox):
+    others = [i for i in os.environ.get("RN_OTHER_INBOXES", "").split(",") if i]
+    return inbox_rows(person, [inbox, *others])
 
 
 def store(f, text, rn_id, rn_from, sent_at):
@@ -274,6 +350,12 @@ def store(f, text, rn_id, rn_from, sent_at):
             "updated": time.time(), "caps": caps_of(f)}
     write(d / "meta.json", json.dumps(meta, ensure_ascii=False))
     return d, False
+
+
+def complete_result(oid, f, text, d, already, **extra):
+    return {"id": oid, "status": "complete", "from": f["from"], "agent": f["agent"] or None,
+            "thread": f["thread"] or None, "text_len": len(text), "text_sha256": f["text_sha256"],
+            "full": str(d / "full.txt"), "dir": str(d), "already": already, "verified": True, **extra}
 
 
 def scan(ids, key, person, inbox, quiet_missing=False, acks=None):
@@ -300,9 +382,7 @@ def scan(ids, key, person, inbox, quiet_missing=False, acks=None):
         d, already = store(f, text, rn_id, rn_from, sent_at)
         if not ids and already:
             continue
-        res[oid] = {"id": oid, "status": "complete", "from": f["from"], "agent": f["agent"] or None,
-                    "thread": f["thread"] or None, "text_len": len(text), "text_sha256": f["text_sha256"],
-                    "full": str(d / "full.txt"), "dir": str(d), "already": already, "verified": True}
+        res[oid] = complete_result(oid, f, text, d, already)
     for oid, r in mism.items():
         res.setdefault(oid, r)             # a valid copy beats a bad one
     for oid in ids:
@@ -373,6 +453,18 @@ def engine_env(base=None):
     return env
 
 
+def engine_send(args, make):
+    try:
+        body, env = make()
+        r = subprocess.run(args, input=body, capture_output=True, text=True, timeout=60, env=env)
+    except Exception as e:
+        return f"send failed: {type(e).__name__}"
+    res = (r.stdout + r.stderr).strip()
+    if send_outcome(r.returncode, res) != "sent":
+        return f"send rc={r.returncode}: {res.splitlines()[0][:80] if res else ''}"
+    return None
+
+
 def send_got(stored, done, key, person):
     """Sends signed RN-GOT v1 receipts (at most GOT_MAX_IDS ids each) to the Mac relay, then waits up to 30 s
     for the outbox to empty. Returns a list of errors (empty: all handed to the engine)."""
@@ -380,20 +472,15 @@ def send_got(stored, done, key, person):
     stored = [i for i in dict.fromkeys(stored) if GOT_ID.fullmatch(i) and i not in done]
     items = [("stored", i) for i in stored] + [("done", i) for i in done]
     to = f"{person}/{names()[0]}"
-    args = [rn_bin(), "send", to] + (["--from", f"{person}/{GOT_FROM}"] if GOT_FROM else []) + ["-"]
+    args = [rn_bin(), "send", to, "-"]
     env = engine_env({k: v for k, v in os.environ.items() if k not in AGENT_ENV})
     sent, errors = 0, []
     for k in range(0, len(items), GOT_MAX_IDS):
         part = items[k:k + GOT_MAX_IDS]
         body = got_body(key, [i for kind, i in part if kind == "stored"], [i for kind, i in part if kind == "done"])
-        try:
-            r = subprocess.run(args, input=body, capture_output=True, text=True, timeout=60, env=env)
-        except Exception as e:
-            errors.append(f"send failed: {type(e).__name__}")
-            continue
-        res = (r.stdout + r.stderr).strip()
-        if send_outcome(r.returncode, res) != "sent":
-            errors.append(f"send rc={r.returncode}: {res.splitlines()[0][:80] if res else ''}")
+        error = engine_send(args, lambda: (body, env))
+        if error:
+            errors.append(error)
             continue
         sent += 1
     for e in errors:
@@ -438,16 +525,9 @@ def request_refwd(mid, key, person):
     relay, cloud, _ = names()
     done.append(time.time())
     write(cf, json.dumps(done))            # count before sending: a crash never allows extra requests
-    try:
-        r = subprocess.run([rn, "send", f"{person}/{relay}", "--from", f"{person}/{cloud}", "-"],
-                           input=refwd_body(key, mid), capture_output=True, text=True, timeout=60,
-                           env=engine_env())
-    except Exception as e:
-        return None, f"send failed: {type(e).__name__}"
-    res = (r.stdout + r.stderr).strip()
-    if send_outcome(r.returncode, res) != "sent":
-        return None, f"send rc={r.returncode}: {res.splitlines()[0][:80] if res else ''}"
-    return len(done), None
+    error = engine_send([rn, "send", f"{person}/{relay}", "--from", f"{person}/{cloud}", "-"],
+                        lambda: (refwd_body(key, mid), engine_env()))
+    return (None, error) if error else (len(done), None)
 
 
 def fetch(ids, key, person, inbox, timeout, refwd_timeout):
@@ -507,11 +587,7 @@ def put_marker(p, content):
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f".{p.name}.{os.getpid()}.{os.urandom(6).hex()}.tmp")
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(content, ensure_ascii=False))
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, p)
+        write(p, json.dumps(content, ensure_ascii=False), tmp, sync=True)
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -604,8 +680,9 @@ def orphans(exclude, key, person, inbox):
     now, ttl = time.time(), lease()
     cut = (now - float(os.environ.get("RN_ORPHAN_DAYS", "7")) * 86400) * 1000
     found, bad, valid = {}, {}, set()
+    accepted = exclusion(person)[2]
     for rn_id, rn_from, body, sent_at in rows(person, inbox):
-        if body.startswith(ACK_HEAD) or sent_at < cut:
+        if body.startswith(ACK_HEAD) or (sent_at < cut and str(rn_id) not in accepted):
             continue
         f, text, err = parse(body, key)
         oid = (f or {}).get("id") or f"rn:{rn_id}"
@@ -624,10 +701,7 @@ def orphans(exclude, key, person, inbox):
                 now - st[m][0] < ttl for m in ("claimed", "working", "replying") if m in st)):
             continue
         sd, already = store(f, text, rn_id, rn_from, sent_at)
-        found[oid] = {"id": oid, "status": "complete", "from": f["from"], "agent": f["agent"] or None,
-                      "thread": f["thread"] or None, "text_len": len(text), "text_sha256": f["text_sha256"],
-                      "full": str(sd / "full.txt"), "dir": str(sd), "already": already, "verified": True,
-                      "orphan": True}
+        found[oid] = complete_result(oid, f, text, sd, already, orphan=True)
     for oid, items in bad.items():
         fresh = [it for it in items if not reported(it[0])]
         if oid in valid or not fresh:
@@ -730,11 +804,7 @@ def header_id(body):
     """The message id in an RN-FWD header (read like parse() does), or None for ACKs and other rows."""
     if not body.startswith("RN-FWD v1\n"):
         return None
-    f = {}
-    for line in body.partition("\n---\n")[0].split("\n")[1:]:
-        k, _, v = line.partition(":")
-        f[k.strip()] = v[1:] if v.startswith(" ") else v
-    return f.get("id") or None
+    return header_fields(body.partition("\n---\n")[0]).get("id") or None
 
 
 def engine_pids(rn_bin):
@@ -760,6 +830,34 @@ def live_ids(db_path):
         return {lid for (body,) in db.execute("SELECT body FROM messages") if (lid := header_id(body))}
     finally:
         db.close()
+
+
+def prune_exclusion(db_path):
+    path = os.environ.get("RN_EXCLUDE_FILE", "")
+    if not path or not Path(path).exists():
+        return
+    p = Path(path)
+    if p.is_symlink():
+        raise SystemExit(f"rn-fetch: {p} is a symlink; not touching it")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not exclusion_valid(data):
+            raise ValueError("unexpected structure")
+        db = sqlite3.connect(db_path, timeout=5)
+        try:
+            live = {str(rid) for (rid,) in db.execute("SELECT id FROM messages")}
+        finally:
+            db.close()
+        for kind in ("claims", "accepted"):
+            group = data.get(kind) or {}
+            for claim in list(group):
+                group[claim]["rows"] = [r for r in group[claim]["rows"] if str(r[0]) in live]
+                if kind == "accepted" and not group[claim]["rows"]:
+                    del group[claim]
+    except (OSError, ValueError, sqlite3.Error, AttributeError, KeyError, TypeError, IndexError) as e:
+        raise SystemExit(f"rn-fetch: messages were purged, but {p} could not be updated ({e}); it still holds "
+                         "back the earlier messages it listed")
+    write(p, json.dumps(data))
 
 
 def purge(days, threads, rn_bin=None):
@@ -815,6 +913,7 @@ def purge(days, threads, rn_bin=None):
             finally:
                 db.close()
             kept_ids |= live_ids(db_path)                         # a re-forward that landed after COMMIT
+            prune_exclusion(db_path)
         if BASE.is_dir():
             for d in BASE.iterdir():
                 if d.name.startswith("_") or d.is_symlink() or not d.is_dir():

@@ -14,7 +14,7 @@ LANGUAGES = ("en", "zh-CN")
 TEMPLATES = ("routine", "cloud-setup", "cloud-uninstall", "cloud-add-bot")
 CLOUD_SCRIPT = ROOT / "box" / "rn-cloud-uninstall.sh"
 CLOUD_FILES = ("box/rn-cloud.sh", "box/rn-fetch.py", "box/rn-cloud-setup.sh", "box/rn-engine.py",
-               "box/rn-cloud-add-bot.sh", "box/rn-routine.py", "prompts/routine-body.md",
+               "box/rn-cloud-add-bot.sh", "box/rn-routine.py", "box/rn-names.py", "prompts/routine-body.md",
                "prompts/routine-body.zh-CN.md")
 HEREDOC_END = "AGENT_MESH_UNINSTALL_EOF"
 TEAM = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -116,14 +116,14 @@ def only_line(lines, start, label):
     return found[0]
 
 
-def stub_selector(text, name, team_name, team_hash):
+def stub_selector(text, name, team_name, team_hash, reclaim=False):
     check_team("team name", team_name)
     check_team_hash(team_hash)
     lines = text.split("\n")
     one = only_line(lines, STEP1, "routine stub")
     if lines[one] != STEP1:
         raise ValueError("routine stub: step 1 is not the plain instructions command")
-    lines[one] = f"   RN_BOT={name} {STEP1.strip()} '{team_name}' '{team_hash}'"
+    lines[one] = f"   RN_BOT={name} {STEP1.strip()} '{team_name}' '{team_hash}'" + (" reclaim" if reclaim else "")
     three = only_line(lines, STEP3, "routine stub")
     command = lines[three].strip()
     if command.count("inbox/") != 3:
@@ -132,11 +132,11 @@ def stub_selector(text, name, team_name, team_hash):
     return "\n".join(lines)
 
 
-def full_routine(language, team_name, relay_name, bot_selector, team_hash):
+def full_routine(language, team_name, relay_name, bot_selector, team_hash, reclaim=False):
     if team_name is None:
         raise ValueError("the complete routine prompt needs the team name")
     check_team("team name", team_name)
-    name = bot_selector or relay_name or "bot"
+    name = relay_name or bot_selector or "bot"
     slot = bot_selector or "-"
     routine = routine_module()
     values = routine.body_values(team_name, name, slot)
@@ -153,17 +153,20 @@ def full_routine(language, team_name, relay_name, bot_selector, team_hash):
     if bot_selector is not None:
         lines = text.split("\n")
         first = only_line(lines, "R1. ", f"routine ({language})")
-        step0 = substitute(prompt_block("cloud-add-bot", language), add_bot_values(name, team_name, team_hash))
+        step0 = substitute(prompt_block("cloud-add-bot", language), add_bot_values(slot, team_name, team_hash))
+        if reclaim:
+            step0 = step0.replace(f"rn-cloud-add-bot.sh '{slot}' '{team_name}' '{team_hash}'",
+                                  f"rn-cloud-add-bot.sh '{slot}' '{team_name}' '{team_hash}' reclaim")
         lines[first:first] = step0.rstrip("\n").split("\n")
         text = "\n".join(lines)
     problems = []
     if bot_selector is not None:
-        if any(not text.endswith(f"RN_BOT={name} {CLOUD_BOX}", 0, m.start()) for m in re.finditer(r"rn-cloud\.sh", text)):
-            problems.append(f"an rn-cloud.sh command without RN_BOT={name}")
+        if any(not text.endswith(f"RN_BOT={slot} {CLOUD_BOX}", 0, m.start()) for m in re.finditer(r"rn-cloud\.sh", text)):
+            problems.append(f"an rn-cloud.sh command without RN_BOT={slot}")
         if THREADS in text:
             problems.append("the first Bot's threads path")
-        if sum(line.startswith("0. ") for line in text.split("\n")) != 1 \
-                or text.count(f"rn-cloud-add-bot.sh '{name}' '{team_name}' '{team_hash}'") != 1:
+        step0 = f"rn-cloud-add-bot.sh '{slot}' '{team_name}' '{team_hash}'" + (" reclaim" if reclaim else "")
+        if sum(line.startswith("0. ") for line in text.split("\n")) != 1 or text.count(step0) != 1:
             problems.append("step 0 not exactly once")
     found = RENDER_KEYS.search(text) or re.search(r"<(?:rn-cloud|threads-dir)>", text)
     if found:
@@ -184,7 +187,8 @@ def selector_uninstall(text, language, name):
 
 def render_prompt(template, language="en", *, team_name=None, mac_user=None, mac_home=None, repo_url=None,
                   relay_name=None, mac_machine=None, level=None, mode=None, challenge=None, release_tag=None,
-                  release_commit=None, cloud_checksums=None, bot_selector=None, team_hash=None, full=False):
+                  release_commit=None, cloud_checksums=None, bot_selector=None, team_hash=None, full=False,
+                  reclaim=False):
     if language not in LANGUAGES:
         raise ValueError(f"unsupported language: {language}; choose en or zh-CN")
     if template not in TEMPLATES:
@@ -195,6 +199,8 @@ def render_prompt(template, language="en", *, team_name=None, mac_user=None, mac
         raise ValueError(relay_name_problem(bot_selector))
     if full and template != "routine":
         raise ValueError("--full applies only to the routine prompt")
+    if reclaim and (template != "routine" or bot_selector is None):
+        raise ValueError("--reclaim applies only to an added Bot's routine prompt")
     if template == "cloud-uninstall":
         if team_hash is not None:
             raise ValueError("a team hash applies only to an added Bot's routine prompt")
@@ -208,18 +214,15 @@ def render_prompt(template, language="en", *, team_name=None, mac_user=None, mac
     if bot_selector is not None:
         if template != "routine":
             raise ValueError("a Bot selector applies only to the routine and cloud-uninstall prompts")
-        if relay_name is not None and relay_name != bot_selector:
-            raise ValueError(f"the Bot selector {bot_selector} differs from the Bot address name {relay_name}")
         if team_name is None or team_hash is None:
             raise ValueError(f"the routine prompt for Bot {bot_selector} needs the team name and the team hash")
-        relay_name = bot_selector
     elif team_hash is not None and template != "cloud-add-bot":
         raise ValueError("a team hash applies only to an added Bot's routine prompt")
     if template == "routine":
         if full:
-            return full_routine(language, team_name, relay_name, bot_selector, team_hash)
+            return full_routine(language, team_name, relay_name, bot_selector, team_hash, reclaim)
         block = prompt_block(template, language)
-        return stub_selector(block, bot_selector, team_name, team_hash) if bot_selector is not None else block
+        return stub_selector(block, bot_selector, team_name, team_hash, reclaim) if bot_selector is not None else block
     block = prompt_block(template, language)
     if template == "cloud-add-bot":
         return substitute(block, add_bot_values(relay_name, team_name, team_hash))
@@ -249,11 +252,14 @@ def main():
     parser.add_argument("--release-tag", help="cloud-setup: the release tag the cloud checks out")
     parser.add_argument("--release-commit", help="cloud-setup: the commit of that tag")
     parser.add_argument("--cloud-checksums", help="cloud-setup: one line of '<sha256>  <file>' per cloud file")
-    parser.add_argument("--bot-selector", help="routine: the added Bot's address name (needs --team-name, --team-hash); "
+    parser.add_argument("--bot-selector", help="routine: the added Bot's slot, the name it was added with (needs "
+                        "--team-name, --team-hash; --relay-name then gives its current address name); "
                         "cloud-uninstall: the added Bot whose rn-cloud.sh commands the prompt uses")
     parser.add_argument("--team-hash", help="routine with --bot-selector, cloud-add-bot: 16 hex digits")
     parser.add_argument("--full", action="store_true",
                         help="routine: the complete prompt (rules rendered here) instead of the short stub")
+    parser.add_argument("--reclaim", action="store_true",
+                        help="routine with --bot-selector: the Bot was added with a name it takes back")
     args = parser.parse_args()
     try:
         print(render_prompt(args.template, args.lang, team_name=args.team_name,
@@ -261,7 +267,8 @@ def main():
                             relay_name=args.relay_name, mac_machine=args.mac_machine, level=args.level,
                             mode=args.mode, challenge=args.challenge, release_tag=args.release_tag,
                             release_commit=args.release_commit, cloud_checksums=args.cloud_checksums,
-                            bot_selector=args.bot_selector, team_hash=args.team_hash, full=args.full), end="")
+                            bot_selector=args.bot_selector, team_hash=args.team_hash, full=args.full,
+                            reclaim=args.reclaim), end="")
     except (OSError, ValueError) as error:
         parser.exit(1, f"prompt: {error}\n")
 

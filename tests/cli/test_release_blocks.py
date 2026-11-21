@@ -120,7 +120,7 @@ class ReleaseBlocks(unittest.TestCase):
 state() {{ :; }}
 read_reply() {{ REPLY_TEXT=""; }}
 die() {{ exit 0; }}
-REL_TAG={TAG}; REL_COMMIT={commit or self.commit}; S_EPIN=0.12.17
+REL_TAG={TAG}; REL_COMMIT={commit or self.commit}; S_EPIN=0.12.17; REL_COUNT={len(CLOUD_FILES)}
 REL_SUMS="$(cat "$1")"$'\\n'
 eval "$(cat "$2")"
 new_req() {{ echo {REQ}; }}

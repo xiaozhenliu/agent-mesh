@@ -8,6 +8,7 @@ import os
 import plistlib
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -31,7 +32,7 @@ REMOTE = ("cloud", "cloud_setup", "prompt", "cloud_engine")
 CLOUD_PARTS = ("cloud", "cloud_setup", "cloud_engine")
 UPDATE_SCRIPT = "box/rn-cloud-update.sh"
 CLOUD_DIGEST = ("box/rn-cloud.sh", "box/rn-fetch.py", UPDATE_SCRIPT, "box/rn-cloud-add-bot.sh", "box/rn-routine.py",
-                "prompts/routine-body.md", "prompts/routine-body.zh-CN.md")
+                "box/rn-names.py", "prompts/routine-body.md", "prompts/routine-body.zh-CN.md")
 NEEDS = ("cloud", "prompt", "cloud_engine")
 STATES = ("pending", "confirmed")
 TXN_KEYS = ("stage", "relay_was_loaded", "need", "lang", "commit", "target")
@@ -42,6 +43,9 @@ TEMP_ROOTS = ("/tmp", "/private/tmp", "/var/folders", "/private/var/folders")
 CONFIG_KEYS = ("auto_update", "lan")
 PROMPT = {"mode": "thin"}
 MODES = ("thin", "full")
+RENAME_STAGES = ("requested", "replied", "switching", "launched")
+FORMER_MS = 30 * 86400 * 1000
+TEMPLATE_NAMES = ("AGENTS.reason-network.md", "AGENTS.reason-network.zh-CN.md")
 
 
 class NoFirstBot(ValueError):
@@ -140,7 +144,12 @@ def name_status(data, fallback=None):
     recorded = recorded_name(data)
     if recorded is None:
         return "unknown"
-    return "ok" if recorded == current else f"changed {recorded} {current}"
+    if recorded == current:
+        return "ok"
+    record = rename_of(data)
+    if record is not None and record["slot"] == "-" and {recorded, current} <= {record["old"], record["new"]}:
+        return "ok"
+    return f"changed {recorded} {current}"
 
 
 def legacy_name_status(data, fallback=None):
@@ -207,11 +216,12 @@ def prompt_text(lang, relay=None, mode=None):
         person = ""
     if not (TEAM.fullmatch(person) and len(person) <= 40):
         raise ValueError(t("state.bot_no_team", relay, bot["env"]))
-    team_hash = (bot_entry(data, relay) or {}).get("team_hash")
+    item = bot_entry(data, relay) or {}
+    team_hash = item.get("team_hash")
     if not isinstance(team_hash, str) or not re.fullmatch(r"[0-9a-f]{16}", team_hash):
         raise ValueError(t("state.bot_no_team_hash", relay, record_path(), relay))
-    return render_prompt("routine", lang, team_name=person, bot_selector=relay, team_hash=team_hash,
-                         full=mode == "full")
+    return render_prompt("routine", lang, team_name=person, bot_selector=relay, relay_name=bot["address"],
+                         team_hash=team_hash, full=mode == "full", reclaim=item.get("reclaim") == 1)
 
 
 def relang(value, text):
@@ -456,14 +466,6 @@ def python_mixed(python, roster=None):
     return any(p is not None and p != python for p in found)
 
 
-def has_webhook(env):
-    try:
-        cfg = relay_names.parse_env(Path(env).read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return False
-    return cfg.get("WEBHOOK_URL", "").startswith("https://") and len(cfg.get("WEBHOOK_KEY", "")) >= 8
-
-
 def bot_prompt_status(data, name, lang):
     value = (bot_entry(data, name) or {}).get("prompt")
     if not (isinstance(value, dict) and value.get("state") in STATES and isinstance(value.get("hash"), str)):
@@ -488,8 +490,9 @@ def bot_lines(data, roster, python, lang):
             relay = "unchanged" if code_current() and same_file(Path(b["plist"]), plist_bytes(python, b)) else "changed"
         step = removing.get("step") if b["removing"] and isinstance(removing.get("step"), str) else "-"
         yield (f"bot {b['name']} kind {b['kind']} stage {b['stage']} webhook "
-               f"{'ok' if has_webhook(b['env']) else 'missing'} relay {relay} prompt {prompt} cloud {b['cloud']} "
-               f"removing {step if b['removing'] else '-'} record {b['record']}")
+               f"{'ok' if relay_names.has_webhook(b['env']) else 'missing'} relay {relay} prompt {prompt} "
+               f"cloud {b['cloud']} removing {step if b['removing'] else '-'} record {b['record']} "
+               f"address {b['address']}")
 
 
 def dsh_status():
@@ -633,6 +636,7 @@ def cmd_status(args):
     except NoFirstBot:
         status, current = "unknown", "-"
     print(f"name {status}" if status.startswith("changed ") else f"name {status} {current}")
+    print(f"rename {rename_line(data)}")
     if roster is None:
         print("bots unreadable")
         return
@@ -681,7 +685,7 @@ def cmd_mark(args):
         status = legacy_name_status(data, args.relay_name)
     if status is not None and status.startswith("changed "):
         _, recorded, current = status.split()
-        raise SystemExit(t("state.renamed_not_recorded", recorded, current))
+        raise SystemExit(t("state.renamed_not_recorded", recorded, current, recorded, current))
     if args.field == "prompt":
         old_value = data.get("prompt") if isinstance(data.get("prompt"), dict) else {}
         value = recover_value(prompt_entry(args.state, args.lang, args.relay_name), old_value, args)
@@ -747,7 +751,7 @@ def cmd_set_grok_name(args):
     status = name_status(data, args.relay_name)
     if status.startswith("changed "):
         _, recorded, current = status.split()
-        raise ValueError(t("state.renamed", recorded, current))
+        raise ValueError(t("state.renamed", recorded, current, recorded, current))
     if args.check:
         return
     data["grok_name"] = args.grok_name
@@ -764,9 +768,10 @@ def utf8_stdout():
 
 def cmd_label(args):
     data = load(warn=False)
-    if added_bot(args.relay_name, data):
+    bot = added_bot(args.relay_name, data)
+    if bot:
         utf8_stdout()
-        print(bot_label(args.person, args.relay_name, bots.grok_of(bot_entry(data, args.relay_name))))
+        print(bot_label(args.person, bot["address"], bots.grok_of(bot_entry(data, args.relay_name))))
         return
     name = relay_names.from_env(env_path()) or recorded_name(data) or args.relay_name
     if not name:
@@ -831,7 +836,7 @@ def new_req():
 
 def stub_address(data, relay):
     bot = added_bot(relay, data)
-    return f"{bot_person(bot)}/{relay}" if bot is not None else bot_address()
+    return f"{bot_person(bot)}/{bot['address']}" if bot is not None else bot_address()
 
 
 def cmd_stub_new(args):
@@ -939,9 +944,13 @@ def cmd_entry(args):
         print(note)
 
 
-def cmd_lang(_args):
+def recorded_lang():
     lang = load(warn=False).get("lang")
-    print(lang if lang in ("en", "zh-CN") else "")
+    return lang if lang in ("en", "zh-CN") else None
+
+
+def cmd_lang(_args):
+    print(recorded_lang() or "")
 
 
 def parse_participants(text):
@@ -1198,6 +1207,8 @@ def reply_bodies(req, sender, floor_ms):
         db = relay_names.open_ro(path)
         try:
             cols = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
+            if "body" not in cols:
+                return []
             sql = "SELECT body FROM messages WHERE sender = ? AND sent_at >= ? AND body LIKE ?"
             if "held" in cols:
                 sql += " AND COALESCE(held, 0) = 0"
@@ -1215,7 +1226,7 @@ def cmd_bot_address(args):
         return
     data = load(warn=False)
     bot = added_bot(args.relay_name, data)
-    print(f"{bot_person(bot)}/{args.relay_name}" if bot is not None else bot_address())
+    print(f"{bot_person(bot)}/{bot['address']}" if bot is not None else bot_address())
 
 
 def cmd_request_new(args):
@@ -1335,12 +1346,16 @@ def cmd_add_record(args):
     if why:
         raise ValueError(why)
     data = load_strict()
-    if any(b["name"] == args.relay_name for b in bots.roster(home(), data)) or args.relay_name in removed_bots(data):
+    used = {n for b in bots.roster(home(), data) for n in (b["name"], b["address"])}
+    used |= {f["name"] for f in relay_names.former_of(data)}
+    if args.relay_name in used or (args.relay_name in removed_bots(data) and not args.reclaim):
         raise ValueError(t("names.add_is_bot", args.relay_name))
     item = {"team_hash": args.team_hash, "stage": "configured", "prompt": {"state": "pending"},
             "cloud": {"state": "pending"}, "added_ms": int(time.time() * 1000)}
     if args.grok_name is not None:
         item["grok_name"] = args.grok_name
+    if args.reclaim:
+        item["reclaim"] = 1
     data.setdefault("bots", {})[args.relay_name] = item
     save(data)
 
@@ -1400,7 +1415,7 @@ def cmd_add_reply(args):
     if not (isinstance(req, str) and re.fullmatch(r"[0-9a-f]{16}", req) and isinstance(sent, int)
             and isinstance(team_hash, str) and re.fullmatch(r"[0-9a-f]{16}", team_hash)):
         raise SystemExit(3)
-    sender = f"{bot_person(bot)}/{args.relay_name}"
+    sender = f"{bot_person(bot)}/{bot['address']}"
     try:
         bodies = reply_bodies(req, sender, sent)
     except LookupError as error:
@@ -1420,6 +1435,13 @@ def cmd_add_reply(args):
     if args.check:
         return
     item["cloud"] = {"state": "confirmed", "req": req, "sent_ms": sent}
+    held = re.search(LEAD + r"agent-mesh-result held add ([0-9]+)" + TAIL, found[0], re.M)
+    if held:
+        add_held(data, args.relay_name, "add", int(held.group(1)))
+    if item.get("reclaim") == 1 and args.relay_name in removed_bots(data):
+        data["removed_bots"] = [n for n in removed_bots(data) if n != args.relay_name]
+        if not data["removed_bots"]:
+            data.pop("removed_bots")
     prompt = item.get("prompt") if isinstance(item.get("prompt"), dict) else {}
     note = None
     if prompt.get("state") == "pending" and prompt.get("hash") == digest("prompt", args.lang, args.relay_name):
@@ -1434,6 +1456,8 @@ def cmd_add_reply(args):
     print(t("state.add_confirmed", sender))
     if note:
         print(note)
+    if held and int(held.group(1)) > 0:
+        print(t("state.held_note", held.group(1), f"agent-mesh rename --accept-history --relay-name {args.relay_name}"))
 
 
 WAKE_TEXT = ("agent-mesh: the Mac installer just added this Bot ({address}). Run step 1 of your routine prompt now: "
@@ -1458,8 +1482,8 @@ def cmd_wake_bot(args):
     except SystemExit as error:
         raise ValueError(t("state.wake_env", args.relay_name, error.code))
     me = f"{cfg['PERSON']}/{cfg['LISTEN_NAME']}"
-    if cfg["LISTEN_NAME"] != args.relay_name:
-        raise ValueError(t("state.env_name_differs", bot["env"], cfg["LISTEN_NAME"], args.relay_name))
+    if cfg["LISTEN_NAME"] != bot["address"]:
+        raise ValueError(t("state.env_name_differs", bot["env"], cfg["LISTEN_NAME"], bot["address"]))
     view = types.SimpleNamespace(me=me, cloud=f"{cfg['PERSON']}/{cfg['CLOUD_NAME']}",
                                  inbox=f"{cfg['PERSON']}/{cfg['INBOX_NAME']}")
     item = relay.notice_item(f"relay-add-bot-{int(time.time())}", WAKE_TEXT.format(address=me))
@@ -1623,18 +1647,497 @@ def cmd_removing_done(args):
     removing = removing_target(data, args)
     if removing is None:
         raise ValueError(t("state.not_removing", args.relay_name))
+    slot = "-" if removing["kind"] == bots.LEGACY else args.relay_name
+    names = [args.relay_name]
     if removing["kind"] == bots.LEGACY:
         data["legacy_removed"] = True
         for key in ("relay_name", "grok_name", "prompt"):
             data.pop(key, None)
     else:
+        names.append(bots.address_of(bot_entry(data, args.relay_name), args.relay_name))
         bots_of(data).pop(args.relay_name, None)
+    names += [f["name"] for f in relay_names.former_of(data) if f["slot"] == slot]
     gone = removed_bots(data)
-    if args.relay_name not in gone:
-        gone.append(args.relay_name)
+    for name in names:
+        if name not in gone:
+            gone.append(name)
     data["removed_bots"] = gone
+    data["former"] = [f for f in relay_names.former_of(data) if f["slot"] != slot]
+    if not data["former"]:
+        data.pop("former")
+    drop_held(data, slot)
     data.pop("removing", None)
     save(data)
+
+
+def reserve(data, record):
+    if record.get("reclaim") == 1 or record.get("stage") == "launched":
+        return
+    slot, name = record["slot"], record["new"]
+    former = relay_names.former_of(data)
+    if any(f["slot"] == slot and f["name"] == name for f in former):
+        return
+    now = int(time.time() * 1000)
+    former.append({"name": name, "slot": slot, "since_ms": now, "until_ms": now, "reserved": True})
+    data["former"] = former
+
+
+def valid_slot(slot):
+    return isinstance(slot, str) and (slot == "-" or relay_names.problem(slot) is None)
+
+
+def rename_of(data):
+    value = data.get("rename")
+    if (isinstance(value, dict) and valid_slot(value.get("slot"))
+            and all(isinstance(value.get(k), str) and relay_names.problem(value[k]) is None for k in ("old", "new"))
+            and isinstance(value.get("req"), str) and re.fullmatch(r"[0-9a-f]{16}", value["req"])
+            and value.get("stage") in RENAME_STAGES and isinstance(value.get("sent_ms"), int)):
+        return value
+    return None
+
+
+def rename_line(data):
+    if "rename" not in data:
+        return "-"
+    record = rename_of(data)
+    if record is None:
+        return "damaged"
+    return f"{record['stage']} {record['slot']} {record['old']} {record['new']}"
+
+
+def held_of(data):
+    value = data.get("held")
+    if not isinstance(value, dict):
+        return {}
+    found = {}
+    for slot, claims in value.items():
+        if not (valid_slot(slot) and isinstance(claims, dict)):
+            continue
+        good = {c: item for c, item in claims.items()
+                if isinstance(c, str) and re.fullmatch(r"add|[0-9a-f]{16}", c) and isinstance(item, dict)
+                and isinstance(item.get("count"), int) and not isinstance(item["count"], bool) and item["count"] > 0}
+        if good:
+            found[slot] = good
+    return found
+
+
+def add_held(data, slot, claim, count):
+    if count <= 0:
+        return
+    held = data.get("held") if isinstance(data.get("held"), dict) else {}
+    claims = held.get(slot) if isinstance(held.get(slot), dict) else {}
+    if not isinstance(claims.get(claim), dict):
+        claims[claim] = {"count": count}
+    held[slot] = claims
+    data["held"] = held
+
+
+def drop_held(data, slot, claim=None):
+    held = data.get("held")
+    if not isinstance(held, dict):
+        return
+    if claim is None or not isinstance(held.get(slot), dict):
+        held.pop(slot, None)
+    else:
+        held[slot].pop(claim, None)
+        if not held[slot]:
+            held.pop(slot)
+    if not held:
+        data.pop("held")
+
+
+def slot_name(name):
+    if not name or relay_names.problem(name):
+        return name
+    entries = bots_of(load(warn=False))
+    if name in entries:
+        return name
+    for slot, item in entries.items():
+        if isinstance(item, dict) and bots.address_of(item, slot) == name:
+            return slot
+    return name
+
+
+def slot_paths(slot):
+    return bots.paths(home(), None, bots.LEGACY) if slot == "-" else bots.paths(home(), slot, bots.ADDED)
+
+
+def slot_address(data, slot):
+    if slot == "-":
+        return relay_name()
+    item = bot_entry(data, slot)
+    if item is None:
+        raise ValueError(t("state.not_added_bot", slot))
+    return bots.address_of(item, slot)
+
+
+def slot_env_name(slot):
+    if slot == "-":
+        return relay_names.from_env(env_path())
+    return relay_names.from_env(slot_paths(slot)["env"])
+
+
+def slot_person(data, slot):
+    if slot == "-":
+        return first_person()
+    return bot_person(added_bot_strict(data, slot))
+
+
+def rename_record(data):
+    record = rename_of(data)
+    if record is None:
+        if "rename" in data:
+            raise ValueError(t("state.rename_damaged", record_path()))
+        raise SystemExit(3)
+    return record
+
+
+def backup_dir():
+    return lib_dir() / "rename-backup"
+
+
+def backup_files(slot):
+    paths = slot_paths(slot)
+    files = {"env": paths["env"], "agent.plist": paths["plist"]}
+    for name in TEMPLATE_NAMES:
+        files[f"templates/{name}"] = str(lib_dir() / "templates" / name)
+    return files
+
+
+def sums_ok(folder):
+    try:
+        lines = (folder / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for line in lines:
+        want, _, name = line.partition("  ")
+        try:
+            if sha((folder / name).read_bytes()) != want:
+                return None
+        except OSError:
+            return None
+    names = {line.partition("  ")[2] for line in lines}
+    if "manifest.json" not in names or not isinstance(manifest, dict):
+        return None
+    return manifest
+
+
+def write_backup(data, record):
+    folder, tmp = backup_dir(), backup_dir().with_name("rename-backup.tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(folder, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    os.chmod(tmp, 0o700)
+    slot = record["slot"]
+    saved = {}
+    for name, target in backup_files(slot).items():
+        if Path(target).is_file():
+            (tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, tmp / name)
+            saved[name] = target
+    item = data if slot == "-" else (bot_entry(data, slot) or {})
+    key = "relay_name" if slot == "-" else "name"
+    manifest = {"slot": slot, "files": saved, "name_key": key, "name": item.get(key),
+                "former": data.get("former"), "removed_bots": data.get("removed_bots")}
+    (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    names = sorted(saved) + ["manifest.json"]
+    (tmp / "SHA256SUMS").write_text("".join(f"{sha((tmp / n).read_bytes())}  {n}\n" for n in names), encoding="utf-8")
+    os.replace(tmp, folder)
+    if sums_ok(folder) is None:
+        raise ValueError(t("state.rename_backup_bad", folder))
+
+
+def put_file(source, target, mode):
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".restore")
+    os.close(fd)
+    try:
+        shutil.copyfile(source, tmp)
+        os.chmod(tmp, mode)
+        os.replace(tmp, target)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def cmd_rename_get(_args):
+    data = load(warn=False)
+    record = rename_record(data)
+    for key in ("stage", "slot", "old", "new", "req"):
+        print(f"{key} {record[key]}")
+    print(f"reclaim {1 if record.get('reclaim') else 0}")
+    print(f"held {record.get('held', 0) if isinstance(record.get('held'), int) else 0}")
+
+
+def cmd_rename_start(args):
+    need_lock()
+    data = load_strict()
+    if "rename" in data:
+        raise ValueError(t("state.rename_exists"))
+    if not valid_slot(args.slot):
+        raise ValueError(t("state.not_added_bot", args.slot))
+    for name in (args.old, args.new):
+        why = relay_names.problem(name)
+        if why:
+            raise ValueError(why)
+    if slot_address(data, args.slot) != args.old or slot_env_name(args.slot) != args.old:
+        raise ValueError(t("state.rename_old_differs", args.old))
+    req = new_req()
+    data["rename"] = {"slot": args.slot, "old": args.old, "new": args.new, "req": req, "stage": "requested",
+                      "sent_ms": int(time.time() * 1000) - 2000, "reclaim": 1 if args.reclaim else 0}
+    save(data)
+    print(req)
+
+
+def reply_lines(bodies, pattern):
+    other = re.compile(LEAD + r"(STOP:.*|" + pattern + r" .*)$", re.M)
+    return [m.group(0).strip() for body in bodies for m in other.finditer(body)]
+
+
+def cmd_rename_reply(_args):
+    try:
+        data = load_strict()
+        record = rename_record(data)
+        sender = f"{slot_person(data, record['slot'])}/{record['old']}"
+    except ValueError as error:
+        print(str(error))
+        raise SystemExit(4)
+    if record["stage"] != "requested":
+        return
+    req = record["req"]
+    try:
+        bodies = reply_bodies(req, sender, record["sent_ms"])
+    except LookupError as error:
+        print(str(error))
+        raise SystemExit(4)
+    ok = re.compile(LEAD + r"agent-mesh-result rename " + req + r" pending " + re.escape(record["slot"]) + " "
+                    + record["old"] + " " + record["new"] + r" held ([0-9]+)" + TAIL, re.M)
+    done = re.compile(LEAD + r"agent-mesh-result DONE rename" + TAIL, re.M)
+    found = [m for body in bodies if done.search(body) and not re.search(LEAD + r"STOP:", body, re.M)
+             for m in [ok.search(body)] if m]
+    if not found:
+        lines = reply_lines(bodies, r"agent-mesh-result rename " + req)
+        if not lines:
+            raise SystemExit(3)
+        print(t("state.rename_reply_mismatch", sender))
+        for line in lines:
+            print(f"  {line}")
+        reserve(data, record)
+        data.pop("rename")
+        save(data)
+        raise SystemExit(1)
+    record["stage"] = "replied"
+    record["held"] = int(found[0].group(1))
+    save(data)
+    print(t("state.rename_pending", sender))
+
+
+def cmd_rename_switch(_args):
+    need_lock()
+    data = load_strict()
+    record = rename_record(data)
+    if record["stage"] == "requested":
+        raise ValueError(t("state.rename_not_replied"))
+    if record["stage"] == "replied":
+        write_backup(data, record)
+        record["stage"] = "switching"
+        record["switch_ms"] = int(time.time() * 1000)
+        save(data)
+    print(record["stage"])
+
+
+def cmd_rename_launched(_args):
+    need_lock()
+    data = load_strict()
+    record = rename_record(data)
+    if record["stage"] not in ("switching", "launched"):
+        raise ValueError(t("state.rename_not_replied"))
+    if record["stage"] != "launched":
+        record["stage"] = "launched"
+        save(data)
+
+
+def switch_ms(record):
+    value = record.get("switch_ms")
+    return value if isinstance(value, int) and not isinstance(value, bool) else int(time.time() * 1000)
+
+
+def target_former(data, slot):
+    former = relay_names.former_of(data)
+    record = rename_of(data)
+    if record is not None and record["slot"] == slot and record["stage"] in ("switching", "launched"):
+        since = switch_ms(record)
+        former = [f for f in former if not (f["slot"] == slot and f["name"] in (record["old"], record["new"]))]
+        former.append({"name": record["old"], "slot": slot, "since_ms": since, "until_ms": since + FORMER_MS})
+    return former
+
+
+def cmd_former_env(args):
+    data = load(warn=False)
+    now = int(time.time() * 1000)
+    live = {}
+    for f in target_former(data, args.slot):
+        if f["slot"] == args.slot and f["until_ms"] > now and not f.get("reserved"):
+            live[f["name"]] = max(live.get(f["name"], 0), f["until_ms"] // 1000)
+    print(",".join(f"{name}:{until}" for name, until in sorted(live.items())))
+
+
+def cmd_former(_args):
+    data = load(warn=False)
+    now = int(time.time() * 1000)
+    for f in sorted((f for f in relay_names.former_of(data) if not f.get("reserved")),
+                    key=lambda f: (f["slot"], f["since_ms"], f["name"])):
+        try:
+            current = slot_address(data, f["slot"]) or "-"
+        except ValueError:
+            current = "-"
+        until = time.strftime("%Y-%m-%d", time.localtime(f["until_ms"] // 1000))
+        print(f"former {f['slot']} {f['name']} {'live' if f['until_ms'] > now else 'expired'} {until} {current}")
+
+
+def cmd_rename_restore(_args):
+    need_lock()
+    data = load_strict()
+    record = rename_record(data)
+    if record["stage"] == "launched":
+        raise ValueError(t("state.rename_launched"))
+    if record["stage"] != "switching":
+        return
+    manifest = sums_ok(backup_dir())
+    if manifest is None or manifest.get("slot") != record["slot"]:
+        raise ValueError(t("state.rename_backup_bad", backup_dir()))
+    for name, target in backup_files(record["slot"]).items():
+        if name in manifest.get("files", {}):
+            put_file(backup_dir() / name, target, 0o600 if name == "env" else 0o644)
+    item = data if record["slot"] == "-" else known_entry(data, record["slot"])
+    key = "relay_name" if record["slot"] == "-" else "name"
+    for field, value, holder in ((key, manifest.get("name"), item), ("former", manifest.get("former"), data),
+                                 ("removed_bots", manifest.get("removed_bots"), data)):
+        if value is None:
+            holder.pop(field, None)
+        else:
+            holder[field] = value
+    save(data)
+
+
+def cmd_rename_clear(_args):
+    need_lock()
+    data = load(warn=False)
+    if "rename" in data and rename_of(data) is not None and rename_of(data)["stage"] == "launched":
+        raise ValueError(t("state.rename_launched"))
+    shutil.rmtree(backup_dir(), ignore_errors=True)
+    shutil.rmtree(backup_dir().with_name("rename-backup.tmp"), ignore_errors=True)
+    if "rename" in data:
+        record = rename_of(data)
+        if record is not None:
+            reserve(data, record)
+        data.pop("rename")
+        save(data)
+
+
+def cmd_rename_commit(_args):
+    need_lock()
+    data = load_strict()
+    record = rename_record(data)
+    if record["stage"] != "launched":
+        raise ValueError(t("state.rename_not_launched"))
+    slot, new = record["slot"], record["new"]
+    if slot_env_name(slot) != new:
+        raise ValueError(t("state.rename_env_differs", slot_paths(slot)["env"], new))
+    data["former"] = target_former(data, slot)
+    if slot == "-":
+        data["relay_name"] = new
+    elif new == slot:
+        known_entry(data, slot).pop("name", None)
+    else:
+        known_entry(data, slot)["name"] = new
+    data["removed_bots"] = [n for n in removed_bots(data) if n != new]
+    if not data["removed_bots"]:
+        data.pop("removed_bots")
+    held = record.get("held") if isinstance(record.get("held"), int) else 0
+    add_held(data, slot, record["req"], held)
+    save(data)
+
+
+def cmd_rename_finish(_args):
+    need_lock()
+    data = load_strict()
+    record = rename_record(data)
+    if record["stage"] != "launched":
+        raise ValueError(t("state.rename_not_launched"))
+    slot, new = record["slot"], record["new"]
+    if slot_address(data, slot) != new:
+        raise ValueError(t("state.rename_env_differs", record_path(), new))
+    held = record.get("held") if isinstance(record.get("held"), int) else 0
+    shutil.rmtree(backup_dir(), ignore_errors=True)
+    data.pop("rename")
+    save(data)
+    mode = (data if slot == "-" else known_entry(data, slot)).get("prompt", {})
+    if isinstance(mode, dict) and mode.get("mode") == "full":
+        print(t("state.rename_full_prompt", "./update.sh --full-prompt" + ("" if slot == "-" else f" --relay-name {slot}")))
+    if held > 0:
+        print(t("state.held_note", held, "agent-mesh rename --accept-history" + ("" if slot == "-" else f" --relay-name {new}")))
+
+
+def cmd_held(args):
+    claims = held_of(load(warn=False)).get(args.slot)
+    if not claims:
+        raise SystemExit(3)
+    for claim, item in claims.items():
+        print(f"claim {claim} {item['count']}")
+
+
+def cmd_history_start(args):
+    need_lock()
+    data = load_strict()
+    item = held_of(data).get(args.slot, {}).get(args.claim)
+    if item is None:
+        raise ValueError(t("state.history_none"))
+    if not (isinstance(item.get("req"), str) and isinstance(item.get("sent_ms"), int)):
+        item["req"] = new_req()
+        item["sent_ms"] = int(time.time() * 1000) - 2000
+        save(data)
+    print(item["req"])
+
+
+def cmd_history_reply(args):
+    try:
+        data = load_strict()
+        item = held_of(data).get(args.slot, {}).get(args.claim)
+        sender = f"{slot_person(data, args.slot)}/{slot_address(data, args.slot)}" if item else None
+    except ValueError as error:
+        print(str(error))
+        raise SystemExit(4)
+    if item is None or not isinstance(item.get("req"), str) or not isinstance(item.get("sent_ms"), int):
+        raise SystemExit(3)
+    req = item["req"]
+    try:
+        bodies = reply_bodies(req, sender, item["sent_ms"])
+    except LookupError as error:
+        print(str(error))
+        raise SystemExit(4)
+    ok = re.compile(LEAD + r"agent-mesh-result history " + req + r" accepted " + re.escape(args.claim)
+                    + r" ([0-9]+)" + TAIL, re.M)
+    done = re.compile(LEAD + r"agent-mesh-result DONE history" + TAIL, re.M)
+    found = [m for body in bodies if done.search(body) and not re.search(LEAD + r"STOP:", body, re.M)
+             for m in [ok.search(body)] if m]
+    if not found:
+        lines = reply_lines(bodies, r"agent-mesh-result history " + req)
+        if not lines:
+            raise SystemExit(3)
+        print(t("state.history_mismatch", sender))
+        for line in lines:
+            print(f"  {line}")
+        item.pop("req", None)
+        item.pop("sent_ms", None)
+        save(data)
+        raise SystemExit(1)
+    drop_held(data, args.slot, args.claim)
+    save(data)
+    print(t("state.history_accepted", found[0].group(1), sender))
 
 
 def cmd_set_engine(args):
@@ -1763,7 +2266,27 @@ def main(argv=None):
     p.add_argument("--relay-name", required=True)
     p.add_argument("--team-hash", required=True)
     p.add_argument("--grok-name")
+    p.add_argument("--reclaim", action="store_true")
     p.set_defaults(run=cmd_add_record)
+    p = sub.add_parser("rename-start")
+    p.add_argument("--slot", required=True)
+    p.add_argument("--old", required=True)
+    p.add_argument("--new", required=True)
+    p.add_argument("--reclaim", action="store_true")
+    p.set_defaults(run=cmd_rename_start)
+    for name, run in (("rename-get", cmd_rename_get), ("rename-reply", cmd_rename_reply),
+                      ("rename-switch", cmd_rename_switch), ("rename-launched", cmd_rename_launched),
+                      ("rename-restore", cmd_rename_restore), ("rename-clear", cmd_rename_clear),
+                      ("rename-commit", cmd_rename_commit), ("rename-finish", cmd_rename_finish),
+                      ("former", cmd_former)):
+        sub.add_parser(name).set_defaults(run=run)
+    for name, run in (("former-env", cmd_former_env), ("held", cmd_held), ("history-start", cmd_history_start),
+                      ("history-reply", cmd_history_reply)):
+        p = sub.add_parser(name)
+        p.add_argument("--slot", required=True)
+        if name.startswith("history-"):
+            p.add_argument("--claim", required=True)
+        p.set_defaults(run=run)
     for name, run in (("bot-get", cmd_bot_get), ("add-request", cmd_add_request), ("wake-bot", cmd_wake_bot)):
         p = sub.add_parser(name)
         p.add_argument("--relay-name", required=True)
@@ -1789,6 +2312,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     PROMPT["mode"] = args.prompt_mode
     utf8_stdout()
+    if getattr(args, "relay_name", None) and args.cmd != "add-record":
+        args.relay_name = slot_name(args.relay_name)
     try:
         args.run(args)
     except ValueError as error:

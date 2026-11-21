@@ -10,6 +10,15 @@ fail() { printf 'update: %s\n' "$*" >&2; exit 1; }
 ask() { local a=""; read -r -p "$(tq "$@") [y/N] " a || true; [[ "$a" == [yY]* ]]; }
 ask_go() { local a=""; read -r -p "$(tq update.continue) [Y/n] " a || return 1; [[ -z "$a" || "$a" == [yY]* ]]; }
 state() { "$PYTHON" "$HERE/scripts/deploy_state.py" --prompt-mode "$PROMPT_MODE" "$@"; }
+pair() {
+  local key="$1"
+  shift
+  while [ "$#" -ge 2 ]; do
+    if [ "$1" = "$key" ]; then printf '%s\n' "$2"; return 0; fi
+    shift 2
+  done
+  return 1
+}
 state_full() { "$PYTHON" "$HERE/scripts/deploy_state.py" --prompt-mode full "$@"; }
 installer() { "$BASH" "$HERE/install.sh" "$@" --lang "$DOC_LANG"; }
 service() { echo "gui/$(id -u)/$LABEL"; }
@@ -19,17 +28,7 @@ label_loaded() { launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1; }
 label_pid() { launchctl print "gui/$(id -u)/$1" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1; }
 word() { tq "st.$1"; }
 
-recorded_lang() {
-  python3 - "$LIB_DIR/deployed.json" <<'PY'
-import json, sys
-try:
-    with open(sys.argv[1], encoding="utf-8") as stream:
-        lang = json.load(stream).get("lang")
-except Exception:
-    lang = None
-print(lang if lang in ("en", "zh-CN") else "")
-PY
-}
+recorded_lang() { python3 "$HERE/scripts/deploy_state.py" lang 2>/dev/null; }
 
 pick_lang() {
   local prev="" a
@@ -342,10 +341,11 @@ release_check() {
     REL_STATE="failed"; REL_NOTE="${out#update: }"
     return 1
   fi
-  REL_SUMS=""
+  REL_SUMS=""; REL_COUNT=0
   while read -r k a b; do
     case "$k" in
-      tag) REL_TAG="$a" ;; commit) REL_COMMIT="$a" ;; sum) REL_SUMS="$REL_SUMS$a  $b"$'\n' ;;
+      tag) REL_TAG="$a" ;; commit) REL_COMMIT="$a" ;;
+      sum) REL_SUMS="$REL_SUMS$a  $b"$'\n'; REL_COUNT=$((REL_COUNT + 1)) ;;
     esac
   done <<< "$out"
   REL_STATE="ok"; REL_NOTE="$(tq update.release_ok "$REL_TAG" "${REL_COMMIT:0:12}")"
@@ -382,9 +382,9 @@ merge_prompt() {
 }
 
 read_paths() {
-  local out n _k _s _c _r _y l p m i
+  local out n _k _s _c _r _y l p m _a i
   out="$("$PYTHON" "$HERE/scripts/bots.py" list --paths)" || die update.no_status
-  while IFS=$'\t' read -r n _k _s _c _r _y l p m; do
+  while IFS=$'\t' read -r n _k _s _c _r _y l p m _a; do
     for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
       if [ "${B_NAMES[$i]}" = "$n" ]; then B_LABELS[i]="$l"; B_PLISTS[i]="$p"; B_MARKERS[i]="$m"; fi
     done
@@ -410,7 +410,7 @@ read_python() {
 read_status() {
   local out k v w i name_value
   out="$(state status --lang "$DOC_LANG" --python "$RELAY_PYTHON")" || die update.no_status
-  B_NAMES=(); B_KINDS=(); B_STAGES=(); B_RELAY=(); B_PROMPT=(); B_CLOUD=(); B_REMOVING=()
+  B_NAMES=(); B_KINDS=(); B_STAGES=(); B_RELAY=(); B_PROMPT=(); B_CLOUD=(); B_REMOVING=(); B_ADDRS=()
   B_LABELS=(); B_PLISTS=(); B_MARKERS=()
   while read -r k v; do
     case "$k" in
@@ -421,7 +421,7 @@ read_status() {
       bot)
         read -r -a w <<< "$v"
         B_NAMES+=("${w[0]}"); B_KINDS+=("${w[2]}"); B_STAGES+=("${w[4]}"); B_RELAY+=("${w[8]}")
-        B_PROMPT+=("${w[10]}"); B_CLOUD+=("${w[12]}"); B_REMOVING+=("${w[14]}")
+        B_PROMPT+=("${w[10]}"); B_CLOUD+=("${w[12]}"); B_REMOVING+=("${w[14]}"); B_ADDRS+=("$(pair address bot "${w[@]}" || printf '%s' "${w[0]}")")
         B_LABELS+=("$LABEL"); B_PLISTS+=("$PLIST"); B_MARKERS+=("$MARKER") ;;
     esac
   done <<< "$out"
@@ -430,7 +430,7 @@ read_status() {
     "changed "*)
       local recorded current
       read -r _ recorded current <<< "$S_NAME"
-      die update.renamed "$current" "$recorded" ;;
+      die update.renamed "$current" "$recorded" "$recorded" "$current" ;;
   esac
   for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
     [ "${B_REMOVING[$i]}" = - ] || die update.bot_removing "${B_NAMES[$i]}" "${B_NAMES[$i]}"
@@ -439,7 +439,7 @@ read_status() {
     read -r _ name_value <<< "$S_NAME"
     [ -n "$name_value" ] && [ "$name_value" != - ] || name_value=bot
     B_NAMES=("$name_value"); B_KINDS=(legacy); B_STAGES=(relay); B_RELAY=("$S_RELAY"); B_PROMPT=("$S_PROMPT")
-    B_CLOUD=(-); B_REMOVING=(-); B_LABELS=("$LABEL"); B_PLISTS=("$PLIST"); B_MARKERS=("$MARKER")
+    B_CLOUD=(-); B_REMOVING=(-); B_LABELS=("$LABEL"); B_PLISTS=("$PLIST"); B_MARKERS=("$MARKER"); B_ADDRS=("$name_value")
   else
     read_paths
   fi
@@ -460,9 +460,9 @@ plan_bots() {
   t update.plan_bots
   for ((i = 0; i < ${#B_NAMES[@]}; i++)); do
     if [ "${B_KINDS[$i]}" = added ] && [ "${B_CLOUD[$i]}" != confirmed ]; then
-      t update.plan_bot_waiting "${B_NAMES[$i]}" "${B_NAMES[$i]}"
+      t update.plan_bot_waiting "${B_ADDRS[$i]}" "${B_NAMES[$i]}"
     else
-      t update.plan_bot "${B_NAMES[$i]}" "$(word "${B_RELAY[$i]}")" "$(word "${B_PROMPT[$i]}")"
+      t update.plan_bot "${B_ADDRS[$i]}" "$(word "${B_RELAY[$i]}")" "$(word "${B_PROMPT[$i]}")"
     fi
   done
 }
@@ -565,9 +565,9 @@ while read -r sum file; do
 done <<'AGENT_MESH_SUMS'
 BLOCK
   printf '%s' "$REL_SUMS"
+  echo "AGENT_MESH_SUMS"
+  echo "[ \"\$n\" = $REL_COUNT ] || stop \"the checksum list is incomplete; nothing was changed\""
   cat <<'BLOCK'
-AGENT_MESH_SUMS
-[ "$n" = 8 ] || stop "the checksum list is incomplete; nothing was changed"
 old="$(git rev-parse HEAD)" || stop "cannot read HEAD; nothing was changed"
 restore() {
   if git checkout -q -f --detach "$old" && [ "$(git rev-parse HEAD)" = "$old" ] && [ -z "$(git status --porcelain)" ]; then
@@ -1169,6 +1169,16 @@ cloud_auto() {
   done
 }
 
+rename_stop() {
+  local out rc=0
+  out="$("$PYTHON" "$HERE/scripts/deploy_state.py" rename-get 2>&1)" || rc=$?
+  case "$rc" in
+    3) ;;
+    0) die update.rename_busy ;;
+    *) fail "$out" ;;
+  esac
+}
+
 main() {
   LIB_DIR="$HOME/.local/lib/agent-mesh"; ROLLBACK="$LIB_DIR/rollback"
   LABEL="com.local.agent-relay"; PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -1176,7 +1186,7 @@ main() {
   RN="$HOME/.local/bin/reason-network"; RN_HOME="$HOME/.reason/network"; ETXN="$LIB_DIR/engine-upgrade.json"
   CFG="$RN_HOME/config.toml"; DEFAULT_REPO_URL="https://github.com/xiaozhenliu/agent-mesh.git"
   LANG_ARG=""; YES=0; PULL=1; PLAN=0; MANUAL=0; REPO_URL="$DEFAULT_REPO_URL"
-  REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""; LAST_CHECK=""; TARGET=""
+  REL_STATE=""; REL_NOTE=""; REL_TAG=""; REL_COMMIT=""; REL_SUMS=""; REL_COUNT=0; LAST_CHECK=""; TARGET=""
   FAILED=0; NEED=""; SHOWN=""; SHOWN_SETUP=""; SHOWN_ENGINE=""; S_NAME=""; REPLY_TEXT=""; S_CREL=-
   S_RECOVER=0; ORDER=cloud_first; AUTO_MANUAL=0; TARGET_NAME=""; DEFER=0
   S_ENGINE=unchanged; S_EVER=""; S_EPIN=""; S_ETXN=-; S_CENGINE=unchanged; S_CONFIG=ok; BACKLOG=0
@@ -1188,6 +1198,7 @@ main() {
   installer --preflight || die update.preflight_failed
   PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
   mesh_lock_take "$PYTHON" || exit 1
+  rename_stop
 
   if [ "$PULL" = 1 ] && pull_checkout; then
     trap - EXIT INT TERM
@@ -1303,7 +1314,7 @@ main() {
 }
 
 TXN_ACTIVE=0; ACTING=0; ENGINE_TXN=0; ENGINE_TMP=""; MULTI=0; CONFIG_OPEN=0; PROMPT_MODE=thin; CHECK_FAILED=0
-B_NAMES=(); P_NAMES=(); P_LABELS=(); P_PLISTS=(); P_WAS=(); P_PIDS=()
+B_NAMES=(); B_ADDRS=(); P_NAMES=(); P_LABELS=(); P_PLISTS=(); P_WAS=(); P_PIDS=()
 trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM

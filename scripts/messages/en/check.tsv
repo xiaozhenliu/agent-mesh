@@ -139,3 +139,9 @@ check.relay_python_missing	the relay's Python %s is missing or no longer works
 check.relay_python_fix	./update.sh picks another one and restarts the relay; or choose it yourself: ./install.sh --python <path>
 check.prompt_recover	the routine stub may be in the routine, but the cloud update it needs was not confirmed: Grok Bot may not be processing messages
 check.prompt_recover_fix	./update.sh (it looks for the cloud reply first, otherwise shows a complete prompt to paste back)
+check.rename_open	the rename of %s to %s is not finished (stage %s)
+check.rename_open_fix	run agent-mesh rename to finish it, or agent-mesh rename --cancel to undo it
+check.rename_damaged	the rename record in deployed.json cannot be read
+check.former_live	the old address %s still reaches %s until %s
+check.former_expired	the old address %s no longer reaches %s (since %s); messages sent to it wait unread
+check.former_expired_fix	tell the senders the new address; to use the old one again: %s

@@ -39,7 +39,7 @@ update.no_checkout	不是 git checkout
 update.release_ok	%s，提交 %s；这个 checkout 中的云端文件与它一致
 update.no_status	无法读取部署状态
 update.engine_refused	Reason Network %s 不是这个版本支持的版本（%s），不会被降级或替换；请先检查那份安装
-update.renamed	~/.config/agent-relay/env 中的 Bot 地址名（%s）不是这台 Mac 安装时用的（%s）；不支持改名。请改回原来的名字，或连同身份一起卸载后重新安装
+update.renamed	~/.config/agent-relay/env 中的 Bot 地址名（%s）不是这台 Mac 安装时用的（%s）。Bot 只能用 agent-mesh rename 改名：请把 env 文件里的 LISTEN_NAME 改回 %s，再运行 agent-mesh rename %s
 update.plan_head	== 计划（checkout %s，提示词语言 %s）
 update.plan_txn	  上次未完成的更新停在 '%s'：先继续完成它（需要终端）
 update.plan_name_unknown	%s（随本脚本记录的下一步一起记录）
@@ -210,3 +210,4 @@ r.stub_missing	未确认；运行 ./update.sh 再次显示桩
 r.full_back	已贴回完整提示词；下次运行 ./update.sh 会重试
 r.full_back_pending	没有记录：把完整提示词贴回去，再运行 ./update.sh
 r.prompt_later	这次不换；在终端运行 ./update.sh 时再换
+update.rename_busy	有一次 Bot 改名正在进行；请先用 agent-mesh rename 完成，或用 agent-mesh rename --cancel 撤销，再运行更新。没有改动任何东西

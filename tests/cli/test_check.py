@@ -390,6 +390,42 @@ class CheckBots(AddSupport, unittest.TestCase):
                       "./install.sh --relay-name beta --wake-bot asks the Bot to do it)", beta)
         self.assertNotIn("relay service loaded", beta)
 
+    def test_old_addresses_and_an_unfinished_rename_are_reported(self):
+        now = int(time.time() * 1000)
+        day = 86400 * 1000
+        env = self.home / ".config/agent-relay-bots/beta/env"
+        lines = [line for line in env.read_text().splitlines()
+                 if not line.startswith(("LISTEN_NAME=", "CLOUD_NAME=", "INBOX_NAME="))]
+        env.write_text("\n".join(lines + ["LISTEN_NAME=delta", "CLOUD_NAME=delta-cloud", "INBOX_NAME=delta-inbox"]) + "\n")
+        marker = self.home / "Library/Application Support/agent-relay-bots/beta/registered"
+        marker.write_text(json.dumps(dict(json.loads(marker.read_text()), name="demo/delta")))
+        until = now - 10 * day
+        self.edit(lambda d: (d["bots"]["beta"].update(name="delta"),
+                             d.update(former=[{"name": "beta", "slot": "beta", "since_ms": now - 40 * day,
+                                               "until_ms": until}])))
+        out = self.check()
+        delta = self.section(out, "delta")
+        self.assertTrue(delta.startswith("== Bot address: demo/delta → Grok: Beta\n"), delta)
+        self.assertIn("PASS  relay names in env derive from delta", delta)
+        date = time.strftime("%Y-%m-%d", time.localtime(until / 1000))
+        self.assertIn(f"WARN  the old address demo/beta no longer reaches demo/delta (since {date}); messages sent "
+                      "to it wait unread\n      -> tell the senders the new address; to use the old one again: "
+                      "agent-mesh rename beta --relay-name delta", out)
+        until = now + 10 * day
+        self.edit(lambda d: d["former"][0].update(until_ms=until))
+        date = time.strftime("%Y-%m-%d", time.localtime(until / 1000))
+        out = self.check()
+        self.assertIn(f"PASS  the old address demo/beta still reaches demo/delta until {date}", out)
+        self.assertNotIn("WARN", out)
+        self.edit(lambda d: d.update(rename={"slot": "beta", "old": "delta", "new": "gamma", "req": "0" * 16,
+                                             "stage": "replied", "sent_ms": now}))
+        out = self.check()
+        self.assertIn("FAIL  the rename of demo/delta to demo/gamma is not finished (stage replied)\n"
+                      "      -> run agent-mesh rename to finish it, or agent-mesh rename --cancel to undo it", out)
+        self.assertIn("RESULT fix the FAIL lines above", out)
+        self.edit(lambda d: d.update(rename={"slot": "beta"}))
+        self.assertIn("FAIL  the rename record in deployed.json cannot be read", self.check())
+
     def test_a_bot_being_removed_and_an_unreadable_roster_fail(self):
         self.edit(lambda d: d.update(removing={"name": "beta", "kind": "added", "step": "stopped"}))
         out = self.check()

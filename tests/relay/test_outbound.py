@@ -18,6 +18,25 @@ from tests.relay.support import (
     prev_state_class,
 )
 
+MID, TS, NONCE = "01JTESTMSG0000000000000000", "1700000000", "0123456789abcdef01234567"
+SIGN_VECTORS = (
+    ("sign", (KEY, "demo/claude-a@mac", "01JTESTREPLYTO0000000000", TS, NONCE, "héllo 中文\nline2\r\n"),
+     "f0f28b78846b7f7d327025e44c9fc5d90a1353703b36574eff9432c88e001cb6"),
+    ("sign_fwd", (KEY, MID, "demo/other", "codex", "01JTHREAD000000000000000000", 12, "ab" * 32, TS),
+     "b9fe8239d4fa27d4d6e1143b66a172f0f818fd2b99b074af1b7c2dbc4a56c1a8"),
+    ("sign_fwd", ("ключ-键", "m-é", "demo/ü", "", "", 0, "", "1"),
+     "654ac91f88145fdd9965d035ace8fd386b2a4572f702bcab011b92be034f486f"),
+    ("sign_refwd", (KEY, MID, TS, NONCE),
+     "eb9e0a80d3126e9f8f026e584927e864871d390c39b5dec8cc02a7a6e2922668"),
+    ("sign_lines", (KEY, ["refwd1", MID, TS, NONCE]),
+     "eb9e0a80d3126e9f8f026e584927e864871d390c39b5dec8cc02a7a6e2922668"),
+    ("sign_refwd_ack", (KEY, MID, "resent", 2, TS),
+     "6950e81caf83a497cc9b3f68841b44b6ee166b109ad1b15234b17457e4bdb898"),
+    ("sign_got", (KEY, f"{MID},01JTESTMSG0000000000000002", "01JTESTMSG0000000000000001", TS, NONCE),
+     "4c4e8d601a566b3317a6b5396c12b6387649ce1b680912474dfe24127a779d9a"),
+)
+SHARED_SIGNERS = ("sign_lines", "sign_fwd", "sign_refwd", "sign_got")
+
 
 class OutboundIdempotency(unittest.TestCase):
     """RN-OUT send records: a nonce already sent is dropped, an unknown result is never resent, a failure may be."""
@@ -539,6 +558,40 @@ class OutboundIdempotency(unittest.TestCase):
                 with self.subTest(out=out, rc=rc):
                     self.assertEqual(fetch.send_status(out), rr.send_status(out))
                     self.assertEqual(fetch.send_outcome(rc, out), rr.send_outcome(rc, out))
+
+    def test_signatures_match_fixed_vectors(self):
+        for name, args, want in SIGN_VECTORS:
+            with self.subTest(name=name, args=args[1:]):
+                self.assertEqual(getattr(rr, name)(*args), want)
+
+    def test_cloud_signs_with_the_same_code(self):
+        import importlib.util, inspect
+        spec = importlib.util.spec_from_file_location("rn_fetch_sign_parity",
+                                                      Path(rr.__file__).parent / "box/rn-fetch.py")
+        fetch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fetch)
+        for name in SHARED_SIGNERS:
+            self.assertEqual(inspect.getsource(getattr(fetch, name)), inspect.getsource(getattr(rr, name)), name)
+        shared = [v for v in SIGN_VECTORS if v[0] in SHARED_SIGNERS]
+        self.assertEqual({v[0] for v in shared}, set(SHARED_SIGNERS))
+        for name, args, want in shared:
+            with self.subTest(name=name, args=args[1:]):
+                self.assertEqual(getattr(fetch, name)(*args), want)
+
+    def test_relay_parses_the_env_file_like_relay_names(self):
+        import ast
+        root = Path(rr.__file__).parent
+
+        def source(path):
+            text = path.read_text(encoding="utf-8")
+            (node,) = [n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == "parse_env"]
+            return ast.get_source_segment(text, node)
+
+        mine = source(root / "agent_relay.py")
+        self.assertTrue(mine.startswith("def parse_env(text):\n"), mine)
+        self.assertEqual(mine, source(root / "scripts/relay_names.py"))
+        text = "# comment\n\nA=1\n  B = 'two'  \nC=\"x=y\"\nno equals sign\n#D=4\nE=\n"
+        self.assertEqual(rr.parse_env(text), {"A": "1", "B": "two", "C": "x=y", "E": ""})
 
     def test_forward_and_proxy_share_the_classification(self):
         self.assertEqual(rr.send_outcome(0, "→ demo/x: queued"), "sent")

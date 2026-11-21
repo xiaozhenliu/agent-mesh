@@ -56,7 +56,7 @@ def addresses(home):
         data = bots.load_record(home)
     except ValueError:
         data = {}
-    return [(b["name"], b["grok_name"]) for b in bots.roster(home, data)
+    return [(b["address"], b["grok_name"]) for b in bots.roster(home, data)
             if not b["removing"] and (b["kind"] == bots.LEGACY or b["cloud"] == "confirmed")]
 
 

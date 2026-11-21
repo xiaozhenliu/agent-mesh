@@ -304,6 +304,72 @@ class DeployState(unittest.TestCase):
         self.assertIn("name unknown -\n", r.stdout)
         self.assertNotEqual(self.state("bot-address").returncode, 0)
 
+    def test_rename_records_move_forward_only_and_restore_from_their_backup(self):
+        import time
+        self.added_env("luna")
+        env_path = self.home / ".config/agent-relay-bots/luna/env"
+        now = int(time.time() * 1000)
+        day = 86400 * 1000
+        self.write({"schema": 1, "relay_name": "bot",
+                    "bots": {"luna": {"stage": "relay", "added_ms": 1, "cloud": {"state": "confirmed"}}},
+                    "former": [{"name": "old", "slot": "luna", "since_ms": 1, "until_ms": now + day},
+                               {"name": "old", "slot": "luna", "since_ms": 1, "until_ms": now + 2 * day},
+                               {"name": "gone", "slot": "luna", "since_ms": 1, "until_ms": now - day},
+                               {"name": "else", "slot": "-", "since_ms": 1, "until_ms": now + day}]})
+        env = dict(os.environ, HOME=str(self.home), AGENT_MESH_LANG="en")
+
+        def locked(*args):
+            return run_locked(env, sys.executable, ROOT / "scripts/deploy_state.py", *args)
+
+        self.assertEqual(self.state("former-env", "--slot", "luna").stdout, f"old:{(now + 2 * day) // 1000}\n")
+        self.assertEqual(self.state("former-env", "--slot", "-").stdout, f"else:{(now + day) // 1000}\n")
+        self.assertIn("only runs inside", self.state("rename-start", "--slot", "luna", "--old", "luna", "--new",
+                                                     "nova").stderr)
+        r = locked("rename-start", "--slot", "luna", "--old", "moon", "--new", "nova")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.state("rename-get").returncode, 3)
+        r = locked("rename-start", "--slot", "luna", "--old", "luna", "--new", "nova")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        req = r.stdout.strip()
+        self.assertRegex(req, r"^[0-9a-f]{16}$")
+        self.assertNotEqual(locked("rename-start", "--slot", "luna", "--old", "luna", "--new", "nova").returncode, 0)
+        self.assertIn("stage requested\nslot luna\nold luna\nnew nova\nreq " + req, self.state("rename-get").stdout)
+        self.assertNotEqual(locked("rename-switch").returncode, 0)
+        data = json.loads(self.path.read_text())
+        data["rename"]["stage"] = "replied"
+        self.write(data)
+        before = env_path.read_bytes()
+        self.assertEqual(locked("rename-switch").stdout, "switching\n")
+        self.assertEqual(locked("rename-switch").stdout, "switching\n")
+        self.assertEqual(self.state("former-env", "--slot", "luna").stdout.strip().split(",")[0].split(":")[0], "luna")
+        env_path.write_text("damaged\n")
+        r = locked("rename-restore")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(env_path.read_bytes(), before)
+        self.assertEqual(env_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(locked("rename-launched").returncode, 0)
+        self.assertNotEqual(locked("rename-restore").returncode, 0)
+        self.assertNotEqual(locked("rename-clear").returncode, 0)
+        self.assertNotEqual(locked("rename-commit").returncode, 0)
+        env_path.write_text(before.decode().replace("=luna", "=nova"))
+        self.assertEqual(locked("rename-commit").returncode, 0)
+        self.assertEqual(locked("rename-commit").returncode, 0)
+        r = locked("rename-finish")
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        data = json.loads(self.path.read_text())
+        self.assertNotIn("rename", data)
+        self.assertEqual(data["bots"]["luna"]["name"], "nova")
+        self.assertEqual(sorted((f["name"], f["slot"]) for f in data["former"]),
+                         [("else", "-"), ("gone", "luna"), ("luna", "luna"), ("old", "luna"), ("old", "luna")])
+        self.assertFalse((self.home / ".local/lib/agent-mesh/rename-backup").exists())
+        lines = self.state("former").stdout.splitlines()
+        self.assertIn("former luna gone expired", "\n".join(lines))
+        self.assertTrue(all(line.endswith(" nova") for line in lines if " luna " in line[:13]))
+        data["rename"] = {"slot": "luna"}
+        self.write(data)
+        self.assertEqual(self.state("rename-get").returncode, 1)
+        self.assertIn("rename damaged", self.state("status", "--lang", "en", "--python", sys.executable).stdout)
+
     def test_removing_needs_the_lock_when_a_caller_passes_one(self):
         self.added_env("luna")
         self.write({"schema": 1, "bots": {"luna": {"stage": "relay", "added_ms": 1}}})

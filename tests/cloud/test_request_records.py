@@ -23,7 +23,7 @@ class Records(unittest.TestCase):
         (self.d / ".git").mkdir()
         (self.d / "box").mkdir()
         self.m = load("rn_routine_records", HERE / "rn-routine.py")
-        self.m.BASE, self.m.ROOT = self.d / "box", self.d
+        self.m.BASE, self.m.ROOT = self.m.NM.BASE, self.m.NM.ROOT = self.d / "box", self.d
         self.now = 1_800_000_000.0
         self.m.time = SimpleNamespace(time=lambda: self.now, sleep=lambda s: None)
         self.sel = SimpleNamespace(slot="-", name="bot", inbox_dir=self.d / "inbox")

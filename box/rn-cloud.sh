@@ -34,6 +34,8 @@
 #                                         # delete the other Bots' mail too).
 #   rn-cloud.sh register-bot             # internal, run by rn-cloud-add-bot.sh: register <name>-cloud and
 #                                         # <name>-inbox of the Bot in RN_BOT (needs bots/<name>/.claim)
+#   rn-cloud.sh register-name <name>     # internal, run by rn-names.py for a rename request under the exclusive
+#                                         # maintenance lock: register <name>-cloud and <name>-inbox
 #   rn-cloud.sh instructions <n> [<team-name> <team-hash>]
 #                                         # step 1 of the routine prompt (stub version <n>): print the rules
 #                                         # rendered by rn-routine.py, ending with "agent-mesh-instructions OK <n>"
@@ -56,7 +58,9 @@
 # Every command holds the cloud maintenance lock (/workspace/agent-mesh/.maint.lock) shared; updates, setup, adding
 # and removing Bots hold it exclusively. RN_MAINT_WAIT: seconds to wait for it (default 600).
 # Names: <name> is the Bot address name in box/relay, written by rn-cloud-setup.sh (bot if the file does not exist;
-# an empty or damaged file stops every command). <name>-cloud is SEND-only (registered with `listen --wait 0`, which
+# an empty or damaged file stops every command); an added Bot's is in bots/<slot>/name (its slot if that file does not
+# exist). A rename request (rn-names.py) changes it once the first message reaches the new <name>-inbox; until then,
+# and for 30 days after it, fetch also reads the Bot's other inboxes. <name>-cloud is SEND-only (registered with `listen --wait 0`, which
 # marks its mail read, so nothing should ever be sent to it); <name>-inbox is RECEIVE-only (rn-fetch reads its mail
 # from network.db, which keeps messages after they are marked read, so registering it never loses anything). After
 # each registration the engine's session table must show exactly that name, else the command stops.
@@ -76,6 +80,9 @@ export REASON_NETWORK_NO_PROMPT=1
 export REASON_NETWORK_MACHINE="${MACHINE_NAME:-cloud}"   # same machine name as rn-cloud-setup.sh used to join
 case "${1:-}" in
   who|init-inbox|fetch|send|working|done|purge|register-bot) ;;
+  register-name)
+    [ -z "${AGENT_RELAY_NAME:-}${RN_CLOUD_NAME:-}${RN_INBOX_NAME:-}${RN_INBOX_DIR:-}${RN_THREADS_DIR:-}" ] \
+      || die "register-name cannot be combined with name overrides" ;;
   instructions|request) exec python3 -I "$BASE/rn-routine.py" "$@" ;;
   *) sed -n '2,/^# Names:/p' "$0" | sed '$d'; exit 2 ;;
 esac
@@ -91,6 +98,20 @@ rn() { "$RN" "$@" 9>&-; }
 PERSON="$(cat "$BASE/person")"            # written by rn-cloud-setup.sh; the same name as the Mac
 valid_name() { [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#1}" -le 34 ] && ! [[ "$1" =~ ^terminal(-[0-9]+)?$ ]]; }
 removed() { [ -e "$BASE/bots-removed/$1" ] || [ -L "$BASE/bots-removed/$1" ]; }
+present() { [ -e "$1" ] || [ -L "$1" ]; }
+names_of() {
+  local dir out
+  if [ "$1" = - ]; then dir="$BASE"; else dir="$ROOT/bots/$1"; fi
+  if ! present "$dir/rename.pending" && ! present "$dir/former" && ! present "$dir/name"; then
+    if [ "$1" = - ]; then BASE_NAME="$(first_bot)" || exit 1; else BASE_NAME="$1"; fi
+    OTHER_INBOXES=""; EXCLUDE_FILE="$dir/exclude.json"
+  else
+    out="$(python3 -I "$BASE/rn-names.py" names "$1")" || die "${out#STOP: }"
+    { read -r BASE_NAME; read -r OTHER_INBOXES; read -r EXCLUDE_FILE; } <<<"$out"
+    valid_name "$BASE_NAME" || die "could not resolve the Bot address name: $out"
+  fi
+  export RN_OTHER_INBOXES="$OTHER_INBOXES" RN_EXCLUDE_FILE="$EXCLUDE_FILE"
+}
 first_bot() {
   local name=bot
   if [ -e "$BASE/relay" ]; then
@@ -106,7 +127,9 @@ if [ -n "${RN_BOT+set}" ]; then
   for v in AGENT_RELAY_NAME RN_CLOUD_NAME RN_INBOX_NAME RN_INBOX_DIR RN_THREADS_DIR; do
     [ -z "${!v:-}" ] || die "RN_BOT cannot be combined with $v; unset $v (nothing was run)"
   done
-  removed "$RN_BOT" && die "the Bot $RN_BOT was removed from this cloud (box/bots-removed/$RN_BOT); nothing was run"
+  if removed "$RN_BOT" && ! { [ "$1" = register-bot ] && [ "${RN_RECLAIMING:-}" = 1 ]; }; then
+    die "the Bot $RN_BOT was removed from this cloud (box/bots-removed/$RN_BOT); nothing was run"
+  fi
   BOT_DIR="$ROOT/bots/$RN_BOT"
   if [ "$1" = register-bot ]; then
     [ -f "$BOT_DIR/.claim" ] || die "the Bot $RN_BOT has not been claimed on this cloud; run rn-cloud-add-bot.sh"
@@ -114,7 +137,7 @@ if [ -n "${RN_BOT+set}" ]; then
     [ -f "$BOT_DIR/.registered" ] \
       || die "the Bot $RN_BOT is not registered on this cloud; run rn-cloud-add-bot.sh first (nothing was run)"
   fi
-  BASE_NAME="$RN_BOT"
+  names_of "$RN_BOT"
   INBOX_DIR="$BOT_DIR/inbox"; THREADS_DIR="$BOT_DIR/threads"
   export RN_INBOX_DIR="$INBOX_DIR" RN_THREADS_DIR="$THREADS_DIR"
 elif [ -n "${AGENT_RELAY_NAME:-}${RN_CLOUD_NAME:-}${RN_INBOX_NAME:-}${RN_INBOX_DIR:-}${RN_THREADS_DIR:-}" ]; then
@@ -124,7 +147,8 @@ else
   if [ ! -e "$BASE/relay" ] && { [ -e "$BASE/relay.removed" ] || [ -L "$BASE/relay.removed" ]; }; then
     die "the first Bot was removed from this cloud (box/relay.removed); select a Bot with RN_BOT=<name>"
   fi
-  BASE_NAME="$(first_bot)" || exit 1
+  first_bot >/dev/null || exit 1
+  names_of -
   removed "$BASE_NAME" && die "the Bot $BASE_NAME was removed from this cloud (box/bots-removed/$BASE_NAME); nothing was run"
   INBOX_DIR="$ROOT/inbox"; THREADS_DIR="$ROOT/threads"
   export RN_INBOX_DIR="$INBOX_DIR" RN_THREADS_DIR="$THREADS_DIR"
@@ -285,6 +309,13 @@ PY
     # the daemon restarts on demand with the next who/fetch/send.
     RN_BIN="$RN" RN_INBOX_DIR="$INBOX_DIR" RN_THREADS_DIR="$THREADS_DIR" \
       python3 -I "$BASE/rn-fetch.py" purge "$days" ;;
+  register-name)
+    [ "$#" = 2 ] && valid_name "$2" || die "usage: rn-cloud.sh register-name <name>"
+    [ "${RN_MAINT_MODE:-}" = exclusive ] || die "register-name is run by rn-names.py under the exclusive maintenance lock"
+    CLOUD="$2-cloud"; INBOX="$2-inbox"
+    is_connected || echo "rn-cloud: the Mac is not connected; it sees $PERSON/$CLOUD and $PERSON/$INBOX when it connects" >&2
+    register; register_inbox
+    echo "rn-cloud: $PERSON/$CLOUD and $PERSON/$INBOX registered on this box" ;;
   register-bot)
     [ "$#" = 1 ] || die "usage: RN_BOT=<name> rn-cloud.sh register-bot"
     connected=1

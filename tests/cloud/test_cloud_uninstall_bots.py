@@ -1,5 +1,5 @@
 """rn-cloud-uninstall.sh level bot, the new paths at identity level, and the runtime paths git and RUNTIME ignore."""
-import ast, os, re, shlex, shutil, signal, subprocess, sys, tempfile, time, unittest
+import ast, json, os, re, shlex, shutil, signal, sqlite3, subprocess, sys, tempfile, time, unittest
 from pathlib import Path
 
 from tests.cli.test_uninstall import Base, FAKE_RN, GIT, KEY, ack
@@ -101,7 +101,7 @@ class CloudBots(Base, unittest.TestCase):
         self.rn_state(self.base / "rn", rows=[["demo", "mac", "offline"]])
         r = self.apply(s)
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn("DONE: level bot; demo/alpha is removed from this cloud and cannot be added again", r.stdout)
+        self.assertIn("DONE: level bot; demo/alpha is removed from this cloud; the user must still delete", r.stdout)
         self.assertFalse((self.a / "inbox").exists())
         self.assertFalse((self.a / "threads").exists())
         self.assertFalse((self.b / "relay").exists())
@@ -133,6 +133,32 @@ class CloudBots(Base, unittest.TestCase):
         self.assertEqual((self.b / "relay").read_text(), "alpha\n")
         self.assertTrue((self.a / "inbox/01A/full.txt").exists())
         self.assertFalse((self.b / "relay.removed").exists())
+
+    def test_level_bot_lists_the_messages_each_removed_name_had(self):
+        for name in ("rn-names.py", "rn-fetch.py", "rn-engine.py"):
+            shutil.copy(HERE / name, self.b / name)
+        db = sqlite3.connect(self.b / "state/network.db")
+        db.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, recipient TEXT, body TEXT, sent_at INTEGER, "
+                   "read_at INTEGER)")
+        db.executemany("INSERT INTO messages VALUES (?,?,?,?,?)", [
+            ("01E2", "demo/beta-inbox", "ack", 2, None),
+            ("01E1", "demo/beta-inbox", "RN-FWD v1\nid: 01S1\n---\nhello\n--- RN-FWD END", 1, 1),
+            ("01E3", "demo/other-inbox", "RN-FWD v1\nid: 01S3\n---\nhi\n--- RN-FWD END", 3, None)])
+        db.commit()
+        db.close()
+        (self.b / "bots-removed").mkdir()
+        (self.beta / "name").write_text("zed\n")
+        (self.b / "bots-removed/zed").write_text("2026-11-15T00:00:00Z\n")
+        r = self.apply(self.script("beta"))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse(self.beta.exists())
+        text = (self.b / "bots-removed/beta").read_text()
+        self.assertEqual(text.count("\n"), 1)
+        self.assertRegex(json.loads(text).pop("removed"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(json.loads(text)["rows"], [["01E1", "01S1"], ["01E2", None]])
+        self.assertEqual(sorted(json.loads(text)), ["removed", "rows"])
+        self.assertEqual((self.b / "bots-removed/zed").read_text(), "2026-11-15T00:00:00Z\n")
+        self.assertEqual(sorted(p.name for p in (self.b / "bots-removed").iterdir()), ["beta", "zed"])
         self.assert_identity_kept()
 
     def test_level_bot_of_a_never_claimed_name_only_writes_the_tombstone(self):
@@ -144,6 +170,98 @@ class CloudBots(Base, unittest.TestCase):
         r = self.apply(s)
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(sorted(set(self.tree()) - set(before)), ["box/bots-removed", "box/bots-removed/gamma"])
+
+    def test_level_bot_tombstones_every_name_of_a_renamed_bot(self):
+        (self.beta / "name").write_text("zed\n")
+        (self.beta / "former").write_text(f"yan {int(time.time()) + 86400}\n")
+        (self.beta / "rename.pending").write_text(json.dumps({"old": "zed", "new": "xi", "req": "0" * 16,
+                                                              "before": [], "ts": 1}))
+        s = self.script("beta")
+        r = self.run_cloud(s, "check")
+        self.assertIn("STATE: address names of this Bot: beta zed xi yan", r.stdout)
+        self.assertIn("WILL WRITE: box/bots-removed/beta box/bots-removed/zed box/bots-removed/xi "
+                      "box/bots-removed/yan (first", r.stdout)
+        r = self.apply(s)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(sorted(p.name for p in (self.b / "bots-removed").iterdir()), ["beta", "xi", "yan", "zed"])
+        self.assertFalse(self.beta.exists())
+        self.assertEqual((self.b / "relay").read_text(), "alpha\n")
+
+    def test_level_bot_finds_a_renamed_bot_by_its_current_name(self):
+        (self.beta / "name").write_text("zed\n")
+        s = self.script("zed")
+        r = self.run_cloud(s, "check")
+        self.assertIn("STATE: zed is the Bot in bots/beta", r.stdout)
+        self.assertIn("STATE: address names of this Bot: zed beta", r.stdout)
+        self.assertIn("WILL REMOVE: bots/beta/ (received bodies and thread notes of zed)", r.stdout)
+        r = self.apply(s)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse(self.beta.exists())
+        self.assertEqual(sorted(p.name for p in (self.b / "bots-removed").iterdir()), ["beta", "zed"])
+        r = self.run_cloud(s, "check")
+        self.assertIn("STATE: zed was already removed from this cloud", r.stdout)
+
+    def test_level_identity_accepts_the_current_name_of_a_renamed_bot(self):
+        (self.beta / "name").write_text("zed\n")
+        (self.b / "relay").rename(self.b / "relay.removed")
+        r = self.run_cloud(self.script("zed", level="identity"), "check")
+        self.assertIn("STATE: box/relay is missing; Bots added with rn-cloud-add-bot.sh: beta", r.stdout)
+        self.assertNotIn("STOP", r.stdout)
+        r = self.run_cloud(self.script("yan", level="identity"), "check")
+        self.assertIn("STOP: this cloud has no Bot named yan", r.stdout)
+
+    def test_level_bot_of_a_first_bot_in_the_middle_of_a_switch(self):
+        (self.b / "rename.pending").write_text(json.dumps({"old": "alpha", "new": "omega", "req": "0" * 16,
+                                                           "before": [], "ts": 1}))
+        (self.b / "former").write_text(f"psi {int(time.time()) + 86400}\n")
+        (self.b / "exclude.json").write_text("{}")
+        r = self.run_cloud(self.script("alpha"), "check")
+        self.assertIn("STATE: address names of this Bot: alpha omega psi", r.stdout)
+        s = self.script("omega")
+        r = self.run_cloud(s, "check")
+        self.assertIn("STATE: omega is the first Bot on this cloud", r.stdout)
+        self.assertIn("STATE: address names of this Bot: omega alpha psi", r.stdout)
+        r = self.apply(s)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(sorted(p.name for p in (self.b / "bots-removed").iterdir()), ["alpha", "omega", "psi"])
+        for name in ("former", "rename.pending", "exclude.json", "relay"):
+            self.assertFalse((self.b / name).exists(), name)
+        self.assertEqual((self.b / "relay.removed").read_text(), "alpha\n")
+        self.assertFalse((self.a / "inbox").exists())
+        self.assertTrue(self.beta.exists())
+
+    def test_level_bot_of_a_default_first_bot_in_the_middle_of_a_switch(self):
+        (self.b / "relay").unlink()
+        (self.b / "rename.pending").write_text(json.dumps({"old": "bot", "new": "omega", "req": "0" * 16,
+                                                           "before": [], "ts": 1}))
+        s = self.script("omega")
+        r = self.run_cloud(s, "check")
+        self.assertIn("STATE: omega is the first Bot on this cloud", r.stdout)
+        self.assertIn("STATE: address names of this Bot: omega bot", r.stdout)
+        r = self.apply(s)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(sorted(p.name for p in (self.b / "bots-removed").iterdir()), ["bot", "omega"])
+        for name in ("rename.pending", "relay"):
+            self.assertFalse((self.b / name).exists(), name)
+        self.assertEqual((self.b / "relay.removed").read_text(), "omega\n")
+        self.assertFalse((self.a / "inbox").exists())
+        self.assertFalse((self.a / "threads").exists())
+        self.assertTrue(self.beta.exists())
+
+    def test_level_bot_of_a_first_bot_cut_off_before_the_switch_record_goes(self):
+        (self.b / "rename.pending").write_text(json.dumps({"old": "alpha", "new": "omega", "req": "0" * 16,
+                                                           "before": [], "ts": 1}))
+        (self.b / "bots-removed").mkdir()
+        for n in ("alpha", "omega"):
+            (self.b / "bots-removed" / n).write_text("t\n")
+        shutil.rmtree(self.a / "inbox")
+        (self.b / "relay").rename(self.b / "relay.removed")
+        r = self.apply(self.script("omega"))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("STATE: omega is the first Bot on this cloud", r.stdout)
+        self.assertFalse((self.b / "rename.pending").exists())
+        self.assertEqual((self.b / "relay.removed").read_text(), "alpha\n")
+        self.assertTrue(self.beta.exists())
 
     def test_level_bot_resumes_after_an_interruption(self):
         (self.b / "bots-removed").mkdir()

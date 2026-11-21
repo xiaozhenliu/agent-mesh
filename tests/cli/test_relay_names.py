@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -293,3 +294,186 @@ class Cli(unittest.TestCase):
             listing = directory(("demo", "mac", "alice", "offline"), other)
             self.assertEqual(self.run_cli("conflicts", "alice", "--db", str(db),
                                           stdin=json.dumps(listing)).returncode, 1, other)
+
+
+class NameCheck(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.db = self.base / "network.db"
+        self.ps = self.base / "ps.txt"
+        self.ps.write_text("")
+        record = self.base / ".local/lib/agent-mesh/deployed.json"
+        record.parent.mkdir(parents=True)
+        record.write_text(json.dumps({
+            "schema": 1, "relay_name": "bot", "removed_bots": ["gone"],
+            "bots": {"luna": {"stage": "relay", "cloud": {"state": "confirmed"}, "added_ms": 1, "name": "moon"}},
+            "former": [{"name": "old", "slot": "luna", "since_ms": 1, "until_ms": 2}]}))
+        self.agents = self.base / "Library/LaunchAgents"
+        self.agents.mkdir(parents=True)
+
+    def check(self, name, *args, listing=None):
+        env = dict(os.environ, HOME=str(self.base), AGENT_MESH_LANG="en")
+        return subprocess.run([sys.executable, str(SCRIPT), "name-check", "demo", name, "--db", str(self.db),
+                               "--ps-file", str(self.ps), *args], input=json.dumps(listing or directory()),
+                              env=env, capture_output=True, text=True)
+
+    def own(self, name, status="offline", since=1):
+        rows = [{"person": "demo", "machine": "mac", "name": name, "status": status, "since": since},
+                {"person": "demo", "machine": "cloud", "name": f"{name}-cloud", "status": "online", "since": 1},
+                {"person": "demo", "machine": "cloud", "name": f"{name}-inbox", "status": "online", "since": 1}]
+        return dict(directory(), sessions=rows)
+
+    def test_a_new_name_needs_nothing_else(self):
+        result = self.check("fresh", "--slot", "-")
+        self.assertEqual((result.returncode, result.stdout), (0, "class new\n"), result.stderr)
+        self.assertEqual(self.check("fresh").stdout, "class new\n")
+        result = self.check("Bad_Name")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.check("fresh", "--slot", "Bad_Name").returncode, 2)
+
+    def test_names_of_other_bots_stay_with_them(self):
+        for name, slot in (("luna", "-"), ("moon", "-"), ("old", "-"), ("bot", "luna")):
+            result = self.check(name, "--slot", slot)
+            self.assertEqual(result.returncode, 1, (name, slot))
+            self.assertIn("another Bot on this Mac", result.stderr)
+        self.assertIn("(moon)", self.check("old", "--slot", "-").stderr)
+        result = self.check("moon", "--slot", "luna")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("already this Bot's address name", result.stderr)
+        result = self.check("moon")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("class", result.stdout)
+
+    def test_a_former_name_of_the_same_bot_comes_back_with_its_evidence(self):
+        session_db(self.db, [("old", "cli:old", 1)])
+        result = self.check("old", "--slot", "luna", listing=self.own("old"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "class own")
+        self.assertEqual(lines[-1], "unread 0")
+        self.assertEqual(len([line for line in lines if line.startswith("evidence ")]), 4)
+        self.assertEqual(self.check("luna", "--slot", "luna", listing=self.own("luna")).returncode, 1)
+        session_db(self.base / "other.db", [("luna", "cli:luna", 1)])
+        env = dict(os.environ, HOME=str(self.base))
+        result = subprocess.run([sys.executable, str(SCRIPT), "name-check", "demo", "luna", "--slot", "luna", "--db",
+                                 str(self.base / "other.db"), "--ps-file", str(self.ps)],
+                                input=json.dumps(self.own("luna")), env=env, capture_output=True, text=True)
+        self.assertEqual(result.stdout.splitlines()[0], "class own", result.stderr)
+
+    def test_a_name_held_back_for_an_unfinished_rename_needs_only_its_cloud_sessions(self):
+        record = self.base / ".local/lib/agent-mesh/deployed.json"
+        data = json.loads(record.read_text())
+        data["former"].append({"name": "next", "slot": "-", "since_ms": 5, "until_ms": 5, "reserved": True})
+        record.write_text(json.dumps(data))
+        cloud = dict(directory(), sessions=self.own("next")["sessions"][1:])
+        result = self.check("next", "--slot", "-", listing=cloud)
+        self.assertEqual((result.returncode, result.stdout), (0, "class own\nunread 0\n"), result.stderr)
+        result = self.check("next", "--slot", "luna", listing=cloud)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("another Bot on this Mac", result.stderr)
+        result = self.check("next", "--slot", "-", listing=self.own("next"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("demo/next", result.stderr)
+        session_db(self.db, [("next", "cli:next", 1)])
+        result = self.check("next", "--slot", "-", listing=cloud)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cli:next", result.stderr)
+
+    def test_a_removed_name_needs_its_key_and_cloud_sessions_and_no_listener(self):
+        result = self.check("gone", "--slot", "-", listing=self.own("gone"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no key for the session gone", result.stderr)
+        session_db(self.db, [("gone", "cli:gone", 1)])
+        idle = self.own("gone", status="idle", since=int(time.time() * 1000))
+        result = self.check("gone", "--slot", "-", listing=idle)
+        self.assertEqual((result.returncode, result.stdout.splitlines()[0]), (0, "class removed"), result.stderr)
+        self.assertNotIn("not offline", result.stderr)
+        self.ps.write_text("  700 1 /x/reason-network listen --as gone --wait 600\n")
+        result = self.check("gone", "--slot", "-", listing=idle)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("process 700 is listening as gone", result.stderr)
+        self.ps.write_text("")
+        missing = dict(directory(), sessions=self.own("gone")["sessions"][:2])
+        result = self.check("gone", "--slot", "-", listing=missing)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("demo/gone-inbox is not in this team's list", result.stderr)
+        moved = self.own("gone")
+        moved["sessions"][1]["machine"] = "laptop"
+        self.assertIn("on machine laptop, not on cloud", self.check("gone", "--slot", "-", listing=moved).stderr)
+        result = self.check("gone", "--slot", "-", listing=self.own("gone"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[0], "class removed")
+        self.assertEqual(self.check("gone", listing=self.own("gone")).stdout.splitlines()[0], "class removed")
+
+    def test_a_left_name_must_have_been_offline_for_a_day_everywhere(self):
+        session_db(self.db, [("left", "cli:left", 1)])
+        now = int(__import__("time").time() * 1000)
+        listing = self.own("left", since=now - 3600 * 1000)
+        for row in listing["sessions"]:
+            row["status"] = "offline"
+        result = self.check("left", "--slot", "-", listing=listing)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("demo/left has been offline only since", result.stderr)
+        listing["sessions"][0]["since"] = now - 2 * 86400 * 1000
+        result = self.check("left", "--slot", "-", listing=listing)
+        self.assertEqual(result.stdout.splitlines()[0], "class left", result.stderr)
+        listing["sessions"][2]["status"] = "online"
+        self.assertIn("demo/left-inbox is online", self.check("left", "--slot", "-", listing=listing).stderr)
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO sessions VALUES ('other', 'cli:left-cloud', 'cli', '/', NULL, NULL, NULL, 'pull', 1)")
+        con.commit()
+        con.close()
+        listing["sessions"][2]["status"] = "offline"
+        self.assertIn("cli:left-cloud", self.check("left", "--slot", "-", listing=listing).stderr)
+
+    def test_listening_processes_and_launchd_jobs_block_a_reclaim(self):
+        session_db(self.db, [("gone", "cli:gone", 1)])
+        listing = self.own("gone")
+        self.ps.write_text("  500 1 /usr/bin/python3 relay.py\n  600 500 /x/reason-network listen --as gone-cloud --pull\n"
+                           "  700 1 /x/reason-network listen --as=gone\n  800 1 grep listen --as gone\n")
+        result = self.check("gone", "--slot", "-", listing=listing)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("process 600 is listening as gone", result.stderr)
+        self.assertIn("process 700 is listening as gone", result.stderr)
+        self.assertIn("process 800 is listening as gone", result.stderr)
+        result = self.check("gone", "--slot", "-", "--relay-pid", "500", listing=listing)
+        self.assertNotIn("process 600", result.stderr)
+        self.assertIn("process 700", result.stderr)
+        self.ps.write_text("")
+        import plistlib
+        job = self.agents / "com.example.helper.plist"
+        job.write_bytes(plistlib.dumps({"Label": "com.example.helper", "ProgramArguments": ["/bin/run", "--as", "gone"]}))
+        result = self.check("gone", "--slot", "-", listing=listing)
+        self.assertIn(f"the launchd job {job} still uses gone", result.stderr)
+        job.write_bytes(plistlib.dumps({"Label": "com.example.helper", "ProgramArguments": ["/bin/run", "/data/gone/x"]}))
+        self.assertEqual(self.check("gone", "--slot", "-", listing=listing).returncode, 1)
+        for other in ("gone-ish", "gonex", "agone"):
+            job.write_bytes(plistlib.dumps({"Label": "com.example.helper", "ProgramArguments": ["/bin/run", other]}))
+            self.assertEqual(self.check("gone", "--slot", "-", listing=listing).returncode, 0, other)
+        env = self.base / "elsewhere/env"
+        env.parent.mkdir()
+        env.write_text("LISTEN_NAME=moon\nFORMER_NAMES=gone:99999999999\n")
+        relay = self.agents / "com.local.agent-relay.zed.plist"
+        relay.write_bytes(plistlib.dumps({"Label": "com.local.agent-relay.zed", "ProgramArguments": ["/bin/python3"],
+                                          "EnvironmentVariables": {"AGENT_RELAY_ENV": str(env)}}))
+        result = self.check("gone", "--slot", "-", listing=listing)
+        self.assertIn(f"the launchd job {relay} still uses gone", result.stderr)
+        result = self.check("gone", "--slot", "zed", listing=listing)
+        self.assertEqual(result.returncode, 1)
+
+    def test_unread_mail_to_the_name_is_counted_by_sender(self):
+        session_db(self.db, [("gone", "cli:gone", 1)])
+        con = sqlite3.connect(self.db)
+        con.execute("CREATE TABLE messages (id TEXT, sender TEXT, recipient TEXT, body TEXT, sent_at INTEGER, "
+                    "read_at INTEGER)")
+        con.executemany("INSERT INTO messages VALUES (?, ?, ?, 'x', 1, ?)",
+                        [("1", "demo/b", "demo/gone", None), ("2", "demo/a", "demo/gone", None),
+                         ("3", "demo/a", "demo/gone", None), ("4", "demo/a", "demo/gone", 5),
+                         ("5", "demo/a", "demo/other", None)])
+        con.commit()
+        con.close()
+        result = self.check("gone", "--slot", "-", listing=self.own("gone"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-3:], ["unread 3", "sender demo/a 2", "sender demo/b 1"])

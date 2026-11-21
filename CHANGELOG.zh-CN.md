@@ -4,6 +4,18 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.11.0 — 2026-11-21
+
+Bot 地址名可以改了（#53）。用 `agent-mesh update` 更新；本版会更新 Bot 云电脑，已贴 routine 桩的不用重贴（仍用完整提示词的，`agent-mesh update` 提示时重贴一次）。
+
+### 新增
+
+- `agent-mesh rename <name>` 改 Bot 地址名，也可以改回以前用过的地址名；不需要在 Grok 里做任何事。发往旧地址的信继续转交 30 天。
+
+### 变更
+
+- 已卸载 Bot 的名字，核对安装器列出的证据后，可以用 `agent-mesh rename` 或 `./install.sh --add-bot` 收回。
+
 ## v0.10.0 — 2026-11-19
 
 升级只要一条命令（#41）。用 `./update.sh` 更新；它会请你把新的短提示词贴进 Grok 一次，之后提示词的规则随更新自动变化，除非短提示词本身改版，不用再贴。

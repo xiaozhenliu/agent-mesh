@@ -1,7 +1,7 @@
 state.unreadable_unknown	update：%s 无法读取（%s）；云端和提示词按"未知"处理
 state.format_unknown	update：%s 格式无法识别；云端和提示词按"未知"处理
 state.txn_damaged	update：上次未完成更新的记录已损坏，已忽略；如果 Grok Bot 里的 routine 仍处于暂停状态，请恢复它
-state.renamed_not_recorded	update：Bot 地址名从 %s（这台 Mac 安装时记录）变成了 %s；不支持改名，没有记录任何内容
+state.renamed_not_recorded	update：env 文件里的 Bot 地址名从 %s（这台 Mac 安装时记录）变成了 %s；没有记录任何内容。Bot 只能用 agent-mesh rename 改名：先把 env 文件里的 LISTEN_NAME 改回 %s，再运行 agent-mesh rename %s
 state.checkout_moved	update：显示 %s 之后这个 checkout 又变了；没有记录任何内容，请重新运行 ./update.sh
 state.record_moved	update：显示之后 %s 的记录又变了；没有记录任何内容，请重新运行 ./update.sh
 state.env_name_differs	%s 使用的 Bot 地址名是 %s，不是 %s
@@ -9,7 +9,7 @@ state.unreadable_strict	%s 无法读取（%s）；没有记录任何内容。运
 state.unreadable_plain	%s 无法读取（%s）。运行 ./update.sh --plan 查看它的报告，或从备份恢复该文件
 state.format_strict	%s 格式无法识别；没有记录任何内容
 state.format_plain	%s 格式无法识别
-state.renamed	Bot 地址名从 %s 变成了 %s；不支持改名，没有记录任何内容
+state.renamed	env 文件里的 Bot 地址名从 %s 变成了 %s；没有记录任何内容。Bot 只能用 agent-mesh rename 改名：先把 env 文件里的 LISTEN_NAME 改回 %s，再运行 agent-mesh rename %s
 state.no_txn	update：没有可修改的未完成更新
 release.fetch_failed	无法获取发布版 %s（来源 %s；可能尚未发布，或网络有问题）：%s；没有做任何改动
 release.not_commit	发布版 %s（来源 %s）没有指向一个提交；没有做任何改动
@@ -58,7 +58,22 @@ state.stub_other	回信报告的是 routine 桩 v%s，不是 v%s
 state.stub_mismatch	%s 回复了读回请求，但回信没有证实 routine 桩：
 state.stub_missing	%s 回复了，但那一轮没有通过 routine 桩加载规则：routine 提示词仍未确认。运行 ./update.sh：它会再次显示桩，粘贴进 routine 后再请 Bot 证实
 state.stub_confirmed	%s 已通过 routine 桩 v%s 加载规则：routine 提示词已确认。
-entry.usage	用法：agent-mesh update|check [选项]；在你的 agent-mesh 检出里运行 ./update.sh 或 ./check.sh
+entry.usage	用法：agent-mesh update|check|rename [选项]；在你的 agent-mesh 检出里运行 ./update.sh、./check.sh 或 ./install.sh --rename
 entry.gone	agent-mesh：记录的检出目录 %s 不存在了；请在新的 agent-mesh 检出里运行一次 ./update.sh
 entry.foreign	%s 已存在且不是 agent-mesh 写的；保持原样（请改为在检出里运行 ./update.sh 和 ./check.sh）
 entry.no_path	%s 不在 PATH 里；加入后可以在任何目录运行 agent-mesh update 和 agent-mesh check
+state.rename_damaged	%s 里的改名记录已损坏；没有做任何改动。先运行 ./check.sh 查看 Bot 的状态，再手动修正这个文件的 "rename" 字段
+state.rename_exists	已有一次改名在进行；运行 agent-mesh rename 完成它，或运行 agent-mesh rename --cancel 撤销
+state.rename_old_differs	%s 不同时是 deployed.json 和 env 文件里这个 Bot 的当前地址名；没有做任何改动，请运行 ./check.sh
+state.rename_reply_mismatch	Bot 云电脑（%s）没有接受这次改名；这台 Mac 没有任何改动，改名记录已清除：
+state.rename_pending	Bot 云电脑（%s）已接受改名，新名字收到第一条消息时完成切换
+state.rename_not_replied	Bot 云电脑还没有接受这次改名；请再次运行 agent-mesh rename
+state.rename_backup_bad	%s 里的改名备份缺失或损坏，无法恢复旧名字；没有做任何改动。请改为运行 agent-mesh rename 完成改名
+state.rename_launched	relay 已经以新名字启动，改名不能撤销；请运行 agent-mesh rename 完成它，想用回旧名字时再改回去
+state.rename_not_launched	relay 还没有以新名字启动；请再次运行 agent-mesh rename
+state.rename_env_differs	%s 还没有使用新地址名 %s；请再次运行 agent-mesh rename
+state.rename_full_prompt	这个 Bot 使用完整版 routine 提示词，其中写着 Bot 地址；请运行 %s，把新提示词贴到 Grok
+state.held_note	发往收回的名字的 %s 条旧消息被搁置，没有交给 Bot；要让 Bot 处理它们，请运行 %s
+state.history_none	这个 Bot 没有搁置的消息可以收下
+state.history_mismatch	Bot 云电脑（%s）没有接受这个请求；没有做任何改动：
+state.history_accepted	%s 条搁置的消息已交给 Bot（%s）

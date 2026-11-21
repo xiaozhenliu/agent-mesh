@@ -34,7 +34,8 @@ case "$PHASE" in
 esac
 if [ "$(uname -s)" != Linux ]; then stop "this is not the Linux cloud computer; never run it on the user's Mac"; fi
 for p in "$W" "$A" "$B" "$B/state" "$B/bin" "$B/bin/engine" "$B/person" "$B/relay" "$B/outbound.key" "$A/inbox" "$A/threads" \
-  "$A/bots" "$A/bots/$RELAY_NAME" "$B/bots-removed" "$B/bots-removed/$RELAY_NAME" "$B/relay.removed" "$A/.maint.lock"; do
+  "$A/bots" "$A/bots/$RELAY_NAME" "$B/bots-removed" "$B/bots-removed/$RELAY_NAME" "$B/relay.removed" "$A/.maint.lock" \
+  "$B/former" "$B/rename.pending" "$B/exclude.json" "$A/bots/$RELAY_NAME/name" "$A/bots/$RELAY_NAME/former"; do
   if [ -L "$p" ]; then stop "$p is a symlink; not touching it"; fi
 done
 if [ ! -d "$A" ]; then
@@ -85,7 +86,9 @@ W, A = sys.argv[2], sys.argv[3]
 B = os.path.join(A, "box")
 RUNTIME = re.compile(r"^box/(bin|state)/|^box/(person|relay|lang|outbound\.key)$|^box/relay\.damaged-|^box/engine-backup-|"
                      r"^box/\.(relay|person)\.[A-Za-z0-9]{6}$|^inbox/|^threads/|(^|/)__pycache__/|\.pyc$|"
-                     r"^bots/|^box/relay\.removed$|^box/bots-removed/|^\.maint\.lock$")
+                     r"^bots/|^box/relay\.removed$|^box/bots-removed/|^\.maint\.lock$|"
+                     r"^box/(former|rename\.pending|exclude\.json)$|^box/\.(former|rename\.pending|exclude\.json)\.[0-9]+\.tmp$|"
+                     r"^box/exclude\.json\.tmp$|^box/\.relay\.[0-9]+\.tmp$")
 INSIDE = (b"agent-mesh/box", b"box/state", b"box/bin")
 LIMIT = 20 * 1024 * 1024
 
@@ -225,9 +228,23 @@ else
   if [ "$LEVEL" = bot ]; then stop "box/person is missing; there is no deployment here to remove a Bot from"; fi
   echo "STATE: cloud identity already removed"
 fi
-CLAIMED=""
+pending_names() {
+  if [ -f "$1" ]; then
+    python3 -I -c 'import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(d["old"], d["new"])
+except Exception:
+    pass' "$1"
+  fi
+}
+FIRST_PENDING="$(pending_names "$B/rename.pending")"
+CLAIMED=""; CLAIMED_NAMES=""
 for c in "$A"/bots/*/.claim; do
-  if [ -f "$c" ]; then n="${c%/.claim}"; CLAIMED="$CLAIMED ${n##*/}"; fi
+  if [ -f "$c" ]; then
+    n="${c%/.claim}"; CLAIMED="$CLAIMED ${n##*/}"; CLAIMED_NAMES="$CLAIMED_NAMES ${n##*/} $(pending_names "$n/rename.pending")"
+    if [ -f "$n/name" ]; then CLAIMED_NAMES="$CLAIMED_NAMES $(cat "$n/name")"; fi
+  fi
 done
 if [ "$LEVEL" = bot ]; then
   D="$A/bots/$RELAY_NAME"; T="$B/bots-removed/$RELAY_NAME"
@@ -239,32 +256,64 @@ if [ "$LEVEL" = bot ]; then
   else
     first=bot
   fi
-  if [ "$first" = "$RELAY_NAME" ]; then
+  if [ "$first" = "$RELAY_NAME" ] || [[ " $FIRST_PENDING " == *" $RELAY_NAME "* ]]; then
     KIND=legacy
     if [ -e "$D" ]; then stop "both box/relay and bots/$RELAY_NAME name $RELAY_NAME; ask the user"; fi
     if [ -f "$T" ] && [ ! -e "$B/relay" ] && [ ! -e "$A/inbox" ] && [ ! -e "$A/threads" ]; then GONE=yes; else GONE=no; fi
     echo "STATE: $RELAY_NAME is the first Bot on this cloud"
   else
     KIND=added
+    if [ ! -e "$D" ] && [ ! -L "$D" ]; then
+      for c in "$A"/bots/*/.claim; do
+        d="${c%/.claim}"
+        if [ ! -f "$c" ] || [ -L "$d" ]; then continue; fi
+        n=""
+        if [ -f "$d/name" ]; then n="$(cat "$d/name")"; fi
+        if [ "$n" = "$RELAY_NAME" ] || [[ " $(pending_names "$d/rename.pending") " == *" $RELAY_NAME "* ]]; then D="$d"; break; fi
+      done
+    fi
+    SLOT="${D##*/}"
     if [ -e "$D" ] && { [ ! -d "$D" ] || [ ! -f "$D/.claim" ]; }; then
-      stop "bots/$RELAY_NAME was not created by rn-cloud-add-bot.sh (no .claim); not touching it"
+      stop "bots/$SLOT was not created by rn-cloud-add-bot.sh (no .claim); not touching it"
     fi
     if [ -f "$T" ] && [ ! -e "$D" ]; then GONE=yes; else GONE=no; fi
     echo "STATE: $RELAY_NAME is a Bot added with rn-cloud-add-bot.sh"
+    if [ "$SLOT" != "$RELAY_NAME" ]; then echo "STATE: $RELAY_NAME is the Bot in bots/$SLOT"; fi
     if [ ! -e "$D" ] && [ "$GONE" = no ]; then echo "STATE: this cloud never claimed $RELAY_NAME (no bots/$RELAY_NAME)"; fi
   fi
   if [ "$GONE" = yes ]; then echo "STATE: $RELAY_NAME was already removed from this cloud"; fi
+  NAMES="$RELAY_NAME"
+  if [ "$KIND" = legacy ]; then
+    FORMER="$B/former"; PENDING="$FIRST_PENDING"
+    if [ "$first" != "$RELAY_NAME" ] && [[ "$first" =~ $name_re ]]; then NAMES="$NAMES $first"; fi
+  else
+    FORMER="$D/former"; PENDING="$(pending_names "$D/rename.pending")"
+    if [ "$SLOT" != "$RELAY_NAME" ]; then NAMES="$NAMES $SLOT"; fi
+  fi
+  for n in $PENDING; do
+    if [[ "$n" =~ $name_re ]] && [[ " $NAMES " != *" $n "* ]]; then NAMES="$NAMES $n"; fi
+  done
+  if [ "$KIND" = added ] && [ -f "$D/name" ]; then
+    n="$(cat "$D/name")"
+    if [[ "$n" =~ $name_re ]] && [[ " $NAMES " != *" $n "* ]]; then NAMES="$NAMES $n"; fi
+  fi
+  if [ -f "$FORMER" ]; then
+    while read -r n _; do
+      if [[ "$n" =~ $name_re ]] && [[ " $NAMES " != *" $n "* ]]; then NAMES="$NAMES $n"; fi
+    done < "$FORMER"
+  fi
+  if [ "$NAMES" != "$RELAY_NAME" ]; then echo "STATE: address names of this Bot: $NAMES"; fi
 elif [ -f "$B/relay" ]; then
   have="$(cat "$B/relay")"
   if [ "$MODE" = residual ]; then
     echo "STATE: box/relay holds ${have:0:60}"
-  elif [ "$have" != "$RELAY_NAME" ]; then
+  elif [ "$have" != "$RELAY_NAME" ] && [[ " $FIRST_PENDING " != *" $RELAY_NAME "* ]]; then
     if [[ "$have" =~ $name_re ]]; then stop "box/relay is $have, not $RELAY_NAME; this cloud belongs to another deployment"; fi
     echo "NOTE: box/relay is damaged"
   fi
 elif [ -n "$CLAIMED" ]; then
   echo "STATE: box/relay is missing; Bots added with rn-cloud-add-bot.sh:$CLAIMED"
-  if [ "$MODE" = normal ] && [[ " $CLAIMED " != *" $RELAY_NAME "* ]] && [ ! -f "$B/bots-removed/$RELAY_NAME" ] \
+  if [ "$MODE" = normal ] && [[ " $CLAIMED_NAMES " != *" $RELAY_NAME "* ]] && [ ! -f "$B/bots-removed/$RELAY_NAME" ] \
     && { [ ! -f "$B/relay.removed" ] || [ "$(cat "$B/relay.removed")" != "$RELAY_NAME" ]; }; then
     stop "this cloud has no Bot named $RELAY_NAME; it belongs to another deployment"
   fi
@@ -324,11 +373,11 @@ if [ "$LEVEL" = all ]; then
   if ! helper files "$W" "$A"; then NOUP=yes; fi
 fi
 if [ "$LEVEL" = bot ]; then
-  echo "WILL WRITE: box/bots-removed/$RELAY_NAME (first, so no command uses $RELAY_NAME again; the name cannot be added again)"
+  echo "WILL WRITE: $(for n in $NAMES; do printf 'box/bots-removed/%s ' "$n"; done)(first, so no command uses these names again; taking one back later needs the user's Mac)"
   if [ "$KIND" = legacy ]; then
-    echo "WILL REMOVE: inbox/ threads/ (received bodies and thread notes of $RELAY_NAME); box/relay becomes box/relay.removed"
+    echo "WILL REMOVE: inbox/ threads/ box/former box/rename.pending box/exclude.json (received bodies, thread notes and earlier names of $RELAY_NAME); box/relay becomes box/relay.removed"
   else
-    echo "WILL REMOVE: bots/$RELAY_NAME/ (received bodies and thread notes of $RELAY_NAME)"
+    echo "WILL REMOVE: bots/$SLOT/ (received bodies and thread notes of $RELAY_NAME)"
   fi
   echo "WILL KEEP: box/state box/bin box/person box/outbound.key, the team membership and the other Bots"
 else
@@ -356,7 +405,15 @@ if [ "$SHARED" = yes ] && [ "$SHARED_OK" != yes ]; then
 fi
 if [ "$LEVEL" = bot ]; then
   if [ ! -d "$B/bots-removed" ]; then mkdir -p "$B/bots-removed"; chmod 700 "$B/bots-removed"; fi
-  if [ ! -f "$T" ]; then date -u +%Y-%m-%dT%H:%M:%SZ > "$T"; fi
+  if [ -f "$B/rn-names.py" ]; then
+    read -r -a names <<<"$NAMES"
+    out="$(RN_MAINT_FD=9 RN_MAINT_MODE=exclusive RN_CLOUD_BASE="$B" python3 -I "$B/rn-names.py" tombstone "${names[@]}")" \
+      || stop "the removed names could not be recorded (${out#STOP: }); nothing was removed"
+  else
+    for n in $NAMES; do
+      if [ ! -f "$B/bots-removed/$n" ]; then date -u +%Y-%m-%dT%H:%M:%SZ > "$B/bots-removed/$n"; fi
+    done
+  fi
   if [ "$KIND" = legacy ]; then
     rm -rf "${A:?}/inbox" "${A:?}/threads"
     if [ -f "$B/relay" ]; then
@@ -364,10 +421,11 @@ if [ "$LEVEL" = bot ]; then
     elif [ ! -f "$B/relay.removed" ]; then
       printf '%s\n' "$RELAY_NAME" > "$B/relay.removed"
     fi
+    rm -f "$B/former" "$B/exclude.json" "$B/rename.pending"
   else
     rm -rf "${D:?}"
   fi
-  echo "DONE: level bot; $TEAM/$RELAY_NAME is removed from this cloud and cannot be added again; the user must still delete its routine in the Grok UI"
+  echo "DONE: level bot; $TEAM/$RELAY_NAME is removed from this cloud; the user must still delete its routine in the Grok UI"
   exit 0
 fi
 if [ "$INTEAM" = yes ]; then

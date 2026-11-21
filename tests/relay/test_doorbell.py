@@ -276,7 +276,7 @@ class Hardening(HardeningFixture, DoorbellCases, unittest.TestCase):
         self.assertEqual(len([a for a in self.r.s.alerts if "o1" in a["text"] and "not confirmed" in a["text"]]), 1)
 
     def test_unexpected_error_is_isolated_and_reported(self):
-        def broken(m): raise RuntimeError("boom")
+        def broken(m, group): raise RuntimeError("boom")
         self.r.proxy = broken
         with self.assertLogs("agent-relay", "ERROR"):
             self.r.handle([self.cloud_env(), self.m("still forwarded", i="m2")])

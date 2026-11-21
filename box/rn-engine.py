@@ -264,20 +264,34 @@ def config_off(path, keys):
             continue
         out.append(line)
     out = [f"{k} = false" for k in keys if k not in seen] + out
-    tmp = path.with_name(f".{path.name}.new.{os.getpid()}")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    replace_file(path, path.with_name(f".{path.name}.new.{os.getpid()}"),
+                 writer(("\n".join(out) + "\n").encode("utf-8"), mode))
+
+
+def replace_file(path, tmp, fill, chmod=None, cleanup=True):
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(out) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        fill(tmp)
+        if chmod is not None:
+            os.chmod(tmp, chmod)
         os.replace(tmp, path)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        if cleanup:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise
+
+
+def writer(data, mode, sync=True):
+    def fill(tmp):
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            if sync:
+                f.flush()
+                os.fsync(f.fileno())
+    return fill
 
 
 def put_launcher(path):
@@ -288,21 +302,7 @@ def put_launcher(path):
             return False
     except OSError:
         pass
-    tmp = path.with_name(f".{path.name}.launcher.{os.getpid()}")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(want)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o755)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    replace_file(path, path.with_name(f".{path.name}.launcher.{os.getpid()}"), writer(want, 0o755), chmod=0o755)
     return True
 
 
@@ -465,17 +465,8 @@ def report(binary, pid, start, since):
 def put_binary(source, binary):
     binary = Path(binary)
     binary.parent.mkdir(parents=True, exist_ok=True)
-    tmp = binary.with_name(f".{binary.name}.new.{os.getpid()}")
-    try:
-        shutil.copyfile(source, tmp)
-        os.chmod(tmp, 0o755)
-        os.replace(tmp, binary)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    replace_file(binary, binary.with_name(f".{binary.name}.new.{os.getpid()}"),
+                 lambda tmp: shutil.copyfile(source, tmp), chmod=0o755)
     return replaced(binary)
 
 
@@ -483,12 +474,8 @@ def save_txn(path, data):
     if not path:
         return
     path = Path(path)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-        f.write("\n")
-    os.replace(tmp, path)
+    replace_file(path, path.with_name(f".{path.name}.{os.getpid()}"),
+                 writer((json.dumps(data, indent=2, sort_keys=True) + "\n").encode(), 0o600, sync=False), cleanup=False)
 
 
 def load_txn(path):

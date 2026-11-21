@@ -44,14 +44,14 @@
 1. **`[LOCAL]` 运行 `./uninstall.sh --level bot --relay-name <name>`**，输入这个 Bot 的名字确认。
 2. **停止这个 Bot 的 relay**，再统计一次队列；这期间又来了信时，它重新启动 relay 并取消卸载。然后删除这个 Bot 的登录服务文件。
 3. **`[GROK-UI]` 删除或暂停这个 Bot 的 routine**，确认没有正在运行的轮次，然后输入 `deleted` 或 `paused`。
-4. **云端这一步。** 把打印出的提示词作为一条消息发给它指定的那个 Grok Bot（不是要卸载的 Bot）。和其他级别一样，Bot 写入脚本、核对 SHA-256、运行 `check` 并报告一个 `PROOF:` 值；把它输入卸载器，把确认码发回去并表示同意。在 `[BOT-CLOUD]` 上，脚本先写 tombstone `box/bots-removed/<name>`，从此没有命令再用这个名字，然后删除这个 Bot 的收件和 thread 笔记：添加的 Bot 删除 `bots/<name>/`；第一个 Bot 删除 `inbox/` 和 `threads/`，并把 `box/relay` 改名为 `box/relay.removed`。它保留 `box/state`、`box/bin`、`box/person`、`box/outbound.key`、团队成员身份和其他 Bot，不退出团队。Bot 报告 `DONE` 后输入 `done`，否则输入 `skip`。
+4. **云端这一步。** 把打印出的提示词作为一条消息发给它指定的那个 Grok Bot（不是要卸载的 Bot）。和其他级别一样，Bot 写入脚本、核对 SHA-256、运行 `check` 并报告一个 `PROOF:` 值；把它输入卸载器，把确认码发回去并表示同意。在 `[BOT-CLOUD]` 上，脚本先为这个 Bot 的每个名字（当前名字、曾用名和正在切换到的名字）写 tombstone `box/bots-removed/<name>`，除非收回，否则没有命令再用这些名字，然后删除这个 Bot 的收件和 thread 笔记：添加的 Bot 删除 `bots/<目录>/`（目录沿用添加时的名字）；第一个 Bot 删除 `inbox/` 和 `threads/`，并把 `box/relay` 改名为 `box/relay.removed`。它保留 `box/state`、`box/bin`、`box/person`、`box/outbound.key`、团队成员身份和其他 Bot，不退出团队。Bot 报告 `DONE` 后输入 `done`，否则输入 `skip`。
 5. **Mac 一侧。** 删除这个 Bot 的配置、relay 状态和日志，以及部署记录中它的条目（配置、状态和日志都删掉之后才删条目；有一项删不掉时，它列出留下的内容，以状态码 1 退出，Bot 仍标记为正在卸载，再运行同一条命令即可重试），把名字加入已卸载名单，并刷新回复约定模板。第一个 Bot 删除 `~/.config/agent-relay/env`，但保留 `~/.config/agent-relay/` 和其中的 `outbound.key`，因为其他 Bot 在用它。
 
 每一步都有记录。中途停下时（例如 routine 一步回答 `later`，或云端一步输入 `skip`），这个 Bot 一直标记为正在卸载：`./install.sh --restart-relay` 和 `--rotate-key` 不包括它，`./check.sh` 对它报 FAIL，`./update.sh` 和 `./install.sh --add-bot` 会停下，直到你再次运行同一条 `./uninstall.sh --level bot --relay-name <name>`，从记录的步骤继续。没有添加完成的 Bot 也用同样的方式卸载。
 
 卸载之后：
 
-- 这个名字永远不能再添加。引擎会一直保留 `<team-name>/<name>` 的旧会话：发到那里的信会排队、没人读。告诉常用这个地址的 agent 改写给别的 Bot。
+- 引擎会一直保留 `<team-name>/<name>` 的旧会话：发到那里的信会排队、没人读。告诉常用这个地址的 agent 改写给别的 Bot。这个名字只能通过收回再次使用：`agent-mesh rename` 或 `./install.sh --add-bot` 列出证据，你核对之后才能收回（见 [Bot 能用哪些名字](README.zh-CN.md#bot-能用哪些名字)）。
 - 用 `python3 scripts/reply_convention.py refresh <仓库>/AGENTS.md` 刷新复制到各仓库里的回复约定。
 - 第一个 Bot 卸载后，它的路径不再使用：其他 Bot 保留各自的路径，之后添加的 Bot 也放在 `agent-relay-bots/` 下，完整安装不能把第一个 Bot 装回来。
 

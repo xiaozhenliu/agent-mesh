@@ -4,6 +4,18 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.11.0 — 2026-11-21
+
+A Bot's address name can now be changed (#53). Update with `agent-mesh update`; it updates the Bot's cloud computer, and a pasted routine stub needs no new paste (if you still use the complete prompt, paste it again when `agent-mesh update` asks).
+
+### Added
+
+- `agent-mesh rename <name>` changes a Bot's address name, also back to a name it used before, with nothing to do in Grok. Mail to the old address still reaches the Bot for 30 days.
+
+### Changed
+
+- The name of an uninstalled Bot can be taken back with `agent-mesh rename` or `./install.sh --add-bot` after you check what the installer shows.
+
 ## v0.10.0 — 2026-11-19
 
 Upgrading takes one command (#41). Update with `./update.sh`; it asks you to paste the new short prompt into Grok once. After that, the rules of the prompt change with each update, and you paste again only when the short prompt itself changes.

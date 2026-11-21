@@ -1,4 +1,4 @@
-"""The agent-mesh command in ~/.local/bin: runs update.sh or check.sh in the recorded checkout."""
+"""The agent-mesh command in ~/.local/bin: runs update.sh, check.sh or install.sh --rename in the recorded checkout."""
 import os
 import shlex
 import tempfile
@@ -13,6 +13,7 @@ set -u
 case "${{1:-}}" in
   update) script=update.sh ;;
   check) script=check.sh ;;
+  rename) script=install.sh ;;
   *) printf '%s\\n' {usage} >&2; exit 2 ;;
 esac
 shift
@@ -26,6 +27,7 @@ if [ -z "$dir" ] || [ ! -f "$dir/$script" ]; then
   printf {gone} "${{dir:-?}}" >&2
   exit 1
 fi
+if [ "$script" = install.sh ]; then exec "$BASH" "$dir/$script" --rename "$@"; fi
 exec "$BASH" "$dir/$script" "$@"
 """
 

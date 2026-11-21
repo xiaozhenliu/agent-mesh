@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 # An added Grok Bot runs this on [BOT-CLOUD], the cloud computer it shares with the Bots already set up there.
-#   rn-cloud-add-bot.sh <name> <team-name> <team-hash>
+#   rn-cloud-add-bot.sh <name> <team-name> <team-hash> [reclaim]
 #       step 0 of the added Bot's routine prompt: checks this cloud (box/person is <team-name>, the engine is the
 #       pinned build of the pinned version, it is in the team whose team_id hashes to <team-hash> (first 16 hex
 #       digits of its sha256) as <team-name>/cloud, box/outbound.key is not empty, <name> is a valid Bot address
-#       name, not the first Bot in box/relay and not removed from this cloud), claims bots/<name>/ (written with
-#       .claim in a temporary folder, then renamed; only when the session table has never seen <name>-cloud or
-#       <name>-inbox), registers both sessions with RN_BOT=<name> rn-cloud.sh register-bot and then writes
-#       bots/<name>/.registered. Running it again continues an unfinished registration and only checks a finished
-#       one. Prints "Bot address: <team-name>/<name> (this cloud uses <name>-cloud and <name>-inbox)".
+#       name, no other Bot here uses or used it, and it was not removed from this cloud), claims bots/<name>/
+#       (written with .claim in a temporary folder, then renamed; only when the session table has never seen
+#       <name>-cloud or <name>-inbox), registers both sessions with RN_BOT=<name> rn-cloud.sh register-bot and then
+#       writes bots/<name>/.registered. With reclaim, a removed Bot's name or sessions this cloud's key already
+#       holds are taken back: bots/<name>/exclude.json lists the messages held back until the user accepts them
+#       (for a removed Bot's name, those box/bots-removed/<name> recorded at the removal plus any an earlier fetch
+#       marked read, so mail the Mac queued for the name later reaches the Bot as new; for a name left by an earlier
+#       setup, every message in <name>-inbox), and box/bots-removed/<name> goes after the registration. Running it
+#       again continues an unfinished registration and only checks a finished one. Prints "Bot address:
+#       <team-name>/<name> (this cloud uses <name>-cloud and <name>-inbox)".
 #   rn-cloud-add-bot.sh --check <name> <req>
 #       answer to the Mac's one-line request "agent-mesh add-bot <name> <req>": read-only, prints
-#       "agent-mesh-result add-bot <req> ok <name> <team-hash>" when the Bot is registered and both sessions exist.
+#       "agent-mesh-result add-bot <req> ok <name> <team-hash>" when the Bot is registered and both sessions exist,
+#       after "agent-mesh-result held add <count>" when earlier messages are held back.
 # Every refusal prints "STOP: <reason>" and changes nothing. Registration holds the cloud maintenance lock
 # (/workspace/agent-mesh/.maint.lock) exclusively, --check holds it shared; RN_MAINT_WAIT sets the wait (default 600 seconds).
 set -euo pipefail
 stop() { echo "STOP: $*"; exit 1; }
-usage() { echo "usage: rn-cloud-add-bot.sh <name> <team-name> <team-hash> | --check <name> <req>" >&2; exit 2; }
+usage() { echo "usage: rn-cloud-add-bot.sh <name> <team-name> <team-hash> [reclaim] | --check <name> <req>" >&2; exit 2; }
 BASE="${RN_CLOUD_BASE:-/workspace/agent-mesh/box}"
 ROOT="$(dirname "$BASE")"
 BOTS="$ROOT/bots"
@@ -24,8 +30,8 @@ if [ "${1:-}" = --check ]; then
   [ $# = 3 ] || usage
   MODE=check; NAME="$2"; REQ="$3"; LOCK=shared
 else
-  [ $# = 3 ] || usage
-  MODE=register; NAME="$1"; TEAM="$2"; HASH="$3"; LOCK=exclusive
+  [ $# = 3 ] || { [ $# = 4 ] && [ "$4" = reclaim ]; } || usage
+  MODE=register; NAME="$1"; TEAM="$2"; HASH="$3"; LOCK=exclusive; RECLAIM="${4:-}"
 fi
 [ "$(uname -s)" = Linux ] || stop "[BOT-CLOUD] run this on the Bot's Linux cloud computer, not the user's Mac"
 command -v python3 >/dev/null || stop "Python 3.9+ is required on [BOT-CLOUD]"
@@ -114,11 +120,16 @@ if [ "$MODE" = check ]; then
   PERSON="$(cat "$BASE/person")"
   [ -f "$D/.registered" ] || stop "the Bot $NAME is not registered on this cloud yet (no bots/$NAME/.registered)"
   both_registered || stop "the session table of this cloud does not show both $NAME-cloud and $NAME-inbox"
+  held=0
+  if [ -e "$D/exclude.json" ]; then
+    held="$(python3 -I "$BASE/rn-names.py" held "$NAME" add)" || stop "bots/$NAME/exclude.json cannot be read: $held"
+  fi
   [ -x "$BASE/bin/engine/reason-network" ] || stop "no engine at box/bin/engine/reason-network"
   RN="$(engine cloud-bin --base "$BASE")" || stop "the engine was not checked (see the line above)"
   live_team
   [ "$ME" = "$PERSON/cloud" ] || stop "this computer is $ME in the team, not $PERSON/cloud"
   [ "$TEAM_HASH" = "$(claim_hash)" ] || stop "bots/$NAME was claimed for another team than the one this cloud is in"
+  [ "$held" = 0 ] || echo "agent-mesh-result held add $held"
   echo "agent-mesh-result add-bot $REQ ok $NAME $TEAM_HASH"
   exit 0
 fi
@@ -140,24 +151,46 @@ elif ! [ -e "$BASE/relay.removed" ]; then
   first=bot
 fi
 [ "$NAME" != "$first" ] || stop "$NAME is the first Bot on this cloud (box/relay); choose another name (nothing was changed)"
-[ "$removed" = no ] || stop "the Bot $NAME was removed from this cloud and its name cannot be used again; choose another name (nothing was changed)"
+renamed=no
+for f in "$BASE/former" "$BASE/rename.pending" "$BOTS"/*/name "$BOTS"/*/former "$BOTS"/*/rename.pending; do
+  if [ -e "$f" ] || [ -L "$f" ]; then renamed=yes; fi
+done
+if [ "$renamed" = yes ]; then
+  holder="$(python3 -I "$BASE/rn-names.py" owner "$NAME")" || stop "the Bot names on this cloud cannot be read: ${holder#STOP: }"
+  [ -z "$holder" ] || stop "$NAME is an address name of $holder on this cloud; choose another name (nothing was changed)"
+fi
+if [ "$removed" = yes ] && [ "$RECLAIM" != reclaim ]; then
+  stop "the Bot $NAME was removed from this cloud; its name can be taken back only when the Mac confirms it (./install.sh --add-bot shows that step). Nothing was changed"
+fi
+taking=no
 
 if [ -e "$D" ]; then
   [ -d "$D" ] || stop "bots/$NAME is not a folder; ask the user (nothing was changed)"
   [ -f "$D/.claim" ] || stop "bots/$NAME exists but was not created by rn-cloud-add-bot.sh (no .claim); ask the user (nothing was changed)"
   [ "$(claim_hash)" = "$HASH" ] || stop "bots/$NAME was claimed for another team; ask the user (nothing was changed)"
+  if [ "$removed" = yes ] && [ ! -f "$D/.reclaim" ]; then
+    stop "removing the Bot $NAME from this cloud did not finish (bots/$NAME is still there); finish uninstalling it first (nothing was changed)"
+  fi
   if [ -f "$D/.registered" ]; then
     both_registered || stop "bots/$NAME is registered, but the session table does not show both $NAME-cloud and $NAME-inbox; ask the user"
+    if [ "$removed" = yes ]; then rm -f "$BASE/bots-removed/$NAME"; fi
     echo "Bot address: $TEAM/$NAME (this cloud uses $NAME-cloud and $NAME-inbox)"
     exit 0
   fi
+  if [ -f "$D/.reclaim" ]; then taking=yes; fi
   echo "add-bot: continuing the unfinished registration of $NAME"
 else
   table="$(sessions)" || stop "the session table cannot be read, so $NAME cannot be checked; nothing was changed"
   while read -r n have taken; do
-    [ "$have" = - ] && [ "$taken" = free ] \
-      || stop "the session $TEAM/$n already exists on this cloud (an earlier Bot used this name); choose another name. Nothing was registered"
+    [ "$taken" = free ] && { [ "$have" = - ] || [ "$have" = "$n" ]; } \
+      || stop "the session $TEAM/$n on this cloud is used by another key; choose another name. Nothing was registered"
+    if [ "$have" != - ]; then
+      [ "$RECLAIM" = reclaim ] \
+        || stop "the session $TEAM/$n already exists on this cloud (an earlier Bot used this name); choose another name, or take it back when ./install.sh --add-bot offers it. Nothing was registered"
+      taking=yes
+    fi
   done <<<"$table"
+  if [ "$removed" = yes ]; then taking=yes; fi
 fi
 
 for t in "$BOTS"/.tmp-*; do
@@ -169,14 +202,22 @@ if [ ! -d "$D" ]; then
   tmp="$(mktemp -d "$BOTS/.tmp-XXXXXX")" || stop "cannot create a folder in $BOTS; nothing was changed"
   chmod 700 "$tmp"
   printf 'team %s\ntime %s\n' "$HASH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp/.claim"
+  if [ "$taking" = yes ]; then
+    out="$(python3 -I "$BASE/rn-names.py" claim-rows "$tmp" "$NAME")" \
+      || stop "the earlier messages of $NAME could not be listed (${out#STOP: }); nothing was registered"
+    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp/.reclaim"
+  fi
   mv "$tmp" "$D" || stop "could not rename the claim folder to bots/$NAME"
 fi
 mkdir -p "$D/inbox" "$D/threads"
 chmod 700 "$D" "$D/inbox" "$D/threads"
+reclaiming=""
+if [ "$taking" = yes ]; then reclaiming=1; fi
 env -u AGENT_RELAY_NAME -u RN_CLOUD_NAME -u RN_INBOX_NAME -u RN_INBOX_DIR -u RN_THREADS_DIR \
-  RN_BOT="$NAME" "$BASH" "$BASE/rn-cloud.sh" register-bot \
+  RN_BOT="$NAME" RN_RECLAIMING="$reclaiming" "$BASH" "$BASE/rn-cloud.sh" register-bot \
   || stop "registering $NAME-cloud and $NAME-inbox did not finish (see the lines above); run this again to continue"
 both_registered || stop "the session table does not show both $NAME-cloud and $NAME-inbox after registering; run this again to continue"
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$D/.registered.tmp"
 mv -f "$D/.registered.tmp" "$D/.registered"
+if [ "$removed" = yes ]; then rm -f "$BASE/bots-removed/$NAME"; fi
 echo "Bot address: $TEAM/$NAME (this cloud uses $NAME-cloud and $NAME-inbox)"

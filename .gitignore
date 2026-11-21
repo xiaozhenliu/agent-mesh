@@ -23,6 +23,13 @@ box/relay
 box/lang
 box/relay.damaged-*
 box/relay.removed
+box/former
+box/.former.*
+box/rename.pending
+box/.rename.pending.*
+box/exclude.json
+box/exclude.json.tmp
+box/.exclude.json.*
 box/bots-removed/
 /.maint.lock
 /bots/

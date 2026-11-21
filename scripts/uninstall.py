@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 
 import bots
+import deploy_state
 import mesh_entry
 import mesh_lock
 import relay_names
@@ -261,10 +262,12 @@ class Roster:
 
 
 class Member:
-    def __init__(self, paths, stage="relay", cloud="-", removing=False, record="ok", grok=None, orphan=False):
+    def __init__(self, paths, stage="relay", cloud="-", removing=False, record="ok", grok=None, orphan=False,
+                 address=None):
         self.p = paths
         self.kind = paths.kind
         self.name = paths.name
+        self.address = address
         self.stage, self.cloud, self.removing, self.record, self.grok = stage, cloud, removing, record, grok
         self.orphan = orphan
         self.listed = True
@@ -272,7 +275,7 @@ class Member:
         self.loaded_path, self.launchd_note, self.skip = None, "", None
 
     def label(self, team):
-        name = self.name or relay_names.DEFAULT
+        name = self.address or self.name or relay_names.DEFAULT
         address = f"{team}/{name}" if team else name
         return f"{address} → Grok: {self.grok}" if self.grok else address
 
@@ -305,7 +308,8 @@ class Inventory:
         return [m for m in self.members if m.listed and not m.orphan]
 
     def member(self, name):
-        return next((m for m in self.bots() if m.name == name), None)
+        found = [m for m in self.bots() if m.name == name] or [m for m in self.bots() if m.address == name]
+        return found[0] if found else None
 
     def label_of(self, m):
         return m.label(self.team)
@@ -379,7 +383,8 @@ class Inventory:
         self.bots_unsafe = None
         for entry in bots.added_entries(p.home, data, self.removing):
             self.members.append(Member(BotPaths(p.home, entry["name"], bots.ADDED), entry["stage"], entry["cloud"],
-                                       entry["removing"], entry["record"], entry["grok_name"]))
+                                       entry["removing"], entry["record"], entry["grok_name"],
+                                       address=entry.get("address")))
         known = {m.p.plist.name for m in self.members}
         try:
             names = sorted(os.listdir(p.agents))
@@ -527,14 +532,12 @@ class Inventory:
                     m.cfg = relay_names.parse_env(m.p.env.read_text(encoding="utf-8", errors="replace"))
                 except OSError:
                     m.cfg = {}
-            m.webhook = (m.cfg.get("WEBHOOK_URL", "").startswith("https://")
-                         and len(m.cfg.get("WEBHOOK_KEY", "")) >= 8)
+            m.webhook = relay_names.webhook_set(m.cfg)
         if not self.env_present:
             first = next((m for m in self.members[1:] if m.cfg and not m.orphan), None)
             if first is not None:
                 self.cfg = first.cfg
-        self.webhook = (self.cfg.get("WEBHOOK_URL", "").startswith("https://")
-                        and len(self.cfg.get("WEBHOOK_KEY", "")) >= 8)
+        self.webhook = relay_names.webhook_set(self.cfg)
         self.cloud_machine = self.cfg.get("CLOUD_MACHINE") or relay_names.CLOUD_MACHINE
         if not valid_name(self.cloud_machine):
             self.stop("deep", t("uninstall.cloud_machine_invalid"))
@@ -566,7 +569,6 @@ class Inventory:
     def read_record(self):
         p = self.p
         self.record_present = p.record.is_file()
-        self.record_lang = None
         if not self.record_present:
             return
         try:
@@ -576,8 +578,8 @@ class Inventory:
             return
         if not isinstance(data, dict):
             return
-        if data.get("lang") in ("en", "zh-CN"):
-            self.record_lang = data["lang"]
+        if "rename" in data:
+            self.stop("all", t("uninstall.rename_open"))
         recorded = data.get("relay_name")
         if isinstance(recorded, str) and relay_names.problem(recorded) is None:
             if self.relay_name is None and not self.env_present:
@@ -979,12 +981,14 @@ class Uninstaller:
 
     def bot_checks(self):
         inv = self.inv
+        self.target = m = inv.member(self.name)
+        if m is not None:
+            self.name = m.name
         stops = list(inv.stops_for("bot", self.name))
         if inv.record_bad:
             stops.append(t("uninstall.bot_record_bad", inv.record_bad))
-        self.target = m = inv.member(self.name)
         if m is None:
-            names = t("uninstall.list_separator").join(b.name or relay_names.DEFAULT for b in inv.bots())
+            names = t("uninstall.list_separator").join(b.address or b.name or relay_names.DEFAULT for b in inv.bots())
             stops.append(t("uninstall.bot_unknown", self.name, names or t("uninstall.none")))
             return stops
         if inv.removing and not m.removing:
@@ -1182,7 +1186,8 @@ class Uninstaller:
         challenge = secrets.token_hex(8)
         text = self.cloud_prompt(challenge, mode)
         if self.level == "bot":
-            print("\n" + t("uninstall.cloud_send_bot", self.inv.label_of(self.executor), self.target.name))
+            print("\n" + t("uninstall.cloud_send_bot", self.inv.label_of(self.executor),
+                            self.target.address or self.target.name))
         else:
             print("\n" + t("uninstall.cloud_pause"))
             print(t("uninstall.cloud_send"))
@@ -1488,7 +1493,7 @@ class Uninstaller:
         code, out = run_locked([sys.executable, str(inv.here / "scripts/reply_convention.py"), "install"])
         self.result(t("uninstall.label_convention"), "done" if code == 0 else "skipped",
                     "" if code == 0 else short(out))
-        print("\n" + t("uninstall.bot_sessions_kept", f"{self.team}/{m.name}"))
+        print("\n" + t("uninstall.bot_sessions_kept", f"{self.team}/{m.address or m.name}"))
         print(t("uninstall.bot_refresh_convention"))
 
     def summary(self, final=True):
@@ -1580,18 +1585,9 @@ def command_of(args):
     return f"./uninstall.sh --level {args.level}{extra}{' --residual' if args.residual else ''}"
 
 
-def recorded_lang(paths):
-    try:
-        data = json.loads(paths.record.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    lang = data.get("lang") if isinstance(data, dict) else None
-    return lang if lang in LANGS else None
-
-
-def resolve_lang(args, paths):
+def resolve_lang(args):
     env = os.environ.get("AGENT_MESH_LANG")
-    return args.lang or recorded_lang(paths) or (env if env in LANGS else "en")
+    return args.lang or deploy_state.recorded_lang() or (env if env in LANGS else "en")
 
 
 def utf8_output():
@@ -1606,7 +1602,7 @@ def main(argv=None):
     here = ROOT
     paths = Paths(os.environ["HOME"])
     interactive = sys.stdin.isatty()
-    lang = resolve_lang(args, paths)
+    lang = resolve_lang(args)
     os.environ["AGENT_MESH_LANG"] = lang
     changes = not args.plan and (args.level is not None or interactive)
     if changes and mesh_lock.inherit(LOCK_FD, str(paths.mesh_lock)) != mesh_lock.HELD:

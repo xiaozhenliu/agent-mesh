@@ -39,7 +39,7 @@ update.no_checkout	not a git checkout
 update.release_ok	%s at %s; the cloud files in this checkout match it
 update.no_status	could not read the deployment state
 update.engine_refused	Reason Network %s is not the version this release supports (%s) and is never downgraded or replaced; review that installation first
-update.renamed	the Bot address name in ~/.config/agent-relay/env (%s) is not the one this Mac installed with (%s); renaming is not supported. Put the old name back, or uninstall with identity removal and install again
+update.renamed	the Bot address name in ~/.config/agent-relay/env (%s) is not the one this Mac installed with (%s). A Bot is renamed only with agent-mesh rename: put LISTEN_NAME=%s back in the env file, then run agent-mesh rename %s
 update.plan_head	== plan (checkout %s, prompt language %s)
 update.plan_txn	  unfinished update stopped at '%s': it is continued first (terminal)
 update.plan_name_unknown	%s (recorded with the next step this script records)
@@ -210,3 +210,4 @@ r.stub_missing	not confirmed; run ./update.sh to show the stub again
 r.full_back	complete prompt put back; the next ./update.sh retries
 r.full_back_pending	not recorded: put the complete prompt back, then run ./update.sh again
 r.prompt_later	left as it is; run ./update.sh in a terminal to change it
+update.rename_busy	a Bot rename is in progress; finish it with agent-mesh rename or undo it with agent-mesh rename --cancel, then run the update again. Nothing was changed

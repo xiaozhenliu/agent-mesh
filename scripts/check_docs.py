@@ -89,6 +89,8 @@ def check_docs():
     for name in ("README.md", "README.zh-CN.md"):
         if f"**v{version}**" not in (ROOT / name).read_text(encoding="utf-8"):
             errors.append(f"{name}: project version differs from VERSION")
+    if f"agent-mesh version: {version} (VERSION)." not in (ROOT / "llms.txt").read_text(encoding="utf-8"):
+        errors.append("llms.txt: project version differs from VERSION")
     for name in ("CHANGELOG.md", "CHANGELOG.zh-CN.md"):
         if not re.search(rf"^## v{re.escape(version)} — \d{{4}}-\d{{2}}-\d{{2}}$",
                          (ROOT / name).read_text(encoding="utf-8"), re.M):

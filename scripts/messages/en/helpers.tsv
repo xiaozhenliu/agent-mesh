@@ -41,5 +41,18 @@ reply.refresh_failed	%s: %s; nothing was changed. If it holds an older copy of t
 reply.up_to_date	%s already shows this Bot's address
 reply.updated	updated the Bot address in %s
 names.add_is_bot	%s is already a Bot on this Mac or was used by one; choose another name
-names.add_removed	%s belonged to a Bot that was uninstalled, and names are not reused; choose another name
+names.add_removed	%s belonged to a Bot that was uninstalled
 names.add_key_taken	this Mac's engine already has the session key %s (session %s); choose another name
+names.same	%s is already this Bot's address name
+names.other_slot	%s is or was an address name of another Bot on this Mac (%s); a name stays with the Bot that used it, so choose another name
+names.reclaim_missing	the session %s is not in this team's list, so nothing shows that the name is yours; choose another name
+names.reclaim_machine	the session %s is on machine %s, not on %s; choose another name
+names.reclaim_online	the session %s is %s, not offline; stop whatever still uses it, or choose another name
+names.reclaim_recent	the session %s has been offline only since %s; a name left by an earlier deployment can be taken back after 24 hours offline
+names.reclaim_key	this Mac's engine has no key for the session %s, so it cannot take that identity back; choose another name
+names.reclaim_key_other	this Mac's engine holds the session %s under the key %s, not as a relay; choose another name
+names.reclaim_listening	process %s is listening as %s (%s); stop it first, or choose another name
+names.reclaim_plist	the launchd job %s still uses %s; remove or change it first, or choose another name
+names.ps_failed	cannot list the running processes: %s
+names.evidence_session	session %s on machine %s: %s since %s
+names.evidence_key	this Mac's engine holds the relay key of %s

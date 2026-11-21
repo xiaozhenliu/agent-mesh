@@ -1080,6 +1080,48 @@ class MultiBot(AddSupport, unittest.TestCase):
         self.assertNotIn("beta", self.record().get("bots", {}))
         self.assertFalse(self.conf("beta").exists())
 
+    def test_bot_level_removes_a_renamed_bot_with_all_its_names(self):
+        now = int(time.time() * 1000)
+        data = self.record()
+        data["bots"]["beta"]["name"] = "delta"
+        data["former"] = [{"name": "old", "slot": "beta", "since_ms": now - 1000, "until_ms": now + 1000},
+                          {"name": "first", "slot": "-", "since_ms": now - 1000, "until_ms": now + 1000}]
+        data["held"] = {"beta": {"add": {"count": 2}}}
+        data["rename"] = {"slot": "beta", "old": "delta", "new": "gamma", "req": "0" * 16, "stage": "requested",
+                          "sent_ms": now}
+        self.write_record(data)
+        env = self.conf("beta") / "env"
+        env.write_text(env.read_text().replace("=beta", "=delta"))
+        r = self.un("--level", "bot", "--relay-name", "delta")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("a Bot rename is not finished; finish it with agent-mesh rename", r.stdout + r.stderr)
+        self.assertTrue(self.plist("beta").is_file())
+        data.pop("rename")
+        self.write_record(data)
+        r = self.un("--plan")
+        self.assertIn("Bots on this Mac: demo/alpha, demo/delta → Grok: Beta", r.stdout)
+        s = self.session("--level", "bot", "--relay-name", "delta")
+        s.expect("to go on (anything else stops): ")
+        s.send("beta")
+        s.expect("Type deleted or paused when that is done, or later: ")
+        s.send("deleted")
+        seen = self.proof(s)
+        code = self.finish(s)
+        out = s.text()
+        self.assertEqual(code, 0, out)
+        self.assertIn('RELAY_NAME="beta"; LEVEL="bot"', seen)
+        self.assertIn("send this to the Grok Bot of demo/alpha (not to delta)", seen)
+        self.assertIn("The engine keeps the old sessions of demo/delta", out)
+        self.assertFalse(self.plist("beta").exists())
+        data = self.record()
+        self.assertEqual((data.get("bots"), data["removed_bots"]), ({}, ["beta", "delta", "old"]))
+        self.assertEqual([f["name"] for f in data["former"]], ["first"])
+        self.assertNotIn("held", data)
+        r = self.run_script("install.sh", "--add-bot", "--grok-name", "Beta", "--relay-name", "old",
+                            root=self.repo_dir, timeout=60)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("bots", {k: v for k, v in self.record().items() if v})
+
     def test_bot_level_removes_the_first_bot_and_the_others_carry_on(self):
         beta = {path: path.read_bytes() for path in (self.conf("beta") / "env", self.plist("beta"),
                                                        self.state_dir("beta") / "registered")}

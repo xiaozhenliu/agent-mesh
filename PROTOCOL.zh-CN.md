@@ -32,23 +32,39 @@ relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到�
 
 同一台 Mac 上的多个 Grok Bot 共用团队、两台电脑上的 Reason Network 引擎、云电脑及其克隆 `/workspace/agent-mesh`，以及签名密钥 `outbound.key`；每个 Bot 有自己的三个名字、relay、webhook、routine、收件和 thread 笔记（见[多个 Grok Bot](README.zh-CN.md#多个-grok-bot)）。
 
-| | 第一个 Bot | 添加的 Bot `<name>` |
+| | 第一个 Bot | 添加的 Bot，slot 为 `<slot>` |
 |---|---|---|
-| `[LOCAL]` 上的配置 | `~/.config/agent-relay/env` | `~/.config/agent-relay-bots/<name>/env`（其中 `OUTBOUND_KEY_FILE` 指向共用的密钥） |
-| 登录服务 | `com.local.agent-relay` | `com.local.agent-relay.<name>` |
-| relay 状态 | `~/Library/Application Support/agent-relay/` | `~/Library/Application Support/agent-relay-bots/<name>/` |
-| relay 日志 | `~/Library/Logs/agent-relay.log` | `~/Library/Logs/agent-relay-<name>.log` |
-| `[BOT-CLOUD]` 上的收件和 thread 笔记 | `/workspace/agent-mesh/inbox/`、`threads/`；Bot 地址名在 `box/relay` | `/workspace/agent-mesh/bots/<name>/inbox/`、`threads/` |
+| `[LOCAL]` 上的配置 | `~/.config/agent-relay/env` | `~/.config/agent-relay-bots/<slot>/env`（其中 `OUTBOUND_KEY_FILE` 指向共用的密钥） |
+| 登录服务 | `com.local.agent-relay` | `com.local.agent-relay.<slot>` |
+| relay 状态 | `~/Library/Application Support/agent-relay/` | `~/Library/Application Support/agent-relay-bots/<slot>/` |
+| relay 日志 | `~/Library/Logs/agent-relay.log` | `~/Library/Logs/agent-relay-<slot>.log` |
+| `[BOT-CLOUD]` 上的收件和 thread 笔记 | `/workspace/agent-mesh/inbox/`、`threads/` | `/workspace/agent-mesh/bots/<slot>/inbox/`、`threads/` |
+| `[BOT-CLOUD]` 上的地址名 | `box/relay` | `bots/<slot>/name`，没有这个文件时就是 slot |
+| 曾用名、进行中的改名、暂扣的消息 | `box/former`、`box/rename.pending`、`box/exclude.json` | `bots/<slot>/` 下的同名文件 |
 
-**选择器。** 添加的 Bot 的 routine 桩和它加载的规则把每条 `rn-cloud.sh` 命令写成 `RN_BOT=<name> /workspace/agent-mesh/box/rn-cloud.sh …`。这样命令使用 `<name>-cloud`、`<name>-inbox` 和 `bots/<name>/` 下的路径，并要求 `bots/<name>/.registered` 存在。`RN_BOT` 不能和 `AGENT_RELAY_NAME`、`RN_CLOUD_NAME`、`RN_INBOX_NAME`、`RN_INBOX_DIR` 或 `RN_THREADS_DIR` 同时使用，也不会退回到第一个 Bot。不带 `RN_BOT` 时和以前一样使用第一个 Bot。
+**选择器。** 添加的 Bot 把添加时用的名字保留为它的 slot `<slot>`；改名之后，表中的目录和登录服务仍然用 slot。它的 routine 桩和加载的规则把每条 `rn-cloud.sh` 命令写成 `RN_BOT=<slot> /workspace/agent-mesh/box/rn-cloud.sh …`。这样命令使用 `bots/<slot>/` 下的路径和会话 `<current>-cloud`、`<current>-inbox`，其中 `<current>` 是表中这个 Bot 的地址名，并要求 `bots/<slot>/.registered` 存在。`RN_BOT` 不能和 `AGENT_RELAY_NAME`、`RN_CLOUD_NAME`、`RN_INBOX_NAME`、`RN_INBOX_DIR` 或 `RN_THREADS_DIR` 同时使用，也不会退回到第一个 Bot。不带 `RN_BOT` 时和以前一样使用第一个 Bot。
 
-**登记。** 添加的 Bot 的桩把团队名和团队哈希传给 `instructions`；只要 `bots/<name>/.registered` 不存在，它先运行 `bash /workspace/agent-mesh/box/rn-cloud-add-bot.sh '<name>' '<team-name>' '<team-hash>'`（`--full-prompt` 的完整提示词把这条命令作为第 0 步），它核对团队，登记 `<name>-cloud` 和 `<name>-inbox`，并打印 `Bot address: <team-name>/<name> (this cloud uses <name>-cloud and <name>-inbox)`。团队哈希是引擎团队 id 的 SHA-256 的前 16 个十六进制数字。随后 `./install.sh --add-bot` 经新 Bot 的 relay 给它发一行 `agent-mesh add-bot <name> <request>`（`<request>` 是小写十六进制）。加载的规则把它交给 `rn-cloud.sh request`：对用户自己的 Mac 发来的这一行，运行 `box/rn-cloud-add-bot.sh --check '<name>' '<request>'` 并回复输出（[请求](#routine-桩与维护请求)）；Mac 核对其中的 `agent-mesh-result add-bot <request> ok <name> <team-hash>` 一行，之后才把这个 Bot 的云端登记记为已确认；其中的 `lang` 和 `stub` 两行同时确认这个 Bot 的桩。别人发来同样的一行不会执行。
+**登记。** 添加的 Bot 的桩把团队名和团队哈希传给 `instructions`；只要 `bots/<name>/.registered` 不存在，它先运行 `bash /workspace/agent-mesh/box/rn-cloud-add-bot.sh '<name>' '<team-name>' '<team-hash>'`（`--full-prompt` 的完整提示词把这条命令作为第 0 步），它核对团队，登记 `<name>-cloud` 和 `<name>-inbox`，并打印 `Bot address: <team-name>/<name> (this cloud uses <name>-cloud and <name>-inbox)`。第四个参数 `reclaim` 只在用户于 `./install.sh --add-bot` 中确认取回名字后才出现在提示词里，它允许登记已卸载 Bot 的名字或本云端密钥已持有的会话（[取回名字](#取回名字)）。团队哈希是引擎团队 id 的 SHA-256 的前 16 个十六进制数字。随后 `./install.sh --add-bot` 经新 Bot 的 relay 给它发一行 `agent-mesh add-bot <name> <request>`（`<request>` 是小写十六进制）。加载的规则把它交给 `rn-cloud.sh request`：对用户自己的 Mac 发来的这一行，运行 `box/rn-cloud-add-bot.sh --check '<name>' '<request>'` 并回复输出（[请求](#routine-桩与维护请求)）；Mac 核对其中的 `agent-mesh-result add-bot <request> ok <name> <team-hash>` 一行，之后才把这个 Bot 的云端登记记为已确认；其中的 `lang` 和 `stub` 两行同时确认这个 Bot 的桩。别人发来同样的一行不会执行。
 
-**已卸载的名字。** 卸载一个 Bot 时最先写 tombstone `box/bots-removed/<name>`；任何指定了带 tombstone 的 Bot 的命令都会被拒绝，这个名字也不能再登记。第一个 Bot 卸载时，`box/relay` 改名为 `box/relay.removed`，不带 `RN_BOT` 的命令都会被拒绝。Mac 上的部署记录保存已卸载的名字。
+**已卸载的名字。** 卸载一个 Bot 时最先为它的当前名字和每个曾用名写 tombstone `box/bots-removed/<name>`，记下时间和 `<name>-inbox` 当时的引擎行；任何指定了带 tombstone 的 Bot 的命令都会被拒绝，只有用户的 Mac 确认取回时这个名字才能再登记。第一个 Bot 卸载时，`box/relay` 改名为 `box/relay.removed`，不带 `RN_BOT` 的命令都会被拒绝。Mac 上的部署记录保存已卸载的名字。
 
 **维护锁。** `rn-cloud.sh` 命令以共享方式持有 `/workspace/agent-mesh/.maint.lock`；云端安装、云端更新、添加 Bot 的登记和云端卸载以独占方式持有它。命令最多等 `RN_MAINT_WAIT` 秒（默认 600），否则以 `STOP: other cloud commands are still running; nothing was changed` 停下。Mac 上的 `install.sh`、`update.sh` 和 `uninstall.sh` 共用锁文件 `~/.local/lib/agent-mesh.lock`，同一时间只能运行其中一个。
 
 云端有多个 Bot 时拒绝 `rn-cloud.sh purge`，因为它会连其他 Bot 的信一起删除。
+
+## 给 Bot 改名
+
+`agent-mesh rename <new-name>`（[给 Bot 改名](README.zh-CN.md#给-bot-改名)）原地更改一个 Bot 的地址名；它的 slot、目录、登录服务、routine 和收件都不变。
+
+**切换。** Mac 经这个 Bot 的 relay 给它发请求 `agent-mesh rename <slot|-> <old> <new> <request>`（第一个 Bot 用 `-`），用户确认取回名字时再跟一行 `reclaim=1`（[请求](#routine-桩与维护请求)）。云端在独占维护锁下运行 `box/rn-names.py apply rename`：核对这个 Bot 正在用 `<old>`、没有别的 Bot 正在用或用过 `<new>`，把这次切换记入 `rename.pending`，登记 `<new>-cloud` 和 `<new>-inbox`，然后回复 `agent-mesh-result rename <request> pending <slot> <old> <new> held <n>`。在第一条 RN-FWD 签名有效的消息到达 `<new>-inbox` 之前，Bot 继续以 `<old>` 应答；之后第一条读取这个 Bot 名字的命令把 `<new>` 写为它的地址名，并把 `<old>` 记入 `former` 保留 30 天。再次发来同一个请求时按记录答复；切换未完成时请求另一个新名字会取代它，被放弃的名字仍算这个 Bot 的曾用名。
+
+**曾用名。** 30 天内 `fetch` 同时读取这个 Bot 曾用名的收件箱，Bot 收件目录里的标记保证同一个源 id 从两边到达时只处理一次。Mac 上 relay 的配置以 `FORMER_NAMES=<name>:<到期时间，Unix 秒>,…` 列出它们；到期之前，每个曾用名都是第二套身份（`<name>`、`<name>-cloud`、`<name>-inbox`）：它发来的签名 RN-OUT、RN-GOT 和 RN-REFWD 照常接受，relay 每隔 `FORMER_POLL_SECONDS` 秒（默认 60）用 `listen --as <name> --wait 0` 取一次 `<name>` 的信，像其他信一样转发。回信和转发始终使用当前名字。30 天之后，曾用名发来的消息重新当作普通消息，它的信也不再被取走。
+
+### 取回名字
+
+团队里已经有会话、但不属于这个 Bot 的名字（已卸载 Bot 的名字，或早先安装留下的名字）需要 `reclaim=1`。登记之前，云端把 `<new>-inbox` 里已有的每条消息按请求号记入 `exclude.json`，记引擎行号和（能读出时）RN-FWD 源 id，`fetch` 跳过它们；`held <n>` 是其中签名有效的不同源 id 的数量。之后到达这个收件箱的消息从不暂扣。名字登记完成后删除它的 tombstone。`./install.sh --add-bot` 经登记参数 `reclaim` 取回名字，批次名为 `add`，这时它的核对回信在 `add-bot` 一行之前多一行 `agent-mesh-result held add <n>`。它的 relay 可能在登记之前启动，并立即转交 Mac 上排队等着发往这个名字的信，所以对已卸载 Bot 的名字，这一批记 tombstone 在 Bot 卸载时记下的消息，以及已被 `fetch` 标为已读的消息；之后到达的，比如这些排队的信，作为新消息交给 Bot。旧版本写的 tombstone 没有这份清单，只暂扣已标为已读的消息；两种都不是的 tombstone（例如空文件或被截断）会让取回停下。早先安装留下的名字，这一批记收件箱里的全部消息，包括 relay 已经转交的信。
+
+`agent-mesh rename --accept-history` 为每个仍被暂扣的批次发一条 `agent-mesh history <slot|-> accept <batch> <request>`，其中 `<batch>` 是改名的请求号或 `add`。云端把这一批移出 `exclude.json`，回复 `agent-mesh-result history <request> accepted <batch> <n>`；Bot 从下一次 `fetch` 起处理这些消息，即使那个名字已不再属于它。
 
 ## routine 桩与维护请求
 
@@ -56,13 +72,15 @@ relay 为每条转发过的正文保留 7 天副本。云端 `fetch` 取不到�
 
 **规则。**桩的第 1 步运行 `bash /workspace/agent-mesh/box/rn-cloud.sh instructions <N>`；后加 Bot 的桩运行 `RN_BOT=<name> bash … instructions <N> '<team-name>' '<team-hash>'`。这条命令拒绝云端 checkout 不支持的桩版本，以共享方式持有维护锁，按 `box/lang` 里的语言、团队和 Bot 用 `prompts/routine-body.md` 或 `prompts/routine-body.zh-CN.md` 渲染规则，打印在 `agent-mesh-instructions BEGIN <N> v<版本> <语言> <slot>` 和最后一行 `agent-mesh-instructions OK <N>` 之间。只有最后一行恰好是这一行时，Grok Bot 才照输出执行。它还记下桩版本和时间，这样同一次运行里稍后答复的请求可以报告它。`./update.sh --full-prompt` 在 Mac 上把同样的规则渲染成完整提示词，命令相同。
 
-**请求。**规则把本团队用户发来、第一行以 `agent-mesh ` 开头的每条消息交给 `rn-cloud.sh request <id>`。它读取 `fetch` 存下并验证过的消息，要求签名中的发件人与云端是同一个人，只接受下面几种第一行之一，表中注明的可以再跟一行 `lang=<en|zh-CN>`：
+**请求。**规则把本团队用户发来、第一行以 `agent-mesh ` 开头的每条消息交给 `rn-cloud.sh request <id>`。它读取 `fetch` 存下并验证过的消息，要求签名中的发件人与云端是同一个人，只接受下面几种第一行之一，可以再跟表中注明的附加行（`lang=<en|zh-CN>` 或 `reclaim=1`）：
 
 | 第一行 | 附加行 | 运行 |
 |---|---|---|
 | `agent-mesh update <tag> <commit> <request>` | `lang=` | `box/rn-cloud-update.sh '<tag>' '<commit>' '<request>'` |
 | `agent-mesh add-bot <name> <request>` | — | `box/rn-cloud-add-bot.sh --check '<name>' '<request>'`，只在 Bot `<name>` 上运行 |
 | `agent-mesh stub <request>` | `lang=` | 不运行什么，只报告这次运行加载了什么 |
+| `agent-mesh rename <slot\|-> <old> <new> <request>` | `reclaim=1` | 在独占维护锁下运行 `box/rn-names.py apply rename …`，只在该 Bot 上运行（[给 Bot 改名](#给-bot-改名)） |
+| `agent-mesh history <slot\|-> accept <add\|request> <request>` | — | 在独占维护锁下运行 `box/rn-names.py apply history …`，只在该 Bot 上运行 |
 
 `<request>` 是 8 到 32 位小写十六进制数字；Mac 生成请求时把前 8 位设为当时的 Unix 秒数（十六进制），后面跟 8 位随机数字。其他内容打印 `agent-mesh-request ORDINARY`，规则把这条消息当作普通消息处理。带 `lang=` 的请求成功时把这个语言写入 `box/lang`，云端上每个 Bot 从下一次 `instructions` 起按它渲染规则；只有上一次写入语言的请求按时间、再按请求号排序不在它之后时才写入，否则回信多一行 `box/lang stays <lang>`。每个请求号只执行一次：执行前先记录在 `.git/agent-mesh/requests/` 下，结果也保存在那里，同一请求号的重复消息再次得到同样的回信，同一请求号配上不同的值会被拒绝。中途被打断的执行在下次处理这条消息时从头再执行；每一步都可以安全重复（更新从不让 clone 后退）。按请求号里的时间生成于 30 天以前的请求被拒绝，回信里是 `STOP:` 行，这类请求的记录会被删除，所以删掉的记录不会让它的请求再执行一次。回信经 `rn-cloud.sh send` 发回，`reply_to` 指向请求所在的消息：
 
@@ -71,7 +89,7 @@ agent-mesh-result request <request>
 <这一步的输出>
 agent-mesh-result lang <lang>
 agent-mesh-result stub <N>
-agent-mesh-result DONE <tag|add-bot|stub>
+agent-mesh-result DONE <tag|add-bot|stub|rename|history>
 ```
 
 `lang` 一行是请求之后云端的语言。只有这条消息在该 Bot 运行 `instructions` 之后 15 分钟内被领取时才有 `stub` 一行，所以没有经桩加载规则的运行发出的回信里没有这一行。失败时回信里有 `STOP:` 行，没有 `lang`、`stub` 和 `DONE` 行。Mac 只根据 `DONE stub` 回信、且其中 `lang` 和 `stub` 两行与它显示的一致时，才把桩记为已确认。

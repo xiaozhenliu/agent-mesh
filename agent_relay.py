@@ -2,16 +2,22 @@
 """agent-relay: the always-on Mac side of agent-mesh. Runs under launchd.
 
 Names: <LISTEN_NAME>, <CLOUD_NAME> and <INBOX_NAME> come from the config (defaults bot, bot-cloud, bot-inbox;
-          install.sh derives all three from --relay-name).
+          install.sh derives all three from --relay-name). After a rename, FORMER_NAMES lists this Bot's former
+          names as <name>:<until, Unix seconds>, comma-separated. Until its time passes, each former name is a
+          second identity (<name>, <name>-cloud, <name>-inbox) honoured below wherever the current names are; replies
+          and forwards still use the current names.
 Inbound  (local agents -> Grok Bot): loops `reason-network listen --as <LISTEN_NAME>`. Each message for
           <team-name>/<LISTEN_NAME> is forwarded in full over Reason Network to
           <team-name>/<INBOX_NAME>@<CLOUD_MACHINE> as a signed RN-FWD v1 message
           (sent as <team-name>/terminal, which the engine's agent-loop guard never refuses). Then the routine
           webhook is rung with a small doorbell: {id, from, agent, thread, text_len, text_sha256, preview}.
-          The routine fetches the full text by id with `rn-cloud.sh fetch` and verifies it.
-Outbound (Grok Bot -> local agents): messages from <team-name>/<CLOUD_NAME> that carry a valid RN-OUT v1
-          envelope (HMAC, 15-minute window) are re-sent here as <team-name>/<LISTEN_NAME>, so replies always land
-          on this machine, never on the sleeping cloud box. Each envelope nonce gets a send record (sending, sent, failed, unknown)
+          The routine fetches the full text by id with `rn-cloud.sh fetch` and verifies it. Mail to a former name
+          is picked up every FORMER_POLL_SECONDS (default 60) with `listen --as <name> --wait 0` and handled the
+          same way.
+Outbound (Grok Bot -> local agents): messages from <team-name>/<CLOUD_NAME> (or a former name's -cloud session)
+          that carry a valid RN-OUT v1 envelope (HMAC, 15-minute window) are re-sent here as
+          <team-name>/<LISTEN_NAME>, so replies always land on this machine, never on the sleeping cloud box.
+          Each envelope nonce gets a send record (sending, sent, failed, unknown)
           saved before the engine is called and kept NONCE_KEEP_SECONDS: a nonce already sent is dropped
           silently, one whose result is unknown is not sent again (one alert), a failed one may be sent again.
           Refused, failed and unknown sends are reported as durable alerts.
@@ -35,18 +41,19 @@ Crash safety: `listen` marks a batch read as soon as it returns. Each message is
           failure never touches the rest of the batch (it is logged and reported in a notice). For inbound mail the
           copy is kept and the doorbell queued and saved BEFORE the text is forwarded: a relay killed after that
           still rings, and the cloud's fetch asks for the copy. At startup, and after a listen that timed out or
-          failed, the relay reads the engine's network.db (read-only) for messages to itself that were marked read
-          but never handled, from the later of its first start on this version and FWD_COPY_DAYS ago, and handles
-          them. Messages the engine holds for inbound approval are left to listen.
-Registration: the first listen, and the one after a failed listen, uses --wait 0. Every listen that returns
-          writes the session name the engine reported on its last line, with this relay's pid, to
+          failed, the relay reads the engine's network.db (read-only) for messages to itself (or a former name) that
+          were marked read but never handled, from the later of its first start on this version and FWD_COPY_DAYS
+          ago, and handles them. Messages the engine holds for inbound approval are left to listen.
+Registration: the first listen, and the one after a failed listen, uses --wait 0. Every listen as <LISTEN_NAME>
+          that returns writes the session name the engine reported on its last line, with this relay's pid, to
           <state dir>/registered (mode 0600, atomic). install.sh removes it before starting a new relay and waits for
           it; check.sh compares its time with the engine daemon's start.
 
 Standard library only. Config: ~/.config/agent-relay/env (mode 0600). Never logs secrets or message bodies.
 Message formats: README.md, appendix.
 """
-import hashlib, hmac, html, json, logging, logging.handlers, os, re, sqlite3, subprocess, sys, time, urllib.request
+import hashlib, hmac, html, json, logging, logging.handlers, math, os, re, sqlite3, subprocess, sys, time
+import urllib.request
 from pathlib import Path
 
 HOME = Path.home()
@@ -65,6 +72,47 @@ ATTR = re.compile(r'(\w+)="([^"]*)"')
 LISTEN_IDLE = re.compile(rf"No messages(?: in \d+s)?\. You are ({NAME_SEG}/{NAME_SEG})"
                          r"(?:\.|; run this again to keep listening\.)")
 LISTEN_REPLY = re.compile(rf'From .* Reply if useful: \S+ send \S+ --from ({NAME_SEG}/{NAME_SEG}) "<reply>"')
+RELAY_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+RESERVED_NAME = re.compile(r"terminal(?:-[0-9]+)?")
+RELAY_NAME_MAX = 34
+FORMER_UNTIL = re.compile(r"[0-9]{1,11}")
+FORMER_LISTEN_TIMEOUT = 30
+FORMER_WARN_SECONDS = 3600
+
+
+def former_names(value):
+    found, bad = {}, []
+    for entry in (value or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        name, sep, until = (x.strip() for x in entry.partition(":"))
+        if (not sep or not FORMER_UNTIL.fullmatch(until) or len(name) > RELAY_NAME_MAX
+                or not RELAY_NAME.fullmatch(name) or RESERVED_NAME.fullmatch(name)):
+            bad.append(entry)
+            continue
+        found[name] = max(int(until), found.get(name, 0))
+    return list(found.items()), bad
+
+
+NAME_DEFAULTS = {"LISTEN_NAME": "bot", "CLOUD_NAME": "bot-cloud",
+                 "INBOX_NAME": "bot-inbox",       # box session that receives RN-FWD (never used to send)
+                 "CLOUD_MACHINE": "cloud"}          # the box's machine name in `reason-network team`
+INT_DEFAULTS = {"MAX_WAKES_PER_HOUR": 20, "MIN_SECONDS_BETWEEN_WAKES": 20, "MAX_BATCH": 10,
+                "MAX_PROXY_PER_HOUR": 60, "MAX_SPOOL": 1000, "WEBHOOK_MAX_BODY_CHARS": 3500,
+                "DOORBELL_PREVIEW_CHARS": 200, "FWD_COPY_DAYS": 7, "REFWD_MAX_PER_ID": 2,
+                "REFWD_MAX_PER_HOUR": 20, "GOT_TIMEOUT_SECONDS": 900, "GOT_DONE_SECONDS": 7200,
+                "GOT_MAX_RERINGS": 2, "NONCE_KEEP_SECONDS": 86400, "FORMER_POLL_SECONDS": 60}
+
+
+def parse_env(text):
+    cfg = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            cfg[k.strip()] = v.strip().strip('"').strip("'")
+    return cfg
 
 
 def load_env():
@@ -72,12 +120,7 @@ def load_env():
         sys.exit(f"missing {ENV_FILE}")
     if ENV_FILE.stat().st_mode & 0o077:
         sys.exit(f"{ENV_FILE} must be chmod 600")
-    cfg = {}
-    for line in ENV_FILE.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            cfg[k.strip()] = v.strip().strip('"').strip("'")
+    cfg = parse_env(ENV_FILE.read_text())
     kf = cfg.get("OUTBOUND_KEY_FILE")
     if kf and not cfg.get("OUTBOUND_KEY"):
         kp = Path(os.path.expanduser(kf))
@@ -91,21 +134,15 @@ def load_env():
         sys.exit(f"fill in {', '.join(missing)} in {ENV_FILE}")
     if not cfg["WEBHOOK_URL"].startswith("https://"):
         sys.exit(f"WEBHOOK_URL in {ENV_FILE} must start with https:// (the webhook key travels in a request header)")
-    cfg.setdefault("LISTEN_NAME", "bot")
-    cfg.setdefault("CLOUD_NAME", "bot-cloud")
-    cfg.setdefault("INBOX_NAME", "bot-inbox")       # box session that receives RN-FWD (never used to send)
-    cfg.setdefault("CLOUD_MACHINE", "cloud")          # the box's machine name in `reason-network team`
-    for k, d in [("MAX_WAKES_PER_HOUR", 20), ("MIN_SECONDS_BETWEEN_WAKES", 20), ("MAX_BATCH", 10),
-                 ("MAX_PROXY_PER_HOUR", 60), ("MAX_SPOOL", 1000), ("WEBHOOK_MAX_BODY_CHARS", 3500),
-                 ("DOORBELL_PREVIEW_CHARS", 200), ("FWD_COPY_DAYS", 7), ("REFWD_MAX_PER_ID", 2),
-                 ("REFWD_MAX_PER_HOUR", 20), ("GOT_TIMEOUT_SECONDS", 900), ("GOT_DONE_SECONDS", 7200),
-                 ("GOT_MAX_RERINGS", 2), ("NONCE_KEEP_SECONDS", 86400)]:
+    for k, d in NAME_DEFAULTS.items():
+        cfg.setdefault(k, d)
+    for k, d in INT_DEFAULTS.items():
         cfg[k] = int(cfg.get(k, d))
     cfg["WEBHOOK_MAX_BODY_CHARS"] = max(600, cfg["WEBHOOK_MAX_BODY_CHARS"])
-    if cfg["NONCE_KEEP_SECONDS"] <= 0:
-        logging.getLogger("agent-relay").warning("NONCE_KEEP_SECONDS=%d is not positive; using 86400",
-                                                 cfg["NONCE_KEEP_SECONDS"])
-        cfg["NONCE_KEEP_SECONDS"] = 86400
+    for k in ("NONCE_KEEP_SECONDS", "FORMER_POLL_SECONDS"):
+        if cfg[k] <= 0:
+            logging.getLogger("agent-relay").warning("%s=%d is not positive; using %d", k, cfg[k], INT_DEFAULTS[k])
+            cfg[k] = INT_DEFAULTS[k]
     return cfg
 
 
@@ -129,6 +166,18 @@ def sha256_hex(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def write_private(path, tmp, text, encoding=None):
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding=encoding) as fh:
+        fh.write(text)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def open_db(path):
+    return sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
+
+
 def notice_item(mid, text):
     """A relay notice for the routine: a doorbell:false item with the text inline."""
     return {"id": mid, "from": "relay", "agent": "agent-relay", "thread": None, "text": text[:2000]}
@@ -143,6 +192,10 @@ FWD_TRAILER = "\n--- RN-FWD END"
 AGENT_ENV = ("REASON_NETWORK_AGENT", "REASON_NETWORK_SESSION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
              "CODEX_THREAD_ID", "CODEX_SESSION_ID", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "COPILOT_CLI",
              "COPILOT_AGENT_SESSION_ID")
+
+
+def send_env():
+    return {k: v for k, v in os.environ.items() if k not in AGENT_ENV}
 
 
 def send_status(out):
@@ -177,9 +230,12 @@ def one_line(v):
     return re.sub(r"[\r\n]", " ", "" if v is None else str(v))
 
 
+def sign_lines(key, lines):
+    return hmac.new(key.encode(), "\n".join(lines).encode(), hashlib.sha256).hexdigest()
+
+
 def sign_fwd(key, mid, frm, agent, thread, text_len, text_sha, ts):
-    msg = "\n".join(["fwd1", mid, frm, agent, thread, str(text_len), text_sha, ts]).encode()
-    return hmac.new(key.encode(), msg, hashlib.sha256).hexdigest()
+    return sign_lines(key, ["fwd1", mid, frm, agent, thread, str(text_len), text_sha, ts])
 
 
 def fwd_body(key, mid, frm, agent, thread, text, ts=None):
@@ -199,12 +255,18 @@ REFWD_FRESH_SECONDS = 900
 
 
 def sign_refwd(key, mid, ts, nonce):
-    return hmac.new(key.encode(), "\n".join(["refwd1", mid, ts, nonce]).encode(), hashlib.sha256).hexdigest()
+    return sign_lines(key, ["refwd1", mid, ts, nonce])
 
 
 def sign_refwd_ack(key, mid, status, attempt, ts):
-    msg = "\n".join(["refwdack1", mid, status, str(attempt), ts]).encode()
-    return hmac.new(key.encode(), msg, hashlib.sha256).hexdigest()
+    return sign_lines(key, ["refwdack1", mid, status, str(attempt), ts])
+
+
+def is_fresh(ts, now):
+    try:
+        return abs(now - int(ts)) < REFWD_FRESH_SECONDS
+    except ValueError:
+        return False
 
 
 def refwd_ack_body(key, mid, status, attempt, reason="", ts=None):
@@ -246,7 +308,7 @@ SUPERSEDED = "Replaces the earlier failed/refused report; do not resend. "
 
 
 def sign_got(key, stored, done, ts, nonce):
-    return hmac.new(key.encode(), "\n".join(["got1", stored, done, ts, nonce]).encode(), hashlib.sha256).hexdigest()
+    return sign_lines(key, ["got1", stored, done, ts, nonce])
 
 
 def got_body(key, stored, done, ts=None, nonce=None):
@@ -298,14 +360,10 @@ class Copies:
         self.dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.dir, 0o700)
         p = self.dir / f"{safe_name(m['id'])}.json"
-        tmp = p.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"id": m["id"], "from": m.get("from", ""), "agent": m.get("agent"),
-                       "thread": m.get("thread"), "text": m.get("text") or "", "saved": time.time()},
-                      fh, ensure_ascii=False)
-        os.chmod(tmp, 0o600)
-        tmp.replace(p)
+        write_private(p, p.with_suffix(".tmp"),
+                      json.dumps({"id": m["id"], "from": m.get("from", ""), "agent": m.get("agent"),
+                                  "thread": m.get("thread"), "text": m.get("text") or "", "saved": time.time()},
+                                 ensure_ascii=False), "utf-8")
 
     def get(self, mid):
         p = self.dir / f"{safe_name(mid)}.json"
@@ -431,11 +489,9 @@ class State:
         self.proxies = [t for t in self.proxies if now - t < 3600]
         self.refwds = {k: v for k, v in self.refwds.items() if v and now - max(v) < 8 * 86400}
         self.trim_spool()
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.__dict__ | {"path": None, "max_spool": None, "seen_days": None,
-                                                   "nonce_keep": None, "logged_counts": None}, ensure_ascii=False))
-        os.chmod(tmp, 0o600)
-        tmp.replace(self.path)
+        write_private(self.path, self.path.with_suffix(".tmp"),
+                      json.dumps(self.__dict__ | {"path": None, "max_spool": None, "seen_days": None,
+                                                  "nonce_keep": None, "logged_counts": None}, ensure_ascii=False))
         counts, log = (len(self.pending), len(self.alerts)), logging.getLogger("agent-relay")
         last = self.logged_counts or (None, None)
         if counts[0] != last[0]:
@@ -503,8 +559,7 @@ def listen_address(out):
 
 
 def sign(key, to, reply_to, ts, nonce, body):
-    msg = "\n".join(["v1", to, reply_to, ts, nonce, body]).encode()
-    return hmac.new(key.encode(), msg, hashlib.sha256).hexdigest()
+    return sign_lines(key, ["v1", to, reply_to, ts, nonce, body])
 
 
 def parse_envelope(text):
@@ -528,18 +583,34 @@ def parse_envelope(text):
 class Relay:
     def __init__(self, cfg):
         self.c = cfg
-        self.s = State(cfg["MAX_SPOOL"], cfg.get("FWD_COPY_DAYS", 7) + 1, cfg.get("NONCE_KEEP_SECONDS", 86400))
+        for k, d in (NAME_DEFAULTS | INT_DEFAULTS).items():
+            cfg.setdefault(k, d)
+        self.s = State(cfg["MAX_SPOOL"], cfg["FWD_COPY_DAYS"] + 1, cfg["NONCE_KEEP_SECONDS"])
         self.me = f"{cfg['PERSON']}/{cfg['LISTEN_NAME']}"
         self.cloud = f"{cfg['PERSON']}/{cfg['CLOUD_NAME']}"
-        self.inbox = f"{cfg['PERSON']}/{cfg.get('INBOX_NAME', 'bot-inbox')}"
+        self.inbox = f"{cfg['PERSON']}/{cfg['INBOX_NAME']}"
         self.terminal = re.compile(re.escape(cfg["PERSON"]) + r"/terminal(-[0-9]+|@"
-                                   + re.escape(cfg.get("CLOUD_MACHINE", "cloud")) + r")?")
-        self.fwd_to = f"{self.inbox}@{cfg.get('CLOUD_MACHINE', 'cloud')}"
+                                   + re.escape(cfg["CLOUD_MACHINE"]) + r")?")
+        self.fwd_to = f"{self.inbox}@{cfg['CLOUD_MACHINE']}"
         self.log = logging.getLogger("agent-relay")
-        self.copies = Copies(cfg.get("FWD_COPY_DAYS", 7))
+        self.copies = Copies(cfg["FWD_COPY_DAYS"])
         self.last_prune = 0
         self.db_noticed = False
         self.reg_seen = None
+        self.former, self.former_gone, self.polled, self.poll_failed, self.former_as = [], set(), {}, {}, {}
+        found, bad = former_names(cfg.get("FORMER_NAMES"))
+        for entry in bad:
+            self.log.warning("FORMER_NAMES entry %r ignored: not <name>:<until, Unix seconds> with a valid name",
+                             entry[:60])
+        current = {cfg["LISTEN_NAME"], cfg["CLOUD_NAME"], cfg["INBOX_NAME"]}
+        for name, until in found:
+            trio = (name, f"{name}-cloud", f"{name}-inbox")
+            if name == cfg["LISTEN_NAME"]:
+                continue
+            if current & set(trio):
+                self.log.warning("FORMER_NAMES entry %s ignored: it overlaps the current names", name)
+                continue
+            self.former.append((name, until, tuple(f"{cfg['PERSON']}/{n}" for n in trio)))
         if self.got_timeout() <= 0 and any(not p.get("keep") for p in self.s.pending.values()):
             self.log.info("GOT_TIMEOUT_SECONDS is 0: %d pending message(s) keep being re-rung until done",
                           len(self.s.pending))
@@ -547,13 +618,30 @@ class Relay:
             self.s.save()
 
     def got_timeout(self):
-        return self.c.get("GOT_TIMEOUT_SECONDS", 900)
+        return self.c["GOT_TIMEOUT_SECONDS"]
 
     def unacked_timeout(self):
         return self.got_timeout() if self.got_timeout() > 0 else 900
 
     def probing(self):
         return self.got_timeout() > 0 and not self.s.caps_lost
+
+    def formers(self):
+        now, live = time.time(), []
+        for name, until, group in self.former:
+            if now < until:
+                live.append((name, until, group))
+            elif name not in self.former_gone:
+                self.former_gone.add(name)
+                self.log.info("former name %s expired: its mail is no longer picked up and its replies, receipts "
+                              "and re-forward requests are no longer honoured", name)
+        return live
+
+    def groups(self):
+        return [(self.me, self.cloud, self.inbox)] + [g for _, _, g in self.formers()]
+
+    def control_group(self, frm):
+        return next((g for g in self.groups() if frm in g[1:]), None)
 
     # ---- webhook payloads ----
     def payload(self, items):
@@ -581,7 +669,7 @@ class Relay:
         if len(body.encode("utf-8")) > FWD_MAX_BYTES:
             return False, f"too large for one RN message ({len(body.encode('utf-8'))} bytes)"
         # no --from: sent as <team-name>/terminal, which the engine's agent-loop guard (12 per pair per 10 min) skips
-        env = {k: v for k, v in os.environ.items() if k not in AGENT_ENV}
+        env = send_env()
         try:
             r = self.rn("send", self.fwd_to, "-", stdin=body, env=env)
         except Exception as e:
@@ -597,7 +685,7 @@ class Relay:
         text = m.get("text") or ""
         it = {"id": str(m["id"]), "from": m.get("from", ""), "agent": m.get("agent"), "thread": m.get("thread"),
               "doorbell": True, "text_len": len(text), "text_sha256": sha256_hex(text)}
-        n = self.c.get("DOORBELL_PREVIEW_CHARS", 200)
+        n = self.c["DOORBELL_PREVIEW_CHARS"]
         if n > 0:
             it["preview"] = text[:n]
         return it
@@ -606,7 +694,7 @@ class Relay:
     def refwd(self, m):
         """Handles an RN-REFWD request. Never raises; never turns the request into inbound mail."""
         req, frm = parse_refwd(m.get("text") or ""), m.get("from", "")
-        if frm not in (self.cloud, self.inbox):
+        if self.control_group(frm) is None:
             self.log.warning("refwd request %s from %s ignored: sender not allowed", m["id"], frm)
             return
         if not req:
@@ -614,10 +702,7 @@ class Relay:
             return
         key, now, mid = self.c["OUTBOUND_KEY"], time.time(), req["id"]
         good = hmac.compare_digest(req["sig"], sign_refwd(key, mid, req["ts"], req["nonce"]))
-        try:
-            fresh = abs(now - int(req["ts"])) < REFWD_FRESH_SECONDS
-        except ValueError:
-            fresh = False
+        fresh = is_fresh(req["ts"], now)
         if not good or not fresh or req["nonce"] in self.s.nonces:
             self.log.warning("refwd request %s for %s ignored (sig=%s fresh=%s replay=%s)", m["id"], mid, good,
                              fresh, req["nonce"] in self.s.nonces)
@@ -625,13 +710,13 @@ class Relay:
         self.s.nonces[req["nonce"]] = now
         done = self.s.refwds.get(mid, [])
         hour = sum(1 for v in self.s.refwds.values() for t in v if now - t < 3600)
-        if len(done) >= self.c.get("REFWD_MAX_PER_ID", 2) or hour >= self.c.get("REFWD_MAX_PER_HOUR", 20):
+        if len(done) >= self.c["REFWD_MAX_PER_ID"] or hour >= self.c["REFWD_MAX_PER_HOUR"]:
             self.log.warning("refwd %s refused: limit (%d for this id, %d this hour)", mid, len(done), hour)
             return self.ack(mid, "limit", len(done), f"{len(done)} re-forwards already for this id, {hour} this hour")
         copy = self.copies.get(mid)
         if not copy:
             self.log.warning("refwd %s: no copy kept (older than %s days, or never forwarded)", mid,
-                             self.c.get("FWD_COPY_DAYS", 7))
+                             self.c["FWD_COPY_DAYS"])
             return self.ack(mid, "no-copy", len(done), "no copy on the relay (never forwarded, or expired)")
         attempt = len(done) + 1
         self.s.refwds[mid] = done + [now]
@@ -668,7 +753,7 @@ class Relay:
     def got(self, m):
         """Handles an RN-GOT receipt. Never raises; anything invalid is logged and changes nothing."""
         f, frm = parse_got(m.get("text") or ""), m.get("from", "")
-        if frm not in (self.cloud, self.inbox) and not self.terminal.fullmatch(frm):
+        if self.control_group(frm) is None and not self.terminal.fullmatch(frm):
             self.log.warning("receipt %s from %s ignored: sender not allowed", m["id"], frm)
             return
         if not f:
@@ -676,10 +761,7 @@ class Relay:
             return
         key, now = self.c["OUTBOUND_KEY"], time.time()
         good = hmac.compare_digest(f["sig"], sign_got(key, f["stored"], f["done"], f["ts"], f["nonce"]))
-        try:
-            fresh = abs(now - int(f["ts"])) < REFWD_FRESH_SECONDS
-        except ValueError:
-            fresh = False
+        fresh = is_fresh(f["ts"], now)
         if not good or not fresh or f["nonce"] in self.s.nonces:
             self.log.warning("receipt %s ignored (sig=%s fresh=%s replay=%s)", m["id"], good, fresh,
                              f["nonce"] in self.s.nonces)
@@ -747,7 +829,7 @@ class Relay:
                     "confirmed as handled are still re-rung until they are, or reported one by one.")
             s.save()
             return
-        resend, maxr = self.unacked_timeout(), self.c.get("GOT_MAX_RERINGS", 2)
+        resend, maxr = self.unacked_timeout(), self.c["GOT_MAX_RERINGS"]
         for a in list(s.alerts):
             if a["posted"] is not None and now - a["posted"] > resend and a["tries"] >= maxr:
                 rest = a.get("n", 0) - a.get("sent_n", 0) if a["key"] == ALERT_OVERFLOW else 0
@@ -759,7 +841,7 @@ class Relay:
                     s.alerts.remove(a)
                 changed = True
         for mid, p in list(s.pending.items()):
-            limit = {"unacked": resend, "stored": self.c.get("GOT_DONE_SECONDS", 7200)}.get(p["stage"])
+            limit = {"unacked": resend, "stored": self.c["GOT_DONE_SECONDS"]}.get(p["stage"])
             if p["t"] is None or limit is None or now - p["t"] <= limit:
                 continue
             if p["rerings"] >= maxr:
@@ -795,7 +877,7 @@ class Relay:
         now, due = time.time(), [wait, 600]
         resend = self.unacked_timeout()
         for p in self.s.pending.values():
-            limit = {"unacked": resend, "stored": self.c.get("GOT_DONE_SECONDS", 7200)}.get(p["stage"])
+            limit = {"unacked": resend, "stored": self.c["GOT_DONE_SECONDS"]}.get(p["stage"])
             if p["t"] is not None and limit is not None:
                 due.append(p["t"] + limit - now + 1)
         gp = self.s.got_probe
@@ -808,7 +890,7 @@ class Relay:
 
     def ack(self, mid, status, attempt, reason=""):
         body = refwd_ack_body(self.c["OUTBOUND_KEY"], mid, status, attempt, reason)
-        env = {k: v for k, v in os.environ.items() if k not in AGENT_ENV}
+        env = send_env()
         try:
             r = self.rn("send", self.fwd_to, "-", stdin=body, env=env)
             res = (r.stdout + r.stderr).strip()
@@ -833,16 +915,19 @@ class Relay:
         return hmac.compare_digest(env["sig"], sign(self.c["OUTBOUND_KEY"], env["to"], env["reply_to"],
                                                     env["ts"], env["nonce"], env["body"]))
 
-    def stored_text(self, mid):
-        path = Path(self.c.get("RN_DB") or RN_DB)
+    def db_path(self):
+        return Path(self.c.get("RN_DB") or RN_DB)
+
+    def stored_text(self, mid, group):
+        path = self.db_path()
         try:
-            db = sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
+            db = open_db(path)
             try:
                 cols = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
                 sql = "SELECT body FROM messages WHERE id = ? AND recipient = ? AND sender = ?"
                 if "held" in cols:
                     sql += " AND COALESCE(held, 0) = 0"
-                rows = db.execute(sql + " LIMIT 2", (str(mid), self.me, self.cloud)).fetchall()
+                rows = db.execute(sql + " LIMIT 2", (str(mid), group[0], group[1])).fetchall()
             finally:
                 db.close()
         except Exception as e:
@@ -850,18 +935,19 @@ class Relay:
             return None
         return rows[0][0] if len(rows) == 1 and isinstance(rows[0][0], str) else None
 
-    def proxy(self, m):
+    def proxy(self, m, group):
         env = parse_envelope(m["text"])
         now = time.time()
         if not (env and self.signed(env)):
-            stored = self.stored_text(m["id"])
+            stored = self.stored_text(m["id"], group)
             alt = parse_envelope(stored) if stored is not None and stored != m["text"] else None
             if alt and self.signed(alt):
                 self.log.info("proxy %s: verified against the stored text in network.db (listen showed it rewritten)",
                               m["id"])
                 env = alt
         if not env:
-            return self.notice(f"{self.c['CLOUD_NAME']} sent {m['id']} without a valid RN-OUT envelope; not forwarded")
+            return self.notice(f"{group[1][len(self.c['PERSON']) + 1:]} sent {m['id']} without a valid RN-OUT "
+                               f"envelope; not forwarded")
         if not self.signed(env):
             self.log.warning("proxy refused %s: bad signature", m["id"])
             return self.notice(f"outbound {m['id']} refused: bad signature")
@@ -889,18 +975,14 @@ class Relay:
                                                 f"resent to avoid a duplicate. Check with the recipient; to send "
                                                 f"anyway, change the text.")
             return
-        try:
-            fresh = abs(now - int(env["ts"])) < 900
-        except ValueError:
-            fresh = False
-        if not fresh:
+        if not is_fresh(env["ts"], now):
             self.log.warning("proxy refused %s: stale", m["id"])
             return s.alert(f"reject:{nonce}", f"outbound {m['id']} to {to} refused: stale (signed more than 15 "
                                               f"minutes before it arrived)")
         if len(s.proxies) >= self.c["MAX_PROXY_PER_HOUR"]:
             return s.alert(f"reject:{nonce}",
                            f"outbound {m['id']} refused: over {self.c['MAX_PROXY_PER_HOUR']} sends/hour")
-        if to in ("*",) or to.endswith("/*") or to.startswith("repo:") or to in (self.me, self.cloud):
+        if to in ("*",) or to.endswith("/*") or to.startswith("repo:") or any(to in g[:2] for g in self.groups()):
             return s.alert(f"reject:{nonce}", f"outbound {m['id']} refused: group or self address '{to}'")
         if not OUT_TO.fullmatch(to) or (env["reply_to"] and not OUT_REPLY_TO.fullmatch(env["reply_to"])):
             shown = f"to={repr(to)[:80]} reply_to={repr(env['reply_to'])[:80]}"
@@ -911,6 +993,8 @@ class Relay:
         s.nonces[nonce] = now
         s.proxies.append(now)
         s.save()
+        if group[1] != self.cloud:
+            self.log.info("outbound %s came from the former name %s; sending it as %s", m["id"], group[1], self.me)
         args = ["send", to, "--from", self.me]
         if env["reply_to"]:
             args += ["--reply-to", env["reply_to"]]
@@ -968,9 +1052,11 @@ class Relay:
             return self.refwd(m)        # allowed senders are honoured; anyone else is logged and ignored
         if is_got(m.get("text")):
             return self.got(m)
-        if m["from"] == self.cloud:
-            return self.proxy(m)
-        if m["from"] == self.me:
+        groups = self.groups()
+        group = next((g for g in groups if m["from"] == g[1]), None)
+        if group:
+            return self.proxy(m, group)
+        if any(m["from"] == g[0] for g in groups):
             return
         self.keep_copy(m)
         # Queue and save the doorbell (with `seen`) before forwarding: if the relay dies after this point the
@@ -994,8 +1080,8 @@ class Relay:
         Only rows already in the table when this call began (rowid <= snapshot) are candidates; later ones are
         left to the next listen, so mail that keeps arriving cannot keep the relay here (it would never reach
         flush()), whatever the senders' clocks say."""
-        path = Path(self.c.get("RN_DB") or RN_DB)
-        floor_ms = max(self.s.recv_floor, time.time() - self.c.get("FWD_COPY_DAYS", 7) * 86400) * 1000
+        path = self.db_path()
+        floor_ms = max(self.s.recv_floor, time.time() - self.c["FWD_COPY_DAYS"] * 86400) * 1000
         snap = None                    # max(rowid) when this call began, read with the first page
         after = None                   # (sent_at, id) of the last row read: keyset paging, no connection kept open
         found, sample = 0, []          # count, and the first 20 ids for the log
@@ -1027,11 +1113,12 @@ class Relay:
                           ", ".join(sample) + (" ..." if found > len(sample) else ""))
 
     def db_page(self, path, floor_ms, snap, after):
-        """(snap, rows): up to RECONCILE_PAGE rows to this relay, sent at or after floor_ms, with rowid <= snap,
+        """(snap, rows): up to RECONCILE_PAGE rows to this relay (its current name or an unexpired former name),
+        sent at or after floor_ms, with rowid <= snap,
         after the (sent_at, id) `after`, excluding rows the engine holds for inbound approval (held = 1; no such
         column: nothing held). snap None: take max(rowid) now, on this connection (the engine's messages table is
         a plain rowid table, so rows inserted later get a larger rowid)."""
-        db = sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True, timeout=5)
+        db = open_db(path)
         try:
             cols = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
             need = {"id", "sender", "body", "sent_at", "recipient"}
@@ -1043,9 +1130,10 @@ class Relay:
                 snap = db.execute("SELECT max(rowid) FROM messages").fetchone()[0]
                 if snap is None:
                     return None, []        # empty table
+            mes = [g[0] for g in self.groups()]
             sql = (f"SELECT id, sender, body, sent_at, {agent}, {thread} FROM messages "
-                   "WHERE recipient = ? AND sent_at >= ? AND rowid <= ?")
-            args = [self.me, floor_ms, snap]
+                   f"WHERE recipient IN ({', '.join('?' * len(mes))}) AND sent_at >= ? AND rowid <= ?")
+            args = [*mes, floor_ms, snap]
             if "held" in cols:
                 sql += " AND COALESCE(held, 0) = 0"
             if after is not None:
@@ -1132,7 +1220,7 @@ class Relay:
                 gp["posted"] = now
 
     def ready_alerts(self):
-        now, resend, maxr = time.time(), self.unacked_timeout(), self.c.get("GOT_MAX_RERINGS", 2)
+        now, resend, maxr = time.time(), self.unacked_timeout(), self.c["GOT_MAX_RERINGS"]
         return [a for a in self.s.alerts if (a["key"] != ALERT_OVERFLOW or a.get("n", 0) > 0) and (
             a["posted"] is None or (now - a["posted"] > resend and a["tries"] < maxr))]
 
@@ -1183,12 +1271,8 @@ class Relay:
         if name != self.me and self.reg_seen != name:
             self.log.warning("the engine registered this relay as %s, not %s", name, self.me)
         try:
-            tmp = REGISTERED.with_name(f".{REGISTERED.name}.{os.getpid()}")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump({"name": name, "pid": os.getpid(), "at": int(time.time())}, f)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, REGISTERED)
+            write_private(REGISTERED, REGISTERED.with_name(f".{REGISTERED.name}.{os.getpid()}"),
+                          json.dumps({"name": name, "pid": os.getpid(), "at": int(time.time())}))
         except OSError as e:
             self.log.warning("could not write %s: %s", REGISTERED, e)
             return
@@ -1196,15 +1280,62 @@ class Relay:
             self.log.info("registered with the engine as %s", name)
             self.reg_seen = name
 
+    def former_mail(self, name):
+        r = self.rn("listen", "--as", name, "--wait", "0", timeout=FORMER_LISTEN_TIMEOUT)
+        if r.returncode != 0:
+            raise RuntimeError(f"listen rc={r.returncode}: {(r.stderr or r.stdout).strip()[:200]}")
+        got, want = listen_address(r.stdout), f"{self.c['PERSON']}/{name}"
+        if self.former_as.get(name, want) != got:
+            if got == want:
+                self.log.info("the former name %s is this relay's again", name)
+            else:
+                self.log.warning("the engine answered the former name %s as %s: another computer of %s uses %s now, "
+                                 "so mail sent to it no longer reaches this relay", name, got, self.c["PERSON"], name)
+            self.former_as[name] = got
+        return parse(r.stdout)
+
+    def poll_former(self):
+        now, every, failed = time.time(), self.c["FORMER_POLL_SECONDS"], False
+        for name, _, _ in self.formers():
+            if 0 <= now - self.polled.get(name, 0) < every:
+                continue
+            self.polled[name] = now
+            try:
+                msgs = self.former_mail(name)
+            except Exception as e:
+                last = self.poll_failed.get(name)
+                if last is None or now - last >= FORMER_WARN_SECONDS:
+                    self.poll_failed[name] = now
+                    self.log.warning("could not pick up the mail of the former name %s: %s: %s", name,
+                                     type(e).__name__, str(e)[:300])
+                    failed = True
+                continue
+            if self.poll_failed.pop(name, None) is not None:
+                self.log.info("picking up the mail of the former name %s works again", name)
+            if msgs:
+                self.log.info("former name %s: %d message(s)", name, len(msgs))
+                self.handle(msgs)
+        if failed:
+            self.reconcile()
+
+    def former_wait(self, wait):
+        now, every = time.time(), self.c["FORMER_POLL_SECONDS"]
+        due = [min(every, math.ceil(self.polled.get(name, 0) + every - now)) for name, _, _ in self.formers()]
+        return max(1, min([wait] + due)) if due else wait
+
     def run(self):
-        self.log.info("agent-relay up: listening as %s, proxying for %s, forwarding to %s, copies kept %d days",
-                      self.me, self.cloud, self.fwd_to, self.c.get("FWD_COPY_DAYS", 7))
+        former = ", ".join(f"{n} until {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(u))}"
+                           for n, u, _ in self.formers())
+        self.log.info("agent-relay up: listening as %s, proxying for %s, forwarding to %s, copies kept %d days%s",
+                      self.me, self.cloud, self.fwd_to, self.c["FWD_COPY_DAYS"],
+                      f"; former names, checked every {self.c['FORMER_POLL_SECONDS']} s: {former}"
+                      if former else "")
         self.reconcile()                   # messages marked read before a crash, before anything new
         self.check_pending()
         wait = self.next_wait(self.flush())   # deliver anything restored from the spool before the first listen
         fresh = True                          # first listen, and the one after a failure, returns at once
         while True:
-            w = 0 if fresh else wait
+            w = 0 if fresh else self.former_wait(wait)
             try:
                 r = self.rn("listen", "--as", self.c["LISTEN_NAME"], "--wait", str(w), timeout=w + 60)
             except subprocess.TimeoutExpired:
@@ -1227,6 +1358,10 @@ class Relay:
                     self.handle(parse(r.stdout))
                 except Exception:          # each message is isolated in handle(); this is the final save()
                     self.log.exception("could not save the handled batch")
+            try:
+                self.poll_former()
+            except Exception:
+                self.log.exception("could not handle the mail of the former names")
             try:
                 self.check_pending()
             except Exception:

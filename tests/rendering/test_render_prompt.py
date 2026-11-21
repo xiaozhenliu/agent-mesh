@@ -67,7 +67,7 @@ class Prompts(unittest.TestCase):
             self.assertNotIn("<repo-url>", text)
 
     def test_release_values_fill_the_setup_block_and_bad_ones_are_refused(self):
-        sums = "".join(f"{c * 64}  {n}\n" for c, n in zip("abcdef01", CLOUD_FILES))
+        sums = "".join(f"{c * 64}  {n}\n" for c, n in zip("abcdef012", CLOUD_FILES))
         blocks = set()
         for lang in ("en", "zh-CN"):
             text = render_prompt("cloud-setup", lang, team_name="demo", mac_home="/Users/demo",
@@ -289,7 +289,7 @@ class AddedBotPrompts(unittest.TestCase):
         bad = ({"team_name": None}, {"team_hash": None}, {"team_name": "Demo"}, {"team_name": "a b"},
                {"team_hash": "0123456789ABCDEF"}, {"team_hash": "0123"}, {"team_hash": "0" * 17},
                {"bot_selector": "Alice"}, {"bot_selector": ""}, {"bot_selector": "terminal"},
-               {"relay_name": "bob"})
+               {"relay_name": "Bob"}, {"relay_name": "terminal"})
         for full in (False, True):
             for change in bad:
                 with self.subTest(change=change, full=full):
@@ -302,6 +302,44 @@ class AddedBotPrompts(unittest.TestCase):
                 render_prompt(template, bot_selector="alice", team_name="demo", team_hash="0" * 16)
         with self.assertRaises(ValueError):
             render_prompt("routine", team_hash="0" * 16)
+
+    def test_a_renamed_added_bot_keeps_its_slot_and_shows_its_address(self):
+        for lang in ("en", "zh-CN"):
+            with self.subTest(lang=lang):
+                self.assertEqual(render_prompt("routine", lang, relay_name="beta", **SELECTOR),
+                                 render_prompt("routine", lang, **SELECTOR))
+                plain = render_prompt("routine", lang, full=True, **SELECTOR)
+                text = render_prompt("routine", lang, full=True, relay_name="beta", **SELECTOR)
+                self.assertNotEqual(text, plain)
+                self.assertIn("demo/beta-cloud", text)
+                self.assertNotIn("demo/beta-cloud", plain)
+                self.assertEqual(text.count("RN_BOT=alice "), plain.count("RN_BOT=alice "))
+                self.assertNotIn("RN_BOT=beta", text)
+                self.assertEqual(text.count("/workspace/agent-mesh/bots/alice/"),
+                                 plain.count("/workspace/agent-mesh/bots/alice/"))
+                self.assertNotIn("bots/beta/", text)
+                self.assertEqual(text.count("rn-cloud-add-bot.sh 'alice' 'demo' '0123456789abcdef'"), 1)
+                self.assertEqual(full_command(text), full_command(plain))
+
+    def test_reclaim_adds_one_argument_to_step_one_and_step_zero(self):
+        for lang in ("en", "zh-CN"):
+            with self.subTest(lang=lang):
+                plain = render_prompt("routine", lang, **SELECTOR)
+                text = render_prompt("routine", lang, reclaim=True, **SELECTOR)
+                self.assertEqual(stub_commands(text)[0],
+                                 "RN_BOT=alice bash /workspace/agent-mesh/box/rn-cloud.sh instructions 1 "
+                                 "'demo' '0123456789abcdef' reclaim")
+                changed = [(x, y) for x, y in zip(plain.split("\n"), text.split("\n")) if x != y]
+                self.assertEqual(changed, [(changed[0][0], changed[0][0] + " reclaim")])
+                plain = render_prompt("routine", lang, full=True, **SELECTOR)
+                text = render_prompt("routine", lang, full=True, reclaim=True, **SELECTOR)
+                self.assertEqual(text.count("rn-cloud-add-bot.sh 'alice' 'demo' '0123456789abcdef' reclaim"), 1)
+                self.assertEqual(text.replace("'0123456789abcdef' reclaim", "'0123456789abcdef'"), plain)
+        with self.assertRaises(ValueError):
+            render_prompt("routine", "en", relay_name="bob", reclaim=True)
+        with self.assertRaises(ValueError):
+            render_prompt("cloud-add-bot", "en", team_name="demo", relay_name="alice", team_hash="0" * 16,
+                          reclaim=True)
 
     def escape(self, which, old, new, **kwargs):
         import render_prompt as module

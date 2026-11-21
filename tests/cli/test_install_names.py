@@ -120,7 +120,8 @@ class InstallNames(InstallHarness, unittest.TestCase):
                      ("--cloud-prompt", "--relay-name", "bob")):
             result = self.run_script("install.sh", *args)
             self.assertNotEqual(result.returncode, 0, args)
-            self.assertIn("Renaming is not supported", result.stderr, args)
+            self.assertIn("not 'bob'. --relay-name selects an existing Bot and does not rename it; "
+                          "to rename this Bot, run agent-mesh rename bob", result.stderr, args)
             self.assertEqual((env.read_bytes(), record.read_bytes()), before, args)
             self.assertEqual(self.rn_calls(), [], args)
         result = self.run_script("install.sh", "--cloud-prompt", "--relay-name", "alice")
@@ -152,7 +153,7 @@ class InstallNames(InstallHarness, unittest.TestCase):
         self.assertNotIn("<relay-name>", result.stdout)
         result = self.run_script("install.sh", "--cloud-prompt", "--relay-name", "alice")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("uses the Bot address name 'bot'. Renaming is not supported", result.stderr)
+        self.assertIn("uses the Bot address name 'bot', not 'alice'. --relay-name selects", result.stderr)
         self.assertEqual(self.record()["relay_name"], "bot")
 
     def test_new_install_without_an_address_name_stops_with_a_suggestion(self):
@@ -565,7 +566,7 @@ class InstallNames(InstallHarness, unittest.TestCase):
         before = self.record()
         result = self.run_script("update.sh", "--no-pull", root=repo)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("now gives 'bob'. Renaming is not supported", result.stderr)
+        self.assertIn("now gives 'bob'. A Bot is renamed only with agent-mesh rename", result.stderr)
         self.assertIn("nothing was changed", result.stderr)
         result = self.run_script("install.sh", "--webhook", root=repo)
         self.assertNotEqual(result.returncode, 0)

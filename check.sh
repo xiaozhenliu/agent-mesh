@@ -36,6 +36,7 @@ PERSON="$(sed -n 's/^person = "\(.*\)"/\1/p' "$CFG" 2>/dev/null | head -n 1)"
 fail=0
 ok()   { printf 'PASS  %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n      -> %s\n' "$1" "$2"; fail=1; }
+warn() { printf 'WARN  %s\n      -> %s\n' "$1" "$2"; }
 skip() { printf 'SKIP  %s\n' "$(tq check.skip_reason "$1" "$2")"; }
 probe_relay() { curl -sS -o /dev/null -m 10 -w '%{http_code}' "$1" 2>/dev/null | grep -q '^200$'; }
 
@@ -293,7 +294,7 @@ single_bot() {
   fi
   if [ -f "$env" ]; then
     [ "$(stat -f %Lp "$env" 2>/dev/null)" = "600" ] && ok "$(tq check.env_mode_ok)" || bad "$(tq check.env_mode_bad)" "chmod 600 $env"
-    grep -Eq '^WEBHOOK_URL=https://' "$env" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$env" && ok "$(tq check.webhook_ok)" || bad "$(tq check.webhook_bad)" "$(tq check.run_webhook)"
+    python3 "$names" webhook "$env" && ok "$(tq check.webhook_ok)" || bad "$(tq check.webhook_bad)" "$(tq check.run_webhook)"
   else
     bad "$(tq check.relay_unconfigured)" "$(tq check.run_webhook)"
   fi
@@ -312,7 +313,7 @@ single_bot() {
 }
 
 cloud_registration() {
-  local name="$1" cloud="$2" out rc directory
+  local name="$1" cloud="$2" addr="$3" out rc directory
   local wake="./install.sh --relay-name $name --wake-bot"
   if [ "$cloud" = confirmed ]; then
     ok "$(tq check.cloud_reg_ok)"
@@ -325,7 +326,7 @@ cloud_registration() {
     4) skip "$(tq check.cloud_reg)" "$(tq check.cloud_reg_unknown "$out")" ;;
     *)
       if [ -x "$RN" ] && directory="$("$RN" who --all --json 2>/dev/null)"; then
-        if printf '%s' "$directory" | python3 "$names" cloud-sessions "$PERSON" "$name" >/dev/null 2>&1; then
+        if printf '%s' "$directory" | python3 "$names" cloud-sessions "$PERSON" "$addr" >/dev/null 2>&1; then
           skip "$(tq check.cloud_reg)" "$(tq check.cloud_reg_sessions "$wake")"
         else
           skip "$(tq check.cloud_reg)" "$(tq check.cloud_reg_none "$wake")"
@@ -338,9 +339,9 @@ cloud_registration() {
 
 bot_section() {
   local name="$1" kind="$2" stage="$3" cloud="$4" removing="$5" envf="$6" label="$7" marker="$8" log="$9"
-  local title derived webhook_fix fix
+  local addr="${10:-$1}" title derived webhook_fix fix
   echo
-  title="$(python3 "$state" label --person "$PERSON" --relay-name "$name" 2>/dev/null)" || title="$PERSON/$name"
+  title="$(python3 "$state" label --person "$PERSON" --relay-name "$name" 2>/dev/null)" || title="$PERSON/$addr"
   printf '== %s\n' "$(tq check.bot_address_is "$title")"
   if [ "$removing" = 1 ]; then
     bad "$(tq check.bot_removing "$name")" "./uninstall.sh --level bot --relay-name $name"
@@ -349,13 +350,13 @@ bot_section() {
   webhook_fix="./install.sh --webhook --relay-name $name"
   fix="$(tq check.not_registered_fix_bot "$log" "$name")"
   if [ -f "$envf" ]; then
-    if derived="$(python3 "$names" env "$envf" 2>&1)" && [ "$derived" = "$name" ]; then
-      ok "$(tq check.env_names_ok "$name")"
+    if derived="$(python3 "$names" env "$envf" 2>&1)" && [ "$derived" = "$addr" ]; then
+      ok "$(tq check.env_names_ok "$addr")"
     else
       bad "$(tq check.env_names)" "$(tq check.env_names_fix "$derived")"
     fi
     [ "$(stat -f %Lp "$envf" 2>/dev/null)" = "600" ] && ok "$(tq check.env_mode_ok)" || bad "$(tq check.env_mode_bad)" "chmod 600 $(printf '%q' "$envf")"
-    grep -Eq '^WEBHOOK_URL=https://' "$envf" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$envf" && ok "$(tq check.webhook_ok)" || bad "$(tq check.webhook_bad)" "$webhook_fix"
+    python3 "$names" webhook "$envf" && ok "$(tq check.webhook_ok)" || bad "$(tq check.webhook_bad)" "$webhook_fix"
   else
     bad "$(tq check.relay_unconfigured)" "$webhook_fix"
   fi
@@ -365,10 +366,10 @@ bot_section() {
     launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && ok "$(tq check.service_ok)" || bad "$(tq check.service_bad)" "./install.sh --restart-relay"
     log_checks "$log"
     if [ -x "$RN" ] && [ -n "$WHO_OK" ]; then
-      registration "$name" "$label" "$marker" "$fix"
+      registration "$addr" "$label" "$marker" "$fix"
     fi
   fi
-  [ "$kind" != added ] || cloud_registration "$name" "$cloud"
+  [ "$kind" != added ] || cloud_registration "$name" "$cloud" "$addr"
 }
 
 if [ "$MULTI" = 0 ]; then
@@ -378,11 +379,11 @@ else
   WHO_OK=""
   who=""
   if [ -x "$RN" ] && who="$("$RN" who 2>/dev/null)"; then WHO_OK=1; fi
-  while IFS="$(printf '\t')" read -r b_name b_kind b_stage b_cloud b_removing _ b_label _ b_marker; do
+  while IFS="$(printf '\t')" read -r b_name b_kind b_stage b_cloud b_removing _ b_label _ b_marker b_addr; do
     [ -n "$b_name" ] || continue
     b_env="$(python3 "$HERE/scripts/bots.py" paths "$b_name" --lenient 2>/dev/null | awk -F '\t' '$1 == "ENV_FILE" { print $2 }')"
     b_log="$(python3 "$HERE/scripts/bots.py" paths "$b_name" --lenient 2>/dev/null | awk -F '\t' '$1 == "LOG" { print $2 }')"
-    bot_section "$b_name" "$b_kind" "$b_stage" "$b_cloud" "$b_removing" "$b_env" "$b_label" "$b_marker" "$b_log"
+    bot_section "$b_name" "$b_kind" "$b_stage" "$b_cloud" "$b_removing" "$b_env" "$b_label" "$b_marker" "$b_log" "$b_addr"
   done <<EOF_ROSTER
 $ROSTER
 EOF_ROSTER
@@ -392,6 +393,30 @@ EOF_ROSTER
     [ "$n" -gt 0 ] && ok "$(tq check.sessions_ok "$n")" || skip "$(tq check.sessions)" "$(tq check.sessions_none)"
   fi
 fi
+
+rename_rc=0
+rename_out="$(python3 "$state" rename-get 2>&1)" || rename_rc=$?
+case "$rename_rc" in
+  0)
+    r_stage="$(printf '%s\n' "$rename_out" | sed -n 's/^stage //p')"
+    r_old="$(printf '%s\n' "$rename_out" | sed -n 's/^old //p')"
+    r_new="$(printf '%s\n' "$rename_out" | sed -n 's/^new //p')"
+    bad "$(tq check.rename_open "$PERSON/$r_old" "$PERSON/$r_new" "$r_stage")" "$(tq check.rename_open_fix)" ;;
+  3) ;;
+  *) bad "$(tq check.rename_damaged)" "$(printf '%s\n' "$rename_out" | head -n 1)" ;;
+esac
+while read -r f_word _ f_name f_state f_until f_current; do
+  [ "$f_word" = former ] || continue
+  if [ "$f_state" = live ]; then
+    ok "$(tq check.former_live "$PERSON/$f_name" "$PERSON/$f_current" "$f_until")"
+  else
+    f_fix="agent-mesh rename $f_name"
+    [ "$MULTI" = 0 ] || f_fix="$f_fix --relay-name $f_current"
+    warn "$(tq check.former_expired "$PERSON/$f_name" "$PERSON/$f_current" "$f_until")" "$(tq check.former_expired_fix "$f_fix")"
+  fi
+done <<EOF_FORMER
+$(python3 "$state" former 2>/dev/null)
+EOF_FORMER
 
 # deployment record
 cengine="$(python3 - "$LIB/deployed.json" <<'PY' 2>&1

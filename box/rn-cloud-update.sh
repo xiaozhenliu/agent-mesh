@@ -19,7 +19,7 @@ stdin_boot() {
   [ -d .git ] && [ ! -L .git ] && [ ! -L .git/agent-mesh ] && [ ! -L .git/agent-mesh/boot ] || return 3
   mkdir -p .git/agent-mesh/boot || return 3
   tools="$(mktemp -d .git/agent-mesh/boot/tools.XXXXXX)" || return 3
-  for f in rn-cloud-update.sh rn-engine.py rn-routine.py rn-fetch.py; do
+  for f in rn-cloud-update.sh rn-engine.py rn-routine.py rn-names.py rn-fetch.py; do
     git show "refs/tags/$t:box/$f" > "$tools/$f" || return 3
   done
   exec python3 -I "$root/$tools/rn-routine.py" bootstrap "$n" "$run" "$id" "$t"
@@ -101,7 +101,7 @@ main() {
   bash "$A/box/rn-cloud-setup.sh" --upgrade-engine </dev/null \
     || stop "the engine step failed (see the lines above); the clone stays at $TAG"
   sums="$(sha256sum box/rn-cloud.sh box/rn-fetch.py box/rn-cloud-setup.sh box/rn-engine.py box/rn-cloud-add-bot.sh \
-    box/rn-routine.py prompts/routine-body.md prompts/routine-body.zh-CN.md)" \
+    box/rn-routine.py box/rn-names.py prompts/routine-body.md prompts/routine-body.zh-CN.md)" \
     || stop "cannot compute the checksums after checking out $TAG"
   echo "$r commit $head"
   printf '%s\n' "$sums" | sed "s/^/$r sum /"

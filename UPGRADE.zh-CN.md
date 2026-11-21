@@ -34,7 +34,7 @@
 | relay | 已安装的 `agent_relay.py` 和登录服务文件与当前仓库比较，登录服务文件按 relay 固定使用的 Python 生成 | 安装并重启；新 relay 起不来时换回原来的版本 |
 | 引擎 | `~/.local/bin/reason-network` 与本版本固定的版本比较，看正在运行的守护进程是否在二进制最后一次替换之后启动，并看 `auto_update` 和 `lan` 是否在引擎读取的位置关闭 | 引擎较旧时升级（[Reason Network 引擎](#reason-network-引擎)）；守护进程还在跑被替换前的二进制时重启；设置没有关闭时修正并重启守护进程；引擎更新或认不出版本时停止更新 |
 | dsh 插件 | 已安装 bridge 时，比较已安装的插件文件 | 只替换插件文件，`~/.dsh/cordis.patch.yml` 和你的 bridge 设置保持不变；之后退出并重开 dsh |
-| 云端脚本 | `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-update.sh`、`box/rn-cloud-add-bot.sh`、`box/rn-routine.py` 和规则模板 `prompts/routine-body.md`、`prompts/routine-body.zh-CN.md` 与上次确认的版本比较 | 云端更新，见下文 |
+| 云端脚本 | `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-update.sh`、`box/rn-cloud-add-bot.sh`、`box/rn-routine.py`、`box/rn-names.py` 和规则模板 `prompts/routine-body.md`、`prompts/routine-body.zh-CN.md` 与上次确认的版本比较 | 云端更新，见下文 |
 | 云端初始化 | `box/rn-cloud-setup.sh` 与上次确认的版本比较 | 云端更新，见下文；它运行 `box/rn-cloud-setup.sh --upgrade-engine`，云端迁移都放在这里 |
 | 云端引擎 | 本机上次确认的 `[BOT-CLOUD]` Reason Network 版本与固定版本比较 | 云端更新，见下文；每次都检查云端引擎 |
 | routine 提示词 | 所选语言的 routine 桩（加 `--full-prompt` 时为完整提示词）与上次确认的版本比较 | 打印出来，请你在 `[GROK-UI]` 粘贴进 routine；桩随后经读回确认（[routine 桩](#routine-桩)） |
@@ -49,18 +49,19 @@
 
 `[BOT-CLOUD]` 上的 `box/rn-cloud-update.sh` 核对 tag、提交和请求号的格式，拒绝比云端仓库版本更旧的 tag（从不降级），云端仓库有本地改动时停止并列出改动的文件，然后取回该 tag，核对它指向发布提交，切换到它（分离 HEAD），再运行新 checkout 里的同名脚本；后者运行 `box/rn-cloud-setup.sh --upgrade-engine` 并打印结尾的结果行。脚本第一行是 `agent-mesh-result request <请求号>`；任何一步失败都打印 `STOP:` 行，不打印结尾的结果行。引擎步骤失败时保留新 checkout。
 
-回信中有脚本自己打印的结尾几行，每行以 `agent-mesh-result` 开头，分别是发布提交号、八个云端文件各自的校验值和 `DONE <tag>`，并有固定版本、固定构建和 `launcher ok` 三行 `engine:`，才记录云端已更新。有 `STOP:` 行、提交号不同或校验值不同时不记录；`./update.sh` 显示原因，下次运行会发新的请求。15 分钟内没有回信时，Grok Bot 可能还在执行（结果也会出现在 Grok 里）：下次运行 `./update.sh` 先按保存的请求号查找回信，找到就记录，找不到才重新发送。针对其他版本的请求，或在这个 checkout 变化之前发出的请求，它们的回信不会被记录。
+回信中有脚本自己打印的结尾几行，每行以 `agent-mesh-result` 开头，分别是发布提交号、九个云端文件各自的校验值和 `DONE <tag>`，并有固定版本、固定构建和 `launcher ok` 三行 `engine:`，才记录云端已更新。有 `STOP:` 行、提交号不同或校验值不同时不记录；`./update.sh` 显示原因，下次运行会发新的请求。15 分钟内没有回信时，Grok Bot 可能还在执行（结果也会出现在 Grok 里）：下次运行 `./update.sh` 先按保存的请求号查找回信，找到就记录，找不到才重新发送。针对其他版本的请求，或在这个 checkout 变化之前发出的请求，它们的回信不会被记录。
 
 **用这个版本第一次更新云端。**上次以 v0.8.1 或更早版本确认的云端还没有 `box/rn-cloud-update.sh`，旧的 routine 提示词也没有更新请求的规则。这时先粘贴 routine 桩，然后 `./update.sh` 发那一行请求，后面跟一行 `lang=<en|zh-CN>`。在这样的旧云端上，桩还加载不出规则，于是按它的第 3 条用本次运行的消息 id 运行一条固定命令：取回这些消息，遇到以 `agent-mesh update <tag>` 开头的消息时，取回该发布 tag 并运行这个 tag 里的 `box/rn-cloud-update.sh`。这个脚本在改动任何东西之前自己核对发件人（用户自己的 Mac）、请求和 tag，按上文更新云端仓库，发出回信，并让 Grok Bot 在同一次运行里加载新规则。不需要在 Grok 对话里确认。重新加载之后，这次运行用新规则处理其他消息。
 
 没有按时收到回信或云端更新失败时，旧云端加载不了桩的规则，所以 `./update.sh` 打印完整提示词，请你贴回 routine；routine 随即照旧工作，下次运行 `./update.sh` 先查找保存的请求的回信，找不到就重试。完全没有云端一侧记录的 Mac（v0.3.0 或更早）像 `--manual` 那样手动完成云端步骤，之后再显示桩。
 
-云端只安装已发布的版本。改动任何东西之前，`./update.sh` 先在线核对：云端安装来源仓库（公开仓库，或 `--repo-url` 指定的仓库）里存在发布 tag `v<VERSION>`，且本地仓库中的 `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`、`box/rn-cloud-add-bot.sh`、`box/rn-routine.py`、`prompts/routine-body.md`、`prompts/routine-body.zh-CN.md`、`box/rn-cloud-update.sh` 与它一致；本地仓库的其他文件可以不同，也不要求已提交或等于上游。tag 取不到或有文件不同时，更新在停止 relay、动引擎之前就停下，什么都不改。`--plan` 会显示核对结果。只有更新涉及云端时才需要联网核对。
+云端只安装已发布的版本。改动任何东西之前，`./update.sh` 先在线核对：云端安装来源仓库（公开仓库，或 `--repo-url` 指定的仓库）里存在发布 tag `v<VERSION>`，且本地仓库中的 `box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-cloud-setup.sh`、`box/rn-engine.py`、`box/rn-cloud-add-bot.sh`、`box/rn-routine.py`、`box/rn-names.py`、`prompts/routine-body.md`、`prompts/routine-body.zh-CN.md`、`box/rn-cloud-update.sh` 与它一致；本地仓库的其他文件可以不同，也不要求已提交或等于上游。tag 取不到或有文件不同时，更新在停止 relay、动引擎之前就停下，什么都不改。`--plan` 会显示核对结果。只有更新涉及云端时才需要联网核对。
 
 - `./update.sh --plan` 只显示比较结果和将执行的步骤，不改动部署；不加 `--no-pull` 时仍可能先快进本地仓库。
 - 退出码 3 表示需要在终端作答，部署未改动。退出码 1 表示没有全部完成，例如还没收到 Grok Bot 的回信；汇总里写明是哪一部分。各部分都已完成、只有最后的 `./check.sh` 没通过时，汇总会单独说明。
 - **`agent-mesh` 命令。**`./update.sh`（`--plan` 除外）和 `./install.sh` 把这个 checkout 记录在 `~/.local/lib/agent-mesh/deployed.json` 里，并写入 `~/.local/bin/agent-mesh`。之后 `agent-mesh update [选项]` 和 `agent-mesh check [选项]` 可以在任何目录运行所记录 checkout 里的 `./update.sh` 和 `./check.sh`。在另一个 checkout 里运行 `./update.sh` 会把命令指向那里。`~/.local/bin` 不在 `PATH` 里时，脚本会提示。这个位置上不是 agent-mesh 写的文件保持不动。`./uninstall.sh --level program` 会删除这个命令。
 - `./update.sh --manual` 改为手动更新云端：停止 relay；请你在 `[GROK-UI]` 暂停 routine；打印一段话，内含上面的命令块（在对话里直接发给 Grok Bot，不经过 routine），以及 Bot 回复中应出现的提交号和校验值；请你粘贴 Grok Bot 的完整回复，再输入只有一个点（`.`）的一行，并自动比对；打印新的 routine 提示词供你粘贴；请你恢复 routine；最后启动 relay。回答"否"、按 Ctrl-C 或某一步失败时，原先运行的 relay 会被重新启动；routine 仍处于暂停状态时会提醒你恢复。再次运行 `./update.sh` 从停下的步骤继续；已完成的步骤不会重做，除非期间版本又有变化。
+- 改名没完成时更新会停下：再运行 `agent-mesh rename` 完成它，或运行 `agent-mesh rename --cancel`（见[给 Bot 改名](README.zh-CN.md#给-bot-改名)）。
 - Grok Bot 不得做 reset、clean 或 stash；云端仓库有本地改动时更新会停止。和 Grok Bot 一起处理它列出的文件，然后重新运行 `./update.sh`。
 - 更新还没有 Bot 地址名的旧安装：名字保持 `bot`。用了其他 Bot 地址名的安装不能回退到没有 Bot 地址名的版本。
 - 更新到 v0.8.0：已有安装的地址不变，叫 `bot` 的也一样。用 `./install.sh --grok-name '<它在 Grok 里的名字>'` 记录 Bot 在 Grok 里的名字；它只改变地址旁显示的标签。

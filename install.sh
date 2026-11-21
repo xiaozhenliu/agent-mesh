@@ -10,14 +10,14 @@ LIB_DIR="$HOME/.local/lib/agent-mesh"; RELAY="$LIB_DIR/agent_relay.py"
 ROLLBACK="$LIB_DIR/rollback"
 CFG="$HOME/.reason/network/config.toml"
 BOT_KIND=""; BOT_NAME=""; CONF_DIR=""; ENV_FILE=""; LABEL=""; PLIST=""; STATE_DIR=""; MARKER=""; LOG=""; LAUNCHD_LOG=""
-R_NAMES=(); R_KINDS=(); R_STAGES=(); R_CLOUDS=(); R_REMOVING=(); C_NAMES=(); C_KINDS=(); NEW_PLISTS=()
-SEL_KIND=""; SEL_NAME=""; REPLACE_CODE=1
+R_NAMES=(); R_KINDS=(); R_STAGES=(); R_CLOUDS=(); R_REMOVING=(); R_ADDRS=(); C_NAMES=(); C_KINDS=(); NEW_PLISTS=()
+SEL_KIND=""; SEL_NAME=""; REPLACE_CODE=1; SLOT=""; ADDRESS=""; FORMER_VALUE=""; RENAME_SLOT=""; RENAME_TO=""
 export REASON_NETWORK_NO_PROMPT=1
 . "$HERE/scripts/msg.sh"
 . "$HERE/scripts/lock.sh"
 
 NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG=""; RELAY_NAME_ARG=""; GROK_NAME=""; GROK_SET=0; ADD=0; KEEP_ROLLBACK=0
-PYTHON_ARG=""; RELAY_PYTHON=""
+PYTHON_ARG=""; RELAY_PYTHON=""; RENAME=0; RENAME_TO_ARG=""; CANCEL=0; HISTORY=0
 lang_next=0
 for arg in "$@"; do
   [ "$lang_next" = 0 ] || DOC_LANG="$arg"
@@ -47,6 +47,10 @@ while [ $# -gt 0 ]; do
     --keep-rollback) KEEP_ROLLBACK=1; shift ;;
     --undo-relay) MODE=undo; shift ;;
     --add-bot) ADD=1; shift ;;
+    --rename) RENAME=1; MODE=rename; shift
+      if [ $# -gt 0 ] && [[ "$1" != -* ]]; then RENAME_TO_ARG="$1"; shift; fi ;;
+    --cancel) CANCEL=1; shift ;;
+    --accept-history) HISTORY=1; shift ;;
     --wake-bot) MODE=wake; shift ;;
     --preflight) MODE=preflight; shift ;;
     --fetch-engine) value $# "$1" "${2:-}"; MODE=fetch; FETCH_DIR="$2"; shift 2 ;;
@@ -64,6 +68,11 @@ case "$DOC_LANG" in
 esac
 export AGENT_MESH_LANG="$DOC_LANG"
 if [ "$KEEP_ROLLBACK" = 1 ] && [ "$MODE" != restart ]; then t install.keep_rollback_alone >&2; exit 2; fi
+if [ "$RENAME" = 1 ] && [ "$MODE" != rename ]; then t install.rename_alone >&2; exit 2; fi
+if [ "$CANCEL" = 1 ] || [ "$HISTORY" = 1 ]; then
+  [ "$MODE" = rename ] || { t install.rename_only >&2; exit 2; }
+  [ -z "$RENAME_TO_ARG" ] && [ "$CANCEL$HISTORY" != 11 ] || { t install.rename_options >&2; exit 2; }
+fi
 if [ "$ADD" = 1 ]; then
   [ "$MODE" = full ] || { t install.add_alone >&2; exit 2; }
   [ "$YES" = 0 ] || { t install.add_no_yes >&2; exit 2; }
@@ -96,13 +105,13 @@ rn_engine() { "$PYTHON" "$HERE/box/rn-engine.py" "$@" 9>&-; }
 
 use_bot() {   # $1 name (empty: the first Bot), $2 kind for a Bot not on this Mac yet, $3 --lenient for read-only modes
   local out k v
-  BOT_NAME="$1"
+  BOT_NAME="$1"; SLOT=""; ADDRESS=""
   out="$("$PYTHON" "$HERE/scripts/bots.py" paths ${1:+"$1"} --kind "$2" "${@:3}" 2>&1)" || die "$out"
   while IFS=$'\t' read -r k v; do
     case "$k" in
       KIND) BOT_KIND="$v" ;; CONF_DIR) CONF_DIR="$v" ;; ENV_FILE) ENV_FILE="$v" ;;
       LABEL) LABEL="$v" ;; PLIST) PLIST="$v" ;; STATE_DIR) STATE_DIR="$v" ;; MARKER) MARKER="$v" ;; LOG) LOG="$v" ;;
-      LAUNCHD_LOG) LAUNCHD_LOG="$v" ;;
+      LAUNCHD_LOG) LAUNCHD_LOG="$v" ;; SLOT) SLOT="$v" ;; ADDRESS) ADDRESS="$v" ;;
     esac
   done <<< "$out"
   [ -n "$ENV_FILE" ] && [ -n "$LABEL" ] && [ -n "$STATE_DIR" ] || die "$out"
@@ -162,26 +171,11 @@ fetch_engine() {   # $1: empty directory; leaves the verified binary at $1/reaso
 }
 
 rename_refused() {
-  die "$(tq install.rename_refused "$1" "$1")
+  die "$(tq install.rename_refused "$1" "$RELAY_NAME_ARG" "$RELAY_NAME_ARG")
 $(tq install.add_hint)"
 }
-have_webhook() { [ -f "$ENV_FILE" ] && grep -Eq '^WEBHOOK_URL=https://' "$ENV_FILE" && grep -Eq '^WEBHOOK_KEY=.{8,}' "$ENV_FILE"; }
-
-relay_env() {   # NAME=value for each given name set in the env file, parsed like agent_relay.load_env (last wins)
-  "$PYTHON" - "$ENV_FILE" "$@" <<'PY'
-import os, sys
-cfg = {}
-for line in open(sys.argv[1], encoding="utf-8").read().splitlines():
-    line = line.strip()
-    if line and not line.startswith("#") and "=" in line:
-        k, v = line.split("=", 1)
-        cfg[k.strip()] = v.strip().strip('"').strip("'")
-for k in sys.argv[2:]:
-    if k in cfg:
-        v = os.path.expanduser(cfg[k]) if k == "OUTBOUND_KEY_FILE" else cfg[k]
-        print(f"{k}={v}")
-PY
-}
+have_webhook() { relay_names webhook "$ENV_FILE"; }
+relay_env() { relay_names env-values "$ENV_FILE" "$@"; }
 
 env_text() {
   cat <<EOF
@@ -192,20 +186,24 @@ EOF
   [ -z "$1" ] || printf 'WEBHOOK_URL=%s\nWEBHOOK_KEY=%s\n' "$1" "$2"
   cat <<EOF
 OUTBOUND_KEY_FILE=$KEY_FILE
-# The Bot address name, chosen with install.sh --relay-name; renaming is not supported, do not edit these three.
-LISTEN_NAME=$RELAY_NAME
-CLOUD_NAME=$RELAY_NAME-cloud
-INBOX_NAME=$RELAY_NAME-inbox
+# The Bot address name; change it only with agent-mesh rename, which rewrites these lines.
+LISTEN_NAME=$ADDRESS
+CLOUD_NAME=$ADDRESS-cloud
+INBOX_NAME=$ADDRESS-inbox
+EOF
+  [ -z "$FORMER_VALUE" ] || printf 'FORMER_NAMES=%s\n' "$FORMER_VALUE"
+  cat <<EOF
 # Optional, shown with defaults:
 # CLOUD_MACHINE=cloud
 # MAX_WAKES_PER_HOUR=20  MIN_SECONDS_BETWEEN_WAKES=20  MAX_BATCH=10  MAX_PROXY_PER_HOUR=60  MAX_SPOOL=1000
 # WEBHOOK_MAX_BODY_CHARS=3500  DOORBELL_PREVIEW_CHARS=200  FWD_COPY_DAYS=7  REFWD_MAX_PER_ID=2  REFWD_MAX_PER_HOUR=20
-# GOT_TIMEOUT_SECONDS=900  GOT_DONE_SECONDS=7200  GOT_MAX_RERINGS=2  NONCE_KEEP_SECONDS=86400
+# GOT_TIMEOUT_SECONDS=900  GOT_DONE_SECONDS=7200  GOT_MAX_RERINGS=2  NONCE_KEEP_SECONDS=86400  FORMER_POLL_SECONDS=60
 EOF
 }
 
 put_env() {
   local tmp
+  FORMER_VALUE="$(deploy_state former-env --slot "${SLOT:--}")" || die "$(tq install.env_write_failed "$ENV_FILE")"
   rm -f "$CONF_DIR"/.env.??????
   tmp="$(mktemp "$CONF_DIR/.env.XXXXXX")" || die "$(tq install.tmp_failed "$CONF_DIR" "$ENV_FILE")"
   if ! { env_text "$1" "$2" > "$tmp" && { [ -z "$3" ] || printf '%s\n' "$3" >> "$tmp"; } \
@@ -225,13 +223,13 @@ write_env() {   # $1 url, $2 key; keeps the user's optional settings (e.g. DOORB
   [ ! -f "$ENV_FILE" ] || kept="$(relay_env CLOUD_MACHINE MAX_WAKES_PER_HOUR \
     MIN_SECONDS_BETWEEN_WAKES MAX_BATCH MAX_PROXY_PER_HOUR MAX_SPOOL WEBHOOK_MAX_BODY_CHARS DOORBELL_PREVIEW_CHARS \
     FWD_COPY_DAYS REFWD_MAX_PER_ID REFWD_MAX_PER_HOUR GOT_TIMEOUT_SECONDS GOT_DONE_SECONDS GOT_MAX_RERINGS \
-    NONCE_KEEP_SECONDS)" || die "$(tq install.env_read_failed "$ENV_FILE")"
+    NONCE_KEEP_SECONDS FORMER_POLL_SECONDS)" || die "$(tq install.env_read_failed "$ENV_FILE")"
   put_env "$1" "$2" "$kept"
 }
 
 bot_label() {
   deploy_state label --person "$(current_person)" --relay-name "$RELAY_NAME" 2>/dev/null \
-    || echo "$(current_person)/$RELAY_NAME"
+    || echo "$(current_person)/$ADDRESS"
 }
 
 reply_templates() {
@@ -294,8 +292,13 @@ bootstrap_and_wait() {
 }
 
 use_member() {
-  if [ "$2" = legacy ]; then use_bot "" legacy; else use_bot "$1" added; fi
+  if [ "$2" = legacy ]; then use_bot "" legacy; ADDRESS="${1:-$ADDRESS}"; else use_bot "$1" added; fi
   BOT_NAME="$1"; RELAY_NAME="$1"
+  [ -n "$ADDRESS" ] || ADDRESS="$1"
+  if [ -n "$RENAME_TO" ] && [ "$SLOT" = "$RENAME_SLOT" ]; then
+    ADDRESS="$RENAME_TO"
+    [ "$BOT_KIND" != legacy ] || RELAY_NAME="$RENAME_TO"
+  fi
 }
 
 member_path() {
@@ -463,7 +466,7 @@ start_relay() {
 
 registration() {   # the new relay's own marker (removed before it started), then the engine's session row
   local rc=0 waited=0 want mark m_name m_pid _ pid
-  want="$(current_person)/$RELAY_NAME"
+  want="$(current_person)/$ADDRESS"
   REG_ACTUAL=""
   while :; do
     rc=0; mark="$(relay_names marker "$MARKER" 2>&1)" || rc=$?
@@ -474,8 +477,8 @@ registration() {   # the new relay's own marker (removed before it started), the
       if [ -z "$pid" ]; then
         REG_ACTUAL="$(tq install.reg_no_process)"
       elif [ "$pid" = "$m_pid" ]; then
-        rc=0; REG_ACTUAL="$(relay_names registered "$RELAY_NAME" 2>&1)" || rc=$?
-        if [ "$rc" = 0 ] && [ "$REG_ACTUAL" = "$RELAY_NAME" ]; then
+        rc=0; REG_ACTUAL="$(relay_names registered "$ADDRESS" 2>&1)" || rc=$?
+        if [ "$rc" = 0 ] && [ "$REG_ACTUAL" = "$ADDRESS" ]; then
           t install.registered "$want"
           return 0
         fi
@@ -494,12 +497,12 @@ registration() {   # the new relay's own marker (removed before it started), the
 
 check_registered() {
   registration && return 0
-  die "$(tq install.registered_other "$REG_ACTUAL" "$(current_person)/$RELAY_NAME" "$RELAY_NAME")"
+  die "$(tq install.registered_other "$REG_ACTUAL" "$(current_person)/$ADDRESS" "$ADDRESS")"
 }
 
 verify_registration() {
   registration && return 0
-  t install.new_registered_other "$REG_ACTUAL" "$(current_person)/$RELAY_NAME"
+  t install.new_registered_other "$REG_ACTUAL" "$(current_person)/$ADDRESS"
   return 1
 }
 
@@ -572,11 +575,11 @@ cloud_prompt() {
   echo "----------------------------------------------------------------"
   echo "$invite"
   echo
-  render_prompt cloud-setup --team-name "$person" --mac-home "$HOME" --repo-url "$repo" --relay-name "$RELAY_NAME" \
+  render_prompt cloud-setup --team-name "$person" --mac-home "$HOME" --repo-url "$repo" --relay-name "$ADDRESS" \
     --release-tag "$tag" --release-commit "$commit" --cloud-checksums "$sums"
   echo "----------------------------------------------------------------"
   t install.copy_key "$KEY_FILE"
-  t install.bot_address_cloud "$(bot_label)" "$RELAY_NAME-cloud" "$RELAY_NAME-inbox"
+  t install.bot_address_cloud "$(bot_label)" "$ADDRESS-cloud" "$ADDRESS-inbox"
 }
 
 grok_label() {
@@ -688,11 +691,12 @@ launchctl print "gui/$(id -u)" >/dev/null 2>&1 \
 export REASON_NETWORK_HOME="$HOME/.reason/network"
 case "$REPO_URL" in https://*) ;; *) die "$(tq install.repo_url --repo-url)" ;; esac
 load_roster() {
-  local out n k s c r
-  R_NAMES=(); R_KINDS=(); R_STAGES=(); R_CLOUDS=(); R_REMOVING=()
+  local out n k s c r a
+  R_NAMES=(); R_KINDS=(); R_STAGES=(); R_CLOUDS=(); R_REMOVING=(); R_ADDRS=()
   out="$("$PYTHON" "$HERE/scripts/bots.py" list 2>&1)" || die "$out"
-  while IFS=$'\t' read -r n k s c r _; do
-    [ -z "$n" ] || { R_NAMES+=("$n"); R_KINDS+=("$k"); R_STAGES+=("$s"); R_CLOUDS+=("$c"); R_REMOVING+=("$r"); }
+  while IFS=$'\t' read -r n k s c r _ a; do
+    [ -z "$n" ] || { R_NAMES+=("$n"); R_KINDS+=("$k"); R_STAGES+=("$s"); R_CLOUDS+=("$c"); R_REMOVING+=("$r")
+      R_ADDRS+=("${a:-$n}"); }
   done <<< "$out"
 }
 
@@ -700,6 +704,9 @@ roster_at() {
   local i
   for ((i = 0; i < ${#R_NAMES[@]}; i++)); do
     if [ "${R_NAMES[$i]}" = "$1" ]; then printf '%s' "$i"; return 0; fi
+  done
+  for ((i = 0; i < ${#R_ADDRS[@]}; i++)); do
+    if [ "${R_ADDRS[$i]}" = "$1" ]; then printf '%s' "$i"; return 0; fi
   done
   return 1
 }
@@ -733,12 +740,12 @@ pick_bot() {
   SEL_KIND=legacy; SEL_NAME=""
   if [ -n "$RELAY_NAME_ARG" ]; then
     if i="$(roster_at "$RELAY_NAME_ARG")"; then
-      SEL_KIND="${R_KINDS[$i]}"; SEL_NAME="$RELAY_NAME_ARG"
-    elif [ "$n" -gt 1 ]; then
+      SEL_KIND="${R_KINDS[$i]}"; SEL_NAME="${R_NAMES[$i]}"
+    elif [ "$n" -gt 1 ] || [ "$MODE" = rename ]; then
       roster_stop "$(tq install.not_a_bot "$RELAY_NAME_ARG")"
     elif [ "$n" = 1 ] && ! roster_has_legacy; then
       [ "$MODE" != full ] || die "$(tq install.full_no_first)"
-      rename_refused "${R_NAMES[0]}"
+      rename_refused "${R_ADDRS[0]}"
     fi
   elif [ "$n" -gt 1 ]; then
     roster_stop "$(tq install.which_bot)"
@@ -814,6 +821,33 @@ add_check() {
   return "$rc"
 }
 
+add_name() {
+  local rc=0 out k v
+  ADD_CLASS=""; ADD_EVIDENCE=(); ADD_UNREAD=0; ADD_SENDERS=()
+  out="$(relay_names name-check "$person" "$1" <<<"$sessions" 2>&1)" || rc=$?
+  [ "$rc" != 2 ] || die "$out"
+  if [ "$rc" != 0 ]; then ADD_WHY="$out"; return 1; fi
+  while read -r k v; do
+    case "$k" in
+      class) ADD_CLASS="$v" ;; evidence) ADD_EVIDENCE+=("$v") ;; unread) ADD_UNREAD="$v" ;; sender) ADD_SENDERS+=("$v") ;;
+    esac
+  done <<< "$out"
+}
+
+name_facts() {
+  local line
+  t "install.name_class_$ADD_CLASS"
+  for line in ${ADD_EVIDENCE[@]+"${ADD_EVIDENCE[@]}"}; do echo "  $line"; done
+  if [ "$ADD_UNREAD" != 0 ]; then
+    if [ "${2:-}" = add ] && [ "$ADD_CLASS" = left ]; then
+      t install.name_unread_held "$ADD_UNREAD" "$1"
+    else
+      t install.name_unread "$ADD_UNREAD" "$1"
+    fi
+    for line in ${ADD_SENDERS[@]+"${ADD_SENDERS[@]}"}; do echo "  $line"; done
+  fi
+}
+
 add_default() {
   local c n=1
   ADD_DEFAULT=""
@@ -826,7 +860,7 @@ add_default() {
 }
 
 add_mode() {
-  local person sessions facts hash machine answer i why others=""
+  local person sessions facts hash machine answer i why others="" reclaim=()
   [ "${#R_NAMES[@]}" != 0 ] || die "$(tq install.add_no_deployment)"
   [ -x "$RN" ] || die "$(tq install.no_engine)"
   person="$(current_person)"
@@ -837,11 +871,11 @@ add_mode() {
     if [ "${R_KINDS[$i]}" != added ] || [ "${R_CLOUDS[$i]}" = confirmed ]; then
       die "$(tq install.add_exists "$RELAY_NAME_ARG" "$RELAY_NAME_ARG")"
     fi
-    add_ready "$RELAY_NAME_ARG"
-    use_member "$RELAY_NAME_ARG" added
+    add_ready "${R_NAMES[$i]}"
+    use_member "${R_NAMES[$i]}" added
     CURRENT="$RELAY_NAME"; recorded=ok
     record_grok
-    t install.add_resume "$person/$RELAY_NAME"
+    t install.add_resume "$person/$ADDRESS"
     add_continue
     return 0
   fi
@@ -860,8 +894,9 @@ add_mode() {
     [ "$GROK_SET" = 1 ] || die "$(tq install.add_gave_up)"
   fi
   sessions="$("$RN" who --all --json 9>&-)" || die "$(tq install.add_who_failed)"
+  ADD_CLASS=new
   if [ -n "$RELAY_NAME_ARG" ]; then
-    add_check "$RELAY_NAME_ARG" || die "--relay-name: $ADD_WHY"
+    add_name "$RELAY_NAME_ARG" || die "--relay-name: $ADD_WHY"
     RELAY_NAME="$RELAY_NAME_ARG"
   else
     add_default
@@ -870,7 +905,7 @@ add_mode() {
       for _ in 1 2 3; do
         answer=""; read -r -p "$(tq install.ask_address "$ADD_DEFAULT")" answer || true
         answer="${answer:-$ADD_DEFAULT}"
-        if add_check "$answer"; then RELAY_NAME="$answer"; break; fi
+        if add_name "$answer"; then RELAY_NAME="$answer"; break; fi
         t install.try_again "$ADD_WHY"
       done
       [ -n "$RELAY_NAME" ] || die "$(tq install.add_gave_up)"
@@ -878,9 +913,13 @@ add_mode() {
       RELAY_NAME="$ADD_DEFAULT"
     fi
   fi
-  for ((i = 0; i < ${#R_NAMES[@]}; i++)); do others="$others${others:+, }$person/${R_NAMES[$i]}"; done
+  for ((i = 0; i < ${#R_NAMES[@]}; i++)); do others="$others${others:+, }$person/${R_ADDRS[$i]}"; done
   echo
   t install.add_plan "$person/$RELAY_NAME" "$GROK_NAME" "$others"
+  if [ "$ADD_CLASS" != new ]; then
+    name_facts "$person/$RELAY_NAME" add
+    reclaim=(--reclaim)
+  fi
   if [ -t 0 ]; then
     answer=""; read -r -p "$(tq install.ask_add_apply)" answer || true
     [[ "$answer" == [yY]* ]] || die "$(tq install.add_stopped)"
@@ -888,8 +927,8 @@ add_mode() {
     t install.add_plan_no_tty "./install.sh --add-bot --grok-name '$GROK_NAME' --relay-name $RELAY_NAME --lang $DOC_LANG"
     exit 3
   fi
-  why="$(deploy_state add-record --relay-name "$RELAY_NAME" --team-hash "$hash" --grok-name="$GROK_NAME" 2>&1)" \
-    || die "$why"
+  why="$(deploy_state add-record --relay-name "$RELAY_NAME" --team-hash "$hash" --grok-name="$GROK_NAME" \
+    ${reclaim[@]+"${reclaim[@]}"} 2>&1)" || die "$why"
   use_member "$RELAY_NAME" added
   add_continue
 }
@@ -897,14 +936,26 @@ add_mode() {
 cloud_ready() {
   local listing
   listing="$("$RN" who --all --json 9>&-)" || return 2
-  relay_names cloud-sessions "$(current_person)" "$RELAY_NAME" <<<"$listing"
+  relay_names cloud-sessions "$(current_person)" "$ADDRESS" <<<"$listing"
 }
 
 wake_bot() { deploy_state wake-bot --relay-name "$RELAY_NAME" || die "$(tq install.add_wake_failed "$(wake_cmd)")"; }
 
+poll_reply() {
+  local limit="$1" waited=0
+  shift
+  while :; do
+    rc=0; out="$("$@")" || rc=$?
+    [ "$rc" = 3 ] || return 0
+    if [ "$waited" -ge "$limit" ]; then return 1; fi
+    sleep 5 || exit $?
+    waited=$((waited + 5))
+  done
+}
+
 wait_sessions() {
   local waited=0 limit="${AGENT_MESH_ADD_WAIT:-600}" rc
-  t install.add_waiting "$(current_person)/$RELAY_NAME-cloud" "$(current_person)/$RELAY_NAME-inbox" "$((limit / 60))"
+  t install.add_waiting "$(current_person)/$ADDRESS-cloud" "$(current_person)/$ADDRESS-inbox" "$((limit / 60))"
   while :; do
     rc=0; cloud_ready || rc=$?
     [ "$rc" != 0 ] || return 0
@@ -927,8 +978,8 @@ start_added() {
 }
 
 confirm_add() {
-  local rc out="" req waited=0 limit="${AGENT_MESH_ADD_REPLY_WAIT:-600}" to
-  to="$(current_person)/$RELAY_NAME"
+  local rc out="" req limit="${AGENT_MESH_ADD_REPLY_WAIT:-600}" to
+  to="$(current_person)/$ADDRESS"
   if [ "$(bot_field cloud)" != confirmed ]; then
     rc=3
     if [ "$(bot_field req)" != - ]; then
@@ -940,15 +991,10 @@ confirm_add() {
       "$RN" send "$to" - < <(printf '%s' "agent-mesh add-bot $RELAY_NAME $req") >/dev/null 9>&- \
         || die "$(tq install.add_send_failed "$to" "$(wake_cmd)")"
       t install.add_sent "$to" "$((limit / 60))"
-      while :; do
-        rc=0; out="$(deploy_state add-reply --relay-name "$RELAY_NAME" --lang "$DOC_LANG")" || rc=$?
-        [ "$rc" = 3 ] || break
-        if [ "$waited" -ge "$limit" ]; then
-          t install.add_reply_timeout "$to" "$(wake_cmd)"
-          exit 3
-        fi
-        sleep 5; waited=$((waited + 5))
-      done
+      if ! poll_reply "$limit" deploy_state add-reply --relay-name "$RELAY_NAME" --lang "$DOC_LANG"; then
+        t install.add_reply_timeout "$to" "$(wake_cmd)"
+        exit 3
+      fi
     fi
     [ -z "$out" ] || printf '%s\n' "$out"
     case "$rc" in
@@ -972,7 +1018,7 @@ add_continue() {
     if [ "$rc" != 0 ]; then
       wake_bot
       if ! wait_sessions; then
-        t install.add_wait_timeout "$(current_person)/$RELAY_NAME" "$(wake_cmd)"
+        t install.add_wait_timeout "$(current_person)/$ADDRESS" "$(wake_cmd)"
         exit 3
       fi
     fi
@@ -995,7 +1041,7 @@ wake_mode() {
   if [ "$stage" != relay ]; then
     rc=0; cloud_ready || rc=$?
     if [ "$rc" != 0 ]; then
-      t install.wake_not_yet "$(current_person)/$RELAY_NAME" "$(wake_cmd)"
+      t install.wake_not_yet "$(current_person)/$ADDRESS" "$(wake_cmd)"
       exit 3
     fi
     start_added
@@ -1009,6 +1055,315 @@ wake_mode() {
   confirm_add
 }
 
+rename_guard() {
+  local out rc=0
+  out="$(deploy_state rename-get 2>&1)" || rc=$?
+  case "$rc" in
+    3) ;;
+    0) die "$(tq install.rename_busy)" ;;
+    *) die "$out" ;;
+  esac
+}
+
+rename_get() {
+  local out rc=0 k v
+  out="$(deploy_state rename-get 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 3 ] || die "$out"
+  [ "$rc" = 0 ] || return 3
+  while read -r k v; do
+    case "$k" in
+      stage) R_STAGE="$v" ;; slot) R_SLOT="$v" ;; old) R_OLD="$v" ;; new) R_NEW="$v" ;; req) R_REQ="$v" ;;
+      reclaim) R_RECLAIM="$v" ;;
+    esac
+  done <<< "$out"
+}
+
+rename_cmd() {
+  local cmd="agent-mesh rename $1"
+  [ "${#R_NAMES[@]}" -le 1 ] || cmd="$cmd --relay-name $2"
+  printf '%s' "$cmd"
+}
+
+pair() {
+  local key="$1"
+  shift
+  while [ "$#" -ge 2 ]; do
+    if [ "$1" = "$key" ]; then printf '%s\n' "$2"; return 0; fi
+    shift 2
+  done
+  return 1
+}
+
+rename_ready() {
+  local st line w addr
+  st="$(deploy_state status --lang "$DOC_LANG" --python "$RELAY_PYTHON")" || die "$(tq install.rename_status_failed)"
+  while IFS= read -r line; do
+    w=(); read -r -a w <<< "$line"
+    case "${w[0]:-}" in
+      cloud|cloud_setup|cloud_engine) [ "${w[1]:-}" = unchanged ] || die "$(tq install.rename_update_first)" ;;
+      cloud_release) [ "${w[1]:-}" != - ] || die "$(tq install.rename_update_first)" ;;
+      txn|etxn|request) [ "${w[1]:-}" = - ] || die "$(tq install.rename_update_first)" ;;
+      engine) [ "${w[1]:-}" != older ] || die "$(tq install.rename_update_first)" ;;
+      name) [ "${w[1]:-}" != changed ] || die "$(tq install.rename_update_first)" ;;
+      bots) die "$(tq install.rename_status_failed)" ;;
+      bot)
+        [ "${#w[@]}" -ge 18 ] || die "$(tq install.rename_status_failed)"
+        addr="$(pair address "${w[@]}")" || die "$(tq install.rename_status_failed)"
+        [ "${w[15]}" = - ] || die "$(tq install.bot_removing "$addr" "$addr")"
+        if [ "${w[3]}" = added ] && { [ "${w[5]}" != relay ] || [ "${w[13]}" != confirmed ]; }; then
+          die "$(tq install.rename_unfinished "$addr" "./install.sh --add-bot --relay-name ${w[1]} --lang $DOC_LANG")"
+        fi
+        [ "${w[1]}" = "$1" ] || continue
+        [ "${w[7]}" = ok ] || die "$(tq install.rename_webhook_first "$addr")"
+        [ "${w[9]}" = unchanged ] || die "$(tq install.rename_update_first)" ;;
+    esac
+  done <<< "$st"
+}
+
+rename_new() {
+  local i person sessions out rc=0 pid answer reclaim=() why k v
+  [ "${#R_NAMES[@]}" != 0 ] || die "$(tq install.rename_nothing)"
+  [ -x "$RN" ] || die "$(tq install.no_engine)"
+  person="$(current_person)"
+  [ -n "$person" ] && [ -s "$KEY_FILE" ] || die "$(tq install.need_team_key)"
+  why="$(relay_names check "$RENAME_TO_ARG" 2>&1)" || die "$why"
+  pick_bot
+  i="$(roster_at "$SEL_NAME")" || i=0
+  use_member "${R_NAMES[$i]}" "${R_KINDS[$i]}"
+  [ "$RENAME_TO_ARG" != "$ADDRESS" ] || die "$(tq install.rename_same "$person/$ADDRESS")"
+  rename_ready "${R_NAMES[$i]}"
+  relay_running || die "$(tq install.rename_relay_down "$(bot_label)" "./install.sh --restart-relay --lang $DOC_LANG")"
+  pid="$(relay_pid)"
+  sessions="$("$RN" who --all --json 9>&-)" || die "$(tq install.add_who_failed)"
+  out="$(relay_names name-check "$person" "$RENAME_TO_ARG" --slot "$SLOT" ${pid:+--relay-pid "$pid"} <<<"$sessions" 2>&1)" \
+    || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "$(tq install.rename_name_refused "$person/$RENAME_TO_ARG")
+$out" ;;
+    *) die "$out" ;;
+  esac
+  ADD_CLASS=""; ADD_EVIDENCE=(); ADD_UNREAD=0; ADD_SENDERS=()
+  while read -r k v; do
+    case "$k" in
+      class) ADD_CLASS="$v" ;; evidence) ADD_EVIDENCE+=("$v") ;; unread) ADD_UNREAD="$v" ;; sender) ADD_SENDERS+=("$v") ;;
+    esac
+  done <<< "$out"
+  echo
+  t install.rename_plan "$person/$ADDRESS" "$person/$RENAME_TO_ARG"
+  name_facts "$person/$RENAME_TO_ARG"
+  if [ "$ADD_CLASS" = new ] || [ "$ADD_CLASS" = own ]; then
+    if [ "$YES" != 1 ] || [ "$ADD_UNREAD" != 0 ]; then
+      if [ -t 0 ]; then
+        answer=""; read -r -p "$(tq install.ask_rename)" answer || true
+        [[ "$answer" == [yY]* ]] || die "$(tq install.rename_stopped)"
+      elif [ "$ADD_UNREAD" = 0 ]; then
+        t install.rename_no_tty "$(rename_cmd "$RENAME_TO_ARG" "$ADDRESS") --yes"
+        exit 3
+      else
+        t install.rename_need_tty "$(rename_cmd "$RENAME_TO_ARG" "$ADDRESS")"
+        exit 3
+      fi
+    fi
+  else
+    if [ ! -t 0 ]; then
+      t install.rename_need_tty "$(rename_cmd "$RENAME_TO_ARG" "$ADDRESS")"
+      exit 3
+    fi
+    answer=""; read -r -p "$(tq install.ask_rename)" answer || true
+    [[ "$answer" == [yY]* ]] || die "$(tq install.rename_stopped)"
+    reclaim=(--reclaim)
+  fi
+  out="$(deploy_state rename-start --slot "$SLOT" --old "$ADDRESS" --new "$RENAME_TO_ARG" ${reclaim[@]+"${reclaim[@]}"} 2>&1)" \
+    || die "$out"
+}
+
+rename_member() {
+  RENAME_SLOT="$R_SLOT"
+  if [ "$R_SLOT" = - ]; then use_member "${RENAME_TO:-$R_OLD}" legacy; else use_member "$R_SLOT" added; fi
+}
+
+rename_reply() { deploy_state rename-reply 2>&1; }
+
+rename_request() {
+  local rc=0 out limit="${AGENT_MESH_RENAME_REPLY_WAIT:-600}" to body
+  to="$(current_person)/$R_OLD"
+  out="$(rename_reply)" || rc=$?
+  if [ "$rc" = 3 ]; then
+    body="agent-mesh rename $R_SLOT $R_OLD $R_NEW $R_REQ"
+    [ "$R_RECLAIM" != 1 ] || body="$body"$'\n'"reclaim=1"
+    "$RN" send "$to" - < <(printf '%s' "$body") >/dev/null 9>&- || die "$(tq install.rename_send_failed "$to")"
+    t install.rename_sent "$to" "$((limit / 60))"
+    if ! poll_reply "$limit" rename_reply; then
+      t install.rename_reply_timeout "$to"
+      exit 3
+    fi
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out"
+  case "$rc" in
+    0) ;;
+    1) die "$(tq install.rename_cloud_refused)" ;;
+    *) die "$(tq install.rename_reply_unread)" ;;
+  esac
+}
+
+rename_env() {
+  local cfg url key
+  cfg="$(relay_env WEBHOOK_URL WEBHOOK_KEY)" || die "$(tq install.env_read_failed "$ENV_FILE")"
+  url="$(printf '%s\n' "$cfg" | sed -n 's/^WEBHOOK_URL=//p')"
+  key="$(printf '%s\n' "$cfg" | sed -n 's/^WEBHOOK_KEY=//p')"
+  [ -n "$url" ] && [ -n "$key" ] || die "$(tq install.rename_webhook_first "$(current_person)/$R_OLD")"
+  write_env "$url" "$key"
+  chmod 600 "$ENV_FILE"
+}
+
+rename_stop_relay() {
+  launchctl bootout "$(service)" 2>/dev/null || true
+  if relay_loaded; then die "$(tq install.rename_unload_failed "$(service)")"; fi
+  rm -f "$MARKER"
+}
+
+rename_forward() {
+  local out name
+  if [ "$R_STAGE" = requested ]; then rename_request; R_STAGE=replied; fi
+  if [ "$R_STAGE" = replied ]; then
+    out="$(deploy_state rename-switch 2>&1)" || die "$out"
+    R_STAGE=switching
+  fi
+  RENAME_TO="$R_NEW"
+  rename_member
+  if [ "$R_STAGE" = switching ]; then
+    rename_stop_relay
+    rename_env
+    deploy_state rename-launched || die "$(tq install.record_failed "$LIB_DIR/deployed.json")"
+    R_STAGE=launched
+  fi
+  name="$(relay_names env "$ENV_FILE" 2>&1)" || die "$(tq install.env_names "$name")"
+  [ "$name" = "$R_NEW" ] || rename_env
+  C_NAMES=("$RELAY_NAME"); C_KINDS=("$BOT_KIND"); REPLACE_CODE=0
+  if ! { relay_running && AGENT_MESH_REGISTER_WAIT=0 registration; }; then
+    start_relay verify || die "$(tq install.rename_start_failed "$(current_person)/$R_NEW")"
+  fi
+  deploy_state rename-commit || die "$(tq install.record_failed "$LIB_DIR/deployed.json")"
+  "$PYTHON" "$HERE/scripts/reply_convention.py" install \
+    || die "$(tq install.rename_reply_failed "$LIB_DIR/templates")"
+  out="$(deploy_state rename-finish 2>&1)" || die "$out"
+  t install.rename_done "$(current_person)/$R_OLD" "$(current_person)/$R_NEW"
+  [ -z "$out" ] || printf '%s\n' "$out"
+  t install.refresh_copies
+  echo "  python3 scripts/reply_convention.py refresh <repository>/AGENTS.md"
+}
+
+rename_cancel() {
+  local out
+  case "$R_STAGE" in
+    launched) die "$(tq install.rename_cancel_launched "$(current_person)/$R_NEW")" ;;
+    switching)
+      RENAME_TO="$R_OLD"
+      rename_member
+      rename_stop_relay
+      out="$(deploy_state rename-restore 2>&1)" || die "$out"
+      rename_member
+      C_NAMES=("$RELAY_NAME"); C_KINDS=("$BOT_KIND"); REPLACE_CODE=0
+      start_relay verify || die "$(tq install.rename_cancel_failed)"
+      reply_templates ;;
+  esac
+  deploy_state rename-clear || die "$(tq install.record_failed "$LIB_DIR/deployed.json")"
+  t install.rename_cancelled "$(current_person)/$R_OLD" "$(current_person)/$R_NEW"
+}
+
+history_mode() {
+  local i person out rc=0 k c n req to waited=0 limit="${AGENT_MESH_RENAME_REPLY_WAIT:-600}" answer total=0
+  local claims=() left=() rest
+  [ "${#R_NAMES[@]}" != 0 ] || die "$(tq install.rename_nothing)"
+  [ -x "$RN" ] || die "$(tq install.no_engine)"
+  person="$(current_person)"
+  [ -n "$person" ] && [ -s "$KEY_FILE" ] || die "$(tq install.need_team_key)"
+  pick_bot
+  i="$(roster_at "$SEL_NAME")" || i=0
+  use_member "${R_NAMES[$i]}" "${R_KINDS[$i]}"
+  out="$(deploy_state held --slot "$SLOT" 2>&1)" || rc=$?
+  if [ "$rc" = 3 ]; then t install.history_none "$(bot_label)"; return 0; fi
+  [ "$rc" = 0 ] || die "$out"
+  while read -r k c n; do
+    [ "$k" = claim ] || continue
+    claims+=("$c"); total=$((total + n))
+  done <<< "$out"
+  to="$person/$ADDRESS"
+  echo
+  t install.history_plan "$total" "$(bot_label)"
+  if [ "$YES" != 1 ]; then
+    if [ -t 0 ]; then
+      answer=""; read -r -p "$(tq install.ask_history)" answer || true
+      [[ "$answer" == [yY]* ]] || die "$(tq install.history_stopped)"
+    else
+      t install.rename_no_tty "agent-mesh rename --accept-history$([ "${#R_NAMES[@]}" -le 1 ] || printf ' --relay-name %s' "$ADDRESS") --yes"
+      exit 3
+    fi
+  fi
+  for c in "${claims[@]}"; do
+    rc=0; out="$(deploy_state history-reply --slot "$SLOT" --claim "$c" 2>&1)" || rc=$?
+    if [ "$rc" = 3 ]; then
+      req="$(deploy_state history-start --slot "$SLOT" --claim "$c" 2>&1)" || die "$req"
+      "$RN" send "$to" - < <(printf '%s' "agent-mesh history $SLOT accept $c $req") >/dev/null 9>&- \
+        || die "$(tq install.rename_send_failed "$to")"
+      left+=("$c")
+      continue
+    fi
+    history_result "$rc" "$out"
+  done
+  [ "${#left[@]}" = 0 ] || t install.rename_sent "$to" "$((limit / 60))"
+  while [ "${#left[@]}" != 0 ]; do
+    rest=()
+    for c in "${left[@]}"; do
+      rc=0; out="$(deploy_state history-reply --slot "$SLOT" --claim "$c" 2>&1)" || rc=$?
+      if [ "$rc" = 3 ]; then rest+=("$c"); else history_result "$rc" "$out"; fi
+    done
+    left=(${rest[@]+"${rest[@]}"})
+    [ "${#left[@]}" != 0 ] || break
+    if [ "$waited" -ge "$limit" ]; then
+      t install.history_timeout "$to"
+      exit 3
+    fi
+    sleep 5; waited=$((waited + 5))
+  done
+}
+
+history_result() {
+  [ -z "$2" ] || printf '%s\n' "$2"
+  case "$1" in
+    0) ;;
+    1) die "$(tq install.history_refused)" ;;
+    *) die "$(tq install.rename_reply_unread)" ;;
+  esac
+}
+
+rename_mode() {
+  local rc=0
+  R_STAGE=""; R_SLOT=""; R_OLD=""; R_NEW=""; R_REQ=""; R_RECLAIM=0
+  rename_get || rc=$?
+  if [ "$HISTORY" = 1 ]; then
+    [ "$rc" = 3 ] || die "$(tq install.rename_busy)"
+    history_mode
+    return 0
+  fi
+  if [ "$CANCEL" = 1 ]; then
+    if [ "$rc" = 3 ]; then t install.rename_none; return 0; fi
+    rename_cancel
+    return 0
+  fi
+  if [ "$rc" = 0 ]; then
+    [ -z "$RENAME_TO_ARG" ] || [ "$RENAME_TO_ARG" = "$R_NEW" ] \
+      || die "$(tq install.rename_other "$(current_person)/$R_OLD" "$(current_person)/$R_NEW")"
+    t install.rename_resume "$(current_person)/$R_OLD" "$(current_person)/$R_NEW"
+  else
+    [ -n "$RENAME_TO_ARG" ] || die "$(tq install.rename_need_name)"
+    rename_new
+    rename_get || die "$(tq install.record_failed "$LIB_DIR/deployed.json")"
+  fi
+  rename_forward
+}
+
 CURRENT=""; RELAY_NAME=""; recorded=""
 if [ "$MODE" = preflight ]; then
   use_bot "" legacy --lenient
@@ -1016,8 +1371,10 @@ if [ "$MODE" = preflight ]; then
 else
   mesh_lock_take "$PYTHON" || exit 1
   load_roster
+  [ "$MODE" = rename ] || rename_guard
   case "$MODE" in
     add) SEL_KIND=add ;;
+    rename) SEL_KIND=rename ;;
     restart|rotate|undo)
       [ -z "$RELAY_NAME_ARG" ] || die "$(tq install.all_bots_no_name)"
       SEL_KIND=cohort
@@ -1042,6 +1399,7 @@ if [ "$SEL_KIND" = legacy ]; then
   [ -z "$RELAY_NAME_ARG" ] || [ -z "$CURRENT" ] || [ "$RELAY_NAME_ARG" = "$CURRENT" ] || rename_refused "$CURRENT"
   RECORDED_NAME="$(deploy_state recorded-name 2>/dev/null)" || RECORDED_NAME=""
   RELAY_NAME="${CURRENT:-${RELAY_NAME_ARG:-${RECORDED_NAME:-bot}}}"
+  ADDRESS="$RELAY_NAME"
   recorded="$(deploy_state check-name --relay-name "$RELAY_NAME" 2>&1)" || die "$recorded"
   case "$recorded" in
     "changed "*)
@@ -1076,7 +1434,7 @@ case "$MODE" in
   full|webhook)
     [ -z "$PYTHON_ARG" ] || [ "${#R_NAMES[@]}" -le 1 ] || die "$(tq install.python_alone)"
     relay_python ;;
-  add|wake|rotate|restart) relay_python ;;
+  add|wake|rotate|restart|rename) relay_python ;;
   cloud) [ "$SEL_KIND" != added ] || relay_python ;;
 esac
 
@@ -1121,6 +1479,7 @@ case "$MODE" in
     cloud_prompt; exit 0 ;;
   wake) wake_mode; exit 0 ;;
   add) add_mode; exit 0 ;;
+  rename) rename_mode; exit 0 ;;
   rotate) [ -x "$RN" ] || die "$(tq install.no_engine)"; cohort_all; rotate_key; exit 0 ;;
   purge) purge_copies; exit 0 ;;
   preflight)

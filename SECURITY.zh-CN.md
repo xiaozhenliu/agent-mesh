@@ -27,7 +27,7 @@
 ### 属于本项目
 
 - `[LOCAL]` relay：`agent_relay.py`，包括签名校验、时效与防重放、代发地址限制、速率限制、spool 与正文副本的存储权限。
-- `[BOT-CLOUD]` 云端脚本：`box/rn-cloud-setup.sh`、`box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-engine.py`、`box/rn-cloud-update.sh`、`box/rn-cloud-add-bot.sh`、`box/rn-cloud-uninstall.sh`。
+- `[BOT-CLOUD]` 云端脚本：`box/rn-cloud-setup.sh`、`box/rn-cloud.sh`、`box/rn-fetch.py`、`box/rn-engine.py`、`box/rn-routine.py`、`box/rn-names.py`、`box/rn-cloud-update.sh`、`box/rn-cloud-add-bot.sh`、`box/rn-cloud-uninstall.sh`。
 - 安装、自检和卸载脚本：`install.sh`、`check.sh`、`uninstall.sh`、`scripts/`，以及 dsh 插件 `dsh/`。
 - [协议参考](PROTOCOL.zh-CN.md#消息格式)中的消息格式：RN-OUT、RN-FWD、RN-REFWD、RN-REFWD-ACK。
 - 由安装器渲染或复制的提示词与模板：`prompts/`、`templates/`。例如：提示词让 Grok Bot 执行了它本应先问用户的操作，或者没有指示它把来信正文当作外部数据。
@@ -58,7 +58,7 @@
 - 引擎对整台云电脑只统计一个 outbox。别的 Bot 排队的消息可能让一封已送达的回信停在 `replying`，之后显示为结果不明；这样的回信不会自动重发。
 - `./install.sh --rotate-key` 替换所有 Bot 的密钥并重启每个 relay；重启失败时，新密钥不回滚。用旧密钥签过的正文，以及云端拿到新密钥之前的窗口，和只有一个 Bot 时一样存在。
 - 云端有多个 Bot 时拒绝 `rn-cloud.sh purge`。
-- Bot 的地址名不能修改：用新名字添加一个 Bot，再卸载旧的。卸载过的名字不能再用。
+- `agent-mesh rename` 只凭用户自己 Mac 发出的请求修改 Bot 的地址名，云端像核对其他维护请求一样核对它；接收被搁置的历史消息也是如此。30 天内，relay 仍接受 Bot 曾用名下签名有效的控制报文，并取走发往曾用名的信；之后发往旧地址的信在引擎里排队、没人读。收回已卸载 Bot 或早先部署留下的名字，必须由安装器列出证据（会话、所在机器、密钥、没有进程或登录服务在用它），并由你在终端里确认；这些证据排除不了你自己遗忘、当时恰好离线的另一套部署。收回的名字在云端收件箱里已有的消息会被搁置，直到你接受它们。
 - 云端维护锁只保护单个命令，不覆盖模型在两次命令之间的处理，也不覆盖它直接读写 thread 笔记。云端更新期间，其他命令最多等它 600 秒，之后报错，什么都不改；routine 会告诉用户，下次叫醒再处理这些信。
 - 从 v0.8.2 或 v0.8.3 第一次更新到 v0.9.0 时，云端的旧检出和已经在运行的旧命令不遵守维护锁。这只影响单 Bot 部署，那些版本也只支持单 Bot。
 - 旧版本和本版本的管理命令同时启动时，不能完全互相隔开。旧版本的管理工具不能管理多个 Bot。

@@ -9,11 +9,12 @@ install.download_failed	无法下载 Reason Network %s；没有安装任何东�
 install.checksum	reason-network-%s.tar.gz 的校验和不符（应为 %s，实际为 %s）；没有安装任何东西。再运行一次会重新下载；如果一直失败，请不要安装它
 install.no_binary	下载的压缩包里没有 reason-network 程序；没有安装任何东西
 install.binary_version	下载的程序报告的版本不是 Reason Network %s；没有安装任何东西
-install.rename_refused	这个安装使用的 Bot 地址名是“%s”。不支持改名，未完成的安装也不行：排队的邮件、routine 提示词和云端设置都用当前的名字。\n不带 --relay-name 再运行一次即可保留“%s”；或者连同身份一起卸载（README.zh-CN.md「卸载」）后重新安装。
+install.rename_refused	这个安装使用的 Bot 地址名是“%s”，不是“%s”。--relay-name 用来选定已有的 Bot，不会给它改名；要给这个 Bot 改名，请运行 agent-mesh rename %s
 install.tmp_failed	无法在 %s 中创建临时文件；%s 没有改动
 install.env_write_failed	无法写入 %s；它没有改动
 install.env_read_failed	无法读取 %s；没有任何改动
 install.reply_failed	注意：无法把带有本 Bot 地址的回复约定写入 %s
+install.rename_reply_failed	无法把带有新地址的回复约定写入 %s；改名还没有完成。解决上面的问题后，再运行一次 agent-mesh rename
 install.hint_suggested	根据 --grok-name，建议的地址是：--relay-name %s
 install.hint_no_latin	Grok 名字里没有可用来生成地址的拉丁字母或数字：请自己给这个 Bot 起一个字母地址（例如它名字的拼音或英文）。
 install.need_relay_name	新安装需要 Bot 的地址名。你的 Grok Bot 叫什么？请加上\n--relay-name <address> --grok-name '<its name in Grok>' 再运行一次。地址由小写字母和数字组成，用单个 '-' 连接，\n最多 34 个字符（例如 Nova 用 nova）；你的 agent 靠它找到这个 Bot，以后不能更改。%s
@@ -87,8 +88,8 @@ install.no_gui	没有 macOS 图形登录会话；请先以这个用户登录 Mac
 install.custom_rn_home	不支持自定义 REASON_NETWORK_HOME；请使用默认的用户配置，或先停下来检查现有部署
 install.repo_url	%s 必须是无需云端凭据即可访问的公开 HTTPS 克隆地址
 install.env_names	%s。安装程序只管理 <name>、<name>-cloud、<name>-inbox；请让 LISTEN_NAME/CLOUD_NAME/INBOX_NAME 对应一致，或把三行都删掉，然后再运行
-install.recorded_other	这台 Mac 安装时用的 Bot 地址名是“%s”（记录在 %s），不是“%s”。不支持改名：请用 --relay-name %s 或不带 --relay-name 再运行，或者连同身份一起卸载（README.zh-CN.md「卸载」）后重新安装。
-install.env_other	这台 Mac 安装时用的 Bot 地址名是“%s”，但 %s 现在写的是“%s”。不支持改名：请把 LISTEN_NAME/CLOUD_NAME/INBOX_NAME 改回“%s”，或者连同身份一起卸载（README.zh-CN.md「卸载」）后重新安装。
+install.recorded_other	这台 Mac 安装时用的 Bot 地址名是“%s”（记录在 %s），不是“%s”。--relay-name 用来选定 Bot，不会给它改名：请用 --relay-name %s 或不带 --relay-name 再运行；要给 Bot 改名，请用 agent-mesh rename。
+install.env_other	这台 Mac 安装时用的 Bot 地址名是“%s”，但 %s 现在写的是“%s”。Bot 只能用 agent-mesh rename 改名：请把 LISTEN_NAME/CLOUD_NAME/INBOX_NAME 改回“%s”，想用新名字时再运行 agent-mesh rename。
 install.other_engine	%s 已经有一个 reason-network；使用 %s 之前请先检查那个安装
 install.engine_older	现有的 Reason Network 是 %s；这个版本需要 %s。请运行 ./update.sh 升级（它会保留备份，失败时回滚）；现有版本没有被覆盖
 install.engine_unsupported	现有的 Reason Network 是 %s；这个版本支持 %s，不会降级，也不会替换更新的或无法识别的引擎。请先检查那个安装；它没有被改动
@@ -108,7 +109,7 @@ install.engine_present	已经安装：%s
 install.engine_installed	已安装 %s，位置：%s
 install.path_note	注意：请在 shell 启动文件里把 %s 加入 PATH；见 README.zh-CN.md「准备」
 install.step_team	3/6 团队
-install.team_other	现有团队的 person 是“%s”，这次要求的是“%s”；修改前请先检查现有部署。任何名字都不能原地改
+install.team_other	现有团队的 person 是“%s”，这次要求的是“%s”；修改前请先检查现有部署。团队名不能修改（agent-mesh rename 只改 Bot 的地址）
 install.team_present	已经在团队中
 install.cfg_failed	无法写入 %s
 install.who_failed	无法列出团队的会话（reason-network who --all --json 失败），所以没有检查 Bot 地址名“%s”；其他都没有改动，请再运行一次
@@ -120,7 +121,7 @@ install.reopen_sessions	已经打开的 Claude Code / Codex 会话需要重新�
 install.step_key	5/6 签名密钥和 routine webhook
 install.grok_not_recorded	注意：没有记录 Grok 名字（%s）；之后请运行 ./install.sh --grok-name '<name>'
 install.step_cloud	6/6 云端
-install.help	agent-mesh：一次完成 Mac 端安装。\n  ./install.sh --name <团队名> --relay-name <地址名> --grok-name <名字> [--machine mac] [--yes] [--lang en|zh-CN]\n  ./install.sh --grok-name <名字>  记录或修改 Bot 在 Grok 里显示的名字（只是标签，地址不变）\n  ./install.sh --webhook        填写（或修改）routine 的 Webhook URL 和密钥，然后（重新）启动 relay\n  ./install.sh --add-bot [--grok-name <名字>] [--relay-name <地址名>]  在已有安装上添加一个 Bot：询问它在\n                                Grok 里的名字和地址名，显示它的 routine 提示词，等待云端登记，然后启动它的 relay\n                                （总要在终端里确认）\n  ./install.sh --relay-name <地址名> --wake-bot  再次唤醒添加的 Bot，让它完成云端登记\n  ./install.sh --cloud-prompt   重新打印邀请和要发给 Grok Bot 的文字\n  ./install.sh --python <path>  用这个 Python（3.9+，带 ssl 和 sqlite3）运行 relay，并重启所有 Bot 的 relay。\n                                relay 的 Python 一经确定就保持不变，直到你在这里另选，与运行 install.sh 或\n                                update.sh 的 python3 无关；新安装依次取 /opt/homebrew/bin/python3、\n                                /usr/local/bin/python3、/usr/bin/python3\n  ./install.sh --rotate-key     更换签名密钥并重启 relay，打印把它复制到云端的方法\n  ./install.sh --purge-copies   删除 relay 保留的已转发消息副本（之后补发会回复 no-copy）\n  --repo-url https://...       Bot 云电脑能访问的公开发布地址\n  ./install.sh --version      打印 agent-mesh 和固定的 Reason Network 版本；不安装\n  ./install.sh --restart-relay  （供 update.sh 使用）安装这个 checkout 的 relay 并重启；没有启动或没有以自己的\n                                名字注册时回滚；加 --keep-rollback 时\n                                保留之前的 relay，直到 ./install.sh --undo-relay 或 update.sh 丢弃它\n  ./install.sh --undo-relay     （供 update.sh 使用）恢复 --keep-rollback 保留的 relay（如果有）\n  ./install.sh --preflight      （供 update.sh 使用）检查这台 Mac 和现有安装；不做任何改动\n  ./install.sh --fetch-engine DIR  （供 update.sh 使用）下载这台 Mac 用的固定版 Reason Network，核对 sha256 和\n                                版本后解压到 DIR；不改动其他内容\n--lang 在所有模式下选择提示词和终端文字的语言。默认依次取安装时记录的语言、AGENT_MESH_LANG，否则 en。\n团队名也是你在团队里的名字：1～40 个字符，小写字母和数字，用单个 '-' 连接，不要用真名。团队建立后不能再改。\n--relay-name 选定 Bot 的地址 <团队名>/<名字>（云端使用 <名字>-cloud 和 <名字>-inbox）：1～34 个字符，字符规则\n相同，不能是 terminal。用 Bot 自己的名字，方便 agent 区分不同的 Bot。新安装必须提供；已有安装保留原来的名字\n（包括 bot）。一经选定不能修改。\n有多个 Bot 时，--webhook、--cloud-prompt、--purge-copies、--grok-name 和 --wake-bot 需要用 --relay-name 指定\nBot；--restart-relay 和 --rotate-key 总是作用于所有 Bot。\n--grok-name 是 Grok 里显示的 Bot 名字，任何语言都可以；按原样保存，不用于路由。\ncheck.sh 和回复约定显示为 <团队名>/<地址名> → Grok: <名字>。\n它做什么：安装 Reason Network，建立你的私有团队，接入本机 agent（先展示计划），生成签名密钥，询问 routine 的\nwebhook，把 relay 安装为登录服务，最后打印要发给 Grok Bot 的内容。可以放心重复运行。
+install.help	agent-mesh：一次完成 Mac 端安装。\n  ./install.sh --name <团队名> --relay-name <地址名> --grok-name <名字> [--machine mac] [--yes] [--lang en|zh-CN]\n  ./install.sh --grok-name <名字>  记录或修改 Bot 在 Grok 里显示的名字（只是标签，地址不变）\n  ./install.sh --webhook        填写（或修改）routine 的 Webhook URL 和密钥，然后（重新）启动 relay\n  ./install.sh --add-bot [--grok-name <名字>] [--relay-name <地址名>]  在已有安装上添加一个 Bot：询问它在\n                                Grok 里的名字和地址名，显示它的 routine 提示词，等待云端登记，然后启动它的 relay\n                                （总要在终端里确认）\n  ./install.sh --relay-name <地址名> --wake-bot  再次唤醒添加的 Bot，让它完成云端登记\n  ./install.sh --rename <地址名> [--relay-name <地址名>]  给 Bot 改名（agent-mesh rename <地址名>）：routine、\n                                收件箱和历史都保留，旧地址 30 天内仍能送达；--rename --cancel 撤销未完成的改名，\n                                --rename --accept-history 把收回旧名字时搁置的消息交给 Bot\n  ./install.sh --cloud-prompt   重新打印邀请和要发给 Grok Bot 的文字\n  ./install.sh --python <path>  用这个 Python（3.9+，带 ssl 和 sqlite3）运行 relay，并重启所有 Bot 的 relay。\n                                relay 的 Python 一经确定就保持不变，直到你在这里另选，与运行 install.sh 或\n                                update.sh 的 python3 无关；新安装依次取 /opt/homebrew/bin/python3、\n                                /usr/local/bin/python3、/usr/bin/python3\n  ./install.sh --rotate-key     更换签名密钥并重启 relay，打印把它复制到云端的方法\n  ./install.sh --purge-copies   删除 relay 保留的已转发消息副本（之后补发会回复 no-copy）\n  --repo-url https://...       Bot 云电脑能访问的公开发布地址\n  ./install.sh --version      打印 agent-mesh 和固定的 Reason Network 版本；不安装\n  ./install.sh --restart-relay  （供 update.sh 使用）安装这个 checkout 的 relay 并重启；没有启动或没有以自己的\n                                名字注册时回滚；加 --keep-rollback 时\n                                保留之前的 relay，直到 ./install.sh --undo-relay 或 update.sh 丢弃它\n  ./install.sh --undo-relay     （供 update.sh 使用）恢复 --keep-rollback 保留的 relay（如果有）\n  ./install.sh --preflight      （供 update.sh 使用）检查这台 Mac 和现有安装；不做任何改动\n  ./install.sh --fetch-engine DIR  （供 update.sh 使用）下载这台 Mac 用的固定版 Reason Network，核对 sha256 和\n                                版本后解压到 DIR；不改动其他内容\n--lang 在所有模式下选择提示词和终端文字的语言。默认依次取安装时记录的语言、AGENT_MESH_LANG，否则 en。\n团队名也是你在团队里的名字：1～40 个字符，小写字母和数字，用单个 '-' 连接，不要用真名。团队建立后不能再改。\n--relay-name 选定 Bot 的地址 <团队名>/<名字>（云端使用 <名字>-cloud 和 <名字>-inbox）：1～34 个字符，字符规则\n相同，不能是 terminal。用 Bot 自己的名字，方便 agent 区分不同的 Bot。新安装必须提供；已有安装保留原来的名字\n（包括 bot）。以后要改，用 agent-mesh rename。\n有多个 Bot 时，--webhook、--cloud-prompt、--purge-copies、--grok-name 和 --wake-bot 需要用 --relay-name 指定\nBot；--restart-relay 和 --rotate-key 总是作用于所有 Bot。\n--grok-name 是 Grok 里显示的 Bot 名字，任何语言都可以；按原样保存，不用于路由。\ncheck.sh 和回复约定显示为 <团队名>/<地址名> → Grok: <名字>。\n它做什么：安装 Reason Network，建立你的私有团队，接入本机 agent（先展示计划），生成签名密钥，询问 routine 的\nwebhook，把 relay 安装为登录服务，最后打印要发给 Grok Bot 的内容。可以放心重复运行。
 install.option_value	install：%s 需要一个值
 install.see_help	运行 ./install.sh --help 查看选项
 install.add_alone	--add-bot 不能与 --webhook、--cloud-prompt、--rotate-key、--purge-copies、--restart-relay、--wake-bot、--preflight 或 --fetch-engine 一起使用
@@ -186,3 +187,47 @@ install.python_replaced	relay 使用的 Python %s 不存在或已不能用；rel
 install.python_not_recorded	注意：无法把 relay 使用的 Python 记录到 %s
 install.python_set	relay 现在使用 %s
 install.python_alone	有多个 Bot 时，--python 作用于所有 Bot：请单独运行 ./install.sh --python <path>
+install.rename_alone	--rename 不能和其他模式一起用；请单独运行（可以带 --relay-name、--yes 或 --lang）
+install.rename_only	--cancel 和 --accept-history 要和 --rename 一起用：agent-mesh rename --cancel、agent-mesh rename --accept-history
+install.rename_options	--rename 只能带新名字、--cancel、--accept-history 三者之一
+install.name_class_new	这个名字在团队里从未用过。
+install.name_class_own	这个名字以前属于这个 Bot，这次是收回。
+install.name_class_removed	这个名字属于一个已从这台 Mac 卸载的 Bot。收回后这个 Bot 就使用这个身份；它的会话：
+install.name_class_left	这个名字是以前的部署留下的（这台 Mac 上没有记录说明它属于谁）。收回后这个 Bot 就使用这个身份；请核对它的会话：
+install.name_unread	这台 Mac 上有 %s 条发往 %s 的未读消息在排队；改动之后 Bot 会把它们当作新消息收下。发件人：
+install.name_unread_held	这台 Mac 上有 %s 条发往 %s 的未读消息在排队；它们会和 Bot 云端收件箱里已有的消息一起被搁置，agent-mesh rename --accept-history 把它们交给 Bot。发件人：
+install.rename_busy	有一次改名正在进行；先用 agent-mesh rename 完成，或用 agent-mesh rename --cancel 撤销，再运行这个命令
+install.rename_status_failed	无法读取这个安装的状态（deploy_state.py status，见上文）；没有改动任何东西
+install.rename_update_first	这个安装还不是最新或还没有确认（更新、引擎、云端设置或 relay）；请先运行 agent-mesh update，再给 Bot 改名
+install.rename_unfinished	Bot“%s”的添加还没有完成。请先用 %s 完成它（或者卸载那个 Bot），再改名
+install.rename_webhook_first	Bot %s 还没有 webhook；请先用 ./install.sh --webhook 填写（有多个 Bot 时加 --relay-name），再改名
+install.rename_nothing	这台 Mac 上没有可改名的 Bot；请先安装（README.zh-CN.md「安装」）
+install.rename_same	%s 已经是这个 Bot 的地址；无需改动
+install.rename_relay_down	%s 的 relay 没有运行；请先用 %s 启动，再改名
+install.rename_name_refused	%s 不能作为这个 Bot 的地址；没有改动任何东西：
+install.rename_plan	把 Bot %s 改名为 %s。Bot 的 routine、收件箱和历史都保留；发往旧地址的消息 30 天内仍能送达。需要 1 次 routine 运行。
+install.ask_rename	确认改名吗？[y/N] 
+install.rename_stopped	已停止；没有改动任何东西
+install.rename_no_tty	当前不是终端，没有人能确认计划；没有改动任何东西。请在终端里运行，或者在命令里确认：%s
+install.rename_need_tty	这个名字需要在终端里确认（--yes 不够）；没有改动任何东西。请在终端里运行：%s
+install.rename_send_failed	无法向 %s 发送请求；这台 Mac 没有任何改动。请稍后再次运行同一个命令
+install.rename_sent	已向 %s 发送请求；最多等待 %s 分钟 Bot 的回信……
+install.rename_reply_timeout	还没有收到 %s 的回信；这台 Mac 没有任何改动。再次运行 agent-mesh rename 继续等待，或用 agent-mesh rename --cancel 停止
+install.rename_cloud_refused	Bot 没有接受这次改名（见上面几行）；这台 Mac 没有任何改动
+install.rename_reply_unread	无法查找 Bot 的回信（见上文）；请稍后再次运行同一个命令
+install.rename_unload_failed	无法停止 relay 服务 %s；改名仍未完成。请再次运行 agent-mesh rename，或运行 agent-mesh rename --cancel
+install.rename_start_failed	relay 没有启动或没有以 %s 注册；改名仍未完成，且已不能撤销。请排除原因（见上文和 README.zh-CN.md「故障排查」），再次运行 agent-mesh rename
+install.rename_done	Bot %s 已改名为 %s。agent 从回复约定里得到新地址；旧地址 30 天内仍能送达这个 Bot。
+install.rename_cancel_launched	relay 可能已经以 %s 运行，改名已不能撤销；请用 agent-mesh rename 完成它，想用回旧名字时再改回去
+install.rename_cancel_failed	无法以旧名字恢复 relay（见上文）；改名记录和备份都保留。请再次运行 agent-mesh rename --cancel
+install.rename_cancelled	已取消：这台 Mac 上的 Bot 保留地址 %s。如果 Bot 已经接受了 %s，它会继续用旧地址工作，之后的改名会覆盖那一次。
+install.rename_none	没有正在进行的改名；无需取消
+install.rename_other	%s 改名为 %s 的操作正在进行；请先用 agent-mesh rename 完成，或用 agent-mesh rename --cancel 撤销
+install.rename_resume	继续把 %s 改名为 %s……
+install.rename_need_name	用法：agent-mesh rename <新名字> [--relay-name <当前名字>] [--yes]；另有 agent-mesh rename --cancel 和 agent-mesh rename --accept-history
+install.history_none	%s 没有搁置的消息；无需操作
+install.history_plan	把 %s 条搁置的消息交给 Bot %s：收回这个名字时它们已经在收件箱里。需要 1 次 routine 运行。
+install.ask_history	确认交给 Bot 吗？[y/N] 
+install.history_stopped	已停止；没有改动任何东西
+install.history_timeout	还没有收到 %s 的回信；消息仍被搁置。请稍后再次运行 agent-mesh rename --accept-history
+install.history_refused	Bot 没有接受这个请求（见上面几行）；消息仍被搁置

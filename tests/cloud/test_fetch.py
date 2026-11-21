@@ -318,3 +318,17 @@ class Names(NamesFixture, FetchCases, unittest.TestCase):
             self.mod.request_refwd("m", KEY, "demo")
         self.assertEqual([c[1:5] for c in calls], [["send", "demo/alice", "-"],
                                                    ["send", "demo/alice", "--from", "demo/alice-cloud"]])
+
+    def test_a_refwd_request_that_cannot_be_built_is_reported_not_raised(self):
+        calls = []
+
+        def urandom(n):
+            raise OSError("entropy unavailable")
+        self.mod.HOME, self.mod.BASE = self.d / "state", self.d / "inbox"
+        keep = {k: v for k, v in os.environ.items() if k not in ("RN_RELAY_NAME", "RN_CLOUD_NAME", "RN_INBOX_NAME")}
+        env = dict(keep, RN_BOX=str(self.box), RN_BIN=str(self.d / "rn"), RN_REFWD_MAX="1000")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(self.mod.subprocess, "run", lambda args, **kw: calls.append(args)), \
+                mock.patch.object(self.mod.os, "urandom", urandom):
+            self.assertEqual(self.mod.request_refwd("m", KEY, "demo"), (None, "send failed: OSError"))
+        self.assertEqual(calls, [])

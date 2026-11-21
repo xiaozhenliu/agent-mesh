@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""The Bots on this Mac: the first Bot on the original paths, added Bots under agent-relay-bots/<name>/.
+"""The Bots on this Mac: the first Bot on the original paths, added Bots under agent-relay-bots/<slot>/.
+
+The slot of an added Bot is the name it was added with and stays its key for paths, labels and RN_BOT; its address
+name can change later. The first Bot's slot is "-".
 
   bots.py list                         one line per Bot: name, kind, stage, cloud, removing (0|1), record (ok|missing),
-                                       separated by tabs; exit 4 if the deployment record cannot be read
-  bots.py list --paths                 the same, followed by the label, plist and registration marker of each Bot
-  bots.py paths NAME                   KEY<TAB>value lines with the paths and stage of the Bot NAME; exit 3 if there
-                                       is no such Bot here, 4 if the deployment record cannot be read
+                                       address, separated by tabs; exit 4 if the deployment record cannot be read
+  bots.py list --paths                 the same, with the label, plist and registration marker of each Bot before the
+                                       address
+  bots.py paths NAME                   KEY<TAB>value lines with the paths and stage of the Bot NAME (its slot or its
+                                       current address name); exit 3 if there is no such Bot here, 4 if the deployment
+                                       record cannot be read
   bots.py paths [NAME] --kind KIND     the same, and for a Bot that is not here yet the paths it would get (stage
                                        new); without NAME, --kind legacy selects the first Bot
   bots.py paths ... --lenient          for read-only callers: an unreadable record counts as empty instead of exit 4
@@ -27,7 +32,7 @@ CLOUD_STATES = ("pending", "confirmed")
 LEGACY_LABEL = "com.local.agent-relay"
 KEYS = (("KIND", "kind"), ("CONF_DIR", "conf_dir"), ("ENV_FILE", "env"), ("LABEL", "label"), ("PLIST", "plist"),
         ("STATE_DIR", "state_dir"), ("MARKER", "marker"), ("LOG", "log"), ("LAUNCHD_LOG", "launchd_log"),
-        ("STAGE", "stage"))
+        ("STAGE", "stage"), ("SLOT", "slot"), ("ADDRESS", "address"))
 
 
 def record_path(home):
@@ -53,7 +58,8 @@ def paths(home, name, kind):
         log, launchd_log = logs / f"agent-relay-{name}.log", logs / f"agent-relay-{name}.launchd.log"
     else:
         raise ValueError(f"unknown kind: {kind}")
-    return {"name": name, "kind": kind, "conf_dir": str(conf), "env": str(conf / "env"), "label": label,
+    return {"name": name, "kind": kind, "slot": "-" if kind == LEGACY else name, "address": name,
+            "conf_dir": str(conf), "env": str(conf / "env"), "label": label,
             "plist": str(home / "Library/LaunchAgents" / f"{label}.plist"), "state_dir": str(state),
             "marker": str(state / "registered"), "log": str(log), "launchd_log": str(launchd_log)}
 
@@ -105,9 +111,14 @@ def removing_of(data):
     return None
 
 
-def item(home, name, kind, stage, cloud, record, grok, removing):
+def address_of(entry, slot):
+    value = entry.get("name") if isinstance(entry, dict) else None
+    return value if isinstance(value, str) and valid_name(value) else slot
+
+
+def item(home, name, kind, stage, cloud, record, grok, removing, address=None):
     out = paths(home, name, kind)
-    out.update(stage=stage, cloud=cloud, record=record, grok_name=grok,
+    out.update(stage=stage, cloud=cloud, record=record, grok_name=grok, address=address or name,
                removing=bool(removing and removing["name"] == name and removing["kind"] == kind))
     return out
 
@@ -148,7 +159,7 @@ def added_entries(home, data, removing=None, seen=()):
         stage = entry.get("stage") if entry.get("stage") in STAGES else "configured"
         cloud = entry.get("cloud") if isinstance(entry.get("cloud"), dict) else {}
         state = cloud.get("state") if cloud.get("state") in CLOUD_STATES else "pending"
-        out.append(item(home, bot, ADDED, stage, state, "ok", grok_of(entry), removing))
+        out.append(item(home, bot, ADDED, stage, state, "ok", grok_of(entry), removing, address_of(entry, bot)))
         seen.add(bot)
     gone = data.get("removed_bots") if isinstance(data.get("removed_bots"), list) else []
     for bot in added_on_disk(home):
@@ -159,16 +170,23 @@ def added_entries(home, data, removing=None, seen=()):
     return out
 
 
-def find(home, name, data=None):
-    for bot in roster(home, data):
+def match(bots, name):
+    for bot in bots:
         if bot["name"] == name:
+            return bot
+    for bot in bots:
+        if bot["address"] == name:
             return bot
     return None
 
 
+def find(home, name, data=None):
+    return match(roster(home, data), name)
+
+
 def print_paths(bot):
     for key, field in KEYS:
-        print(f"{key}\t{bot[field]}")
+        print(f"{key}\t{bot[field] if bot[field] is not None else ''}")
 
 
 def cmd_paths(home, args):
@@ -194,10 +212,10 @@ def cmd_paths(home, args):
             raise
         data = {}
     bots = roster(home, data)
-    for bot in bots:
-        if (name is not None and bot["name"] == name) or (name is None and bot["kind"] == LEGACY):
-            print_paths(bot)
-            return 0
+    found = match(bots, name) if name is not None else next((b for b in bots if b["kind"] == LEGACY), None)
+    if found is not None:
+        print_paths(found)
+        return 0
     if kind is None or (kind == ADDED and name is None) or (kind == LEGACY and any(b["kind"] == LEGACY for b in bots)):
         return 3
     print_paths(dict(paths(home, name, kind), stage="new"))
@@ -219,7 +237,7 @@ def main(argv, home):
                         bot["record"]]
                 if args:
                     cols += [bot["label"], bot["plist"], bot["marker"]]
-                print("\t".join(cols))
+                print("\t".join(cols + [bot["address"]]))
             return 0
         if cmd == "paths":
             return cmd_paths(home, args)
