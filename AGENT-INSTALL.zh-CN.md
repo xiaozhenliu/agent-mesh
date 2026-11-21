@@ -15,7 +15,7 @@
 - `install.sh` 在非交互终端里会在需要用户操作的位置停下并打印操作说明，把说明原样交给用户。
 - 每个阶段要求时运行 `./check.sh`，原样展示结果。`FAIL` 行给出修复办法，照做，不要即兴发挥。
 - 不安装额外软件，除第 0 阶段的 PATH 外不改 shell 配置。其他 agent 的配置由 `reason-network setup` 在用户确认计划后修改。
-- 不是 macOS 就停止：`install.sh` 只支持 macOS。
+- `install.sh` 只支持 macOS。Linux 上改按 [Linux 手工安装（实验性）](#linux-手工安装实验性) 操作，代替第 0–3 阶段，并且要用户先同意它的限制；其他系统一律停止。
 
 ## 第 0 阶段：准备（[LOCAL] 安装 agent）
 
@@ -81,3 +81,125 @@
 ## 卸载
 
 `[LOCAL]`：先核对 checkout 的 origin 和本地改动。有本地改动时，把改动给用户看并停下，除非用户明确选择用这个 checkout 卸载；绝不 stash、reset 或丢弃这些改动。否则运行 `git pull --ff-only`（失败时展示输出并停下），再运行 `./uninstall.sh --plan`，把输出给用户看；它列出已安装的内容和每个级别要删除的内容，不改动任何东西。经用户同意，你可以只删除 relay 程序：先由用户在 `[GROK-UI]` 暂停 routine（每个 Bot 的 routine），再由你运行 `./uninstall.sh --level program --yes`。`./install.sh --restart-relay` 可以装回；`./check.sh` 通过后，由用户恢复 routine。`identity` 级别（另外让两台电脑都退出团队，删除密钥和身份）和 `all` 级别（另外删除日志、引擎和云端数据）需要输入确认，并有一步在 Grok Bot 里完成：请用户在自己的终端里运行 `./uninstall.sh --level identity` 或 `--level all`，按[卸载指南](UNINSTALL.zh-CN.md)操作。有多个 Bot 时，除 `bot` 以外的级别都覆盖所有 Bot；只卸载一个 Bot、留下其他 Bot 时，请用户在自己的终端里运行 `./uninstall.sh --level bot --relay-name <relay-name>`，它同样需要输入确认，并有一步在 Grok Bot 里完成；它不卸载最后一个 Bot，那要用 `identity` 或 `all`。这样卸载的 Bot 地址只能通过收回再次使用，收回需要用户自己的终端。已经运行过旧版 `./uninstall.sh --all` 时，`--residual` 的用法见[卸载指南](UNINSTALL.zh-CN.md#卸载身份或全部)。没有终端时它们以退出码 3 结束。所有级别都保留当前代码目录。不要改为手动删除文件，也不要动卸载器列为 foreign 的部署。
+
+## Linux 手工安装（实验性）
+
+`install.sh`、`check.sh`、`update.sh` 和 `uninstall.sh` 只能在 macOS 上运行（[#29](https://github.com/xiaozhenliu/agent-mesh/issues/29)）。在 Linux 电脑上可以手工装好本地端，做法是照着 `install.sh` 首次安装的步骤做一遍。Debian 上的测试覆盖过引擎、建团队，以及 relay 与云端的真实双向消息；整套步骤、systemd 服务和从 Linux 用 CopyToBox 都没有验证过。开始之前先告诉用户，装完以后：
+
+- `check.sh`、`update.sh`、`uninstall.sh` 和 `agent-mesh` 都不能用：不能检查、不能更新、不能改名，也不能再加 Bot；
+- 云端同样不能更新，因为云端更新由 `update.sh` 发起；云端会一直停在现在装的版本。
+
+前提，另加第 0 阶段第 2、4 步（网络检查，以及用户的工具、团队名、Bot 名字和地址）：
+
+- x86_64 或 aarch64 的 Linux，普通用户（不是 root），有 Git、Python 3.9+（含 `ssl`、`sqlite3`）、`curl`、`tar`、`sha256sum` 和 `openssl`。
+- 没有别的 Reason Network：`command -v reason-network` 找不到，`~/.reason/network` 不存在。否则停下并报告，同第 0 阶段第 3 步。
+- 代码检出在发布 tag 上：`git describe --tags --exact-match` 输出 `v` 加 `VERSION` 文件的内容。
+- 装有 Linux 版 Grok Bot 桌面应用，已连接，并允许在本机执行。CopyToBox 从这台电脑复制签名密钥，只能按绝对路径读取 home 文件夹里的文件。没有它，密钥送不到云端：停下。绝不要把密钥贴进聊天。
+- 用户使用 Bot 期间，这台电脑一直开着、联网。
+
+`<team-name>`、`<relay-name>` 用第 0 阶段第 4 步得到的值，再给这台电脑起一个机器名 `<machine>`（小写字母和数字，分段之间用单个 `-` 连接，例如 `linux`）。命令都在代码根目录、同一个 shell 里运行。
+
+1. **引擎。** 从 `install.sh` 取版本（开头附近的 `VERSION=`）和你这个平台的校验值（`install.sh` 里的 `pinned_sha256`），然后下载并校验：
+
+   ```bash
+   case "$(uname -m)" in x86_64) target=x86_64-unknown-linux-musl ;; aarch64|arm64) target=aarch64-unknown-linux-musl ;; esac
+   tmp="$(mktemp -d)"
+   curl -fsSL "https://github.com/reason-machines/reason-network/releases/download/<version>/reason-network-$target.tar.gz" -o "$tmp/e.tgz"
+   sha256sum "$tmp/e.tgz"
+   ```
+
+   校验值必须和固定值相同，否则停下。然后：
+
+   ```bash
+   tar --no-same-owner -xzf "$tmp/e.tgz" -C "$tmp" reason-network
+   python3 box/rn-engine.py build --bin "$tmp/reason-network"
+   mkdir -p ~/.local/bin && install -m 755 "$tmp/reason-network" ~/.local/bin/reason-network
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
+
+   `rn-engine.py build` 输出固定版本和二进制的校验值；退出码为 1 说明这不是固定版本的构建：停下。PATH 这一行按第 0 阶段第 3 步写进 shell 配置。
+2. **团队。**
+
+   ```bash
+   python3 scripts/relay_names.py check <relay-name>
+   export REASON_NETWORK_NO_PROMPT=1 REASON_NETWORK_MACHINE=<machine>
+   reason-network init <team-name> --as <team-name> --no-setup
+   python3 box/rn-engine.py config-off --path ~/.reason/network/config.toml auto_update lan
+   reason-network stop; reason-network team
+   reason-network who --all --json | python3 scripts/relay_names.py conflicts <relay-name>
+   ```
+
+   `config-off` 关掉引擎的自动更新，否则它会替换掉固定版本的引擎；失败就停下。`conflicts` 的退出码必须是 0。
+3. **接入 agent。** 运行 `reason-network setup --dry-run`，把计划原样给用户看并问"可以执行吗？"；同意后运行 `reason-network setup`。Linux 上的计划可能还会加一个引擎的用户服务，或者说没找到支持的 agent；照原样报告。之后用户按第 3 阶段第 1 步重开已打开的 agent 会话。
+4. **密钥和 relay 配置。**
+
+   ```bash
+   mkdir -p ~/.config/agent-relay && chmod 700 ~/.config/agent-relay
+   (umask 077; openssl rand -hex 32 > ~/.config/agent-relay/outbound.key)
+   (umask 077; cat > ~/.config/agent-relay/env <<CONF
+   RN_BIN=$HOME/.local/bin/reason-network
+   PERSON=<team-name>
+   OUTBOUND_KEY_FILE=$HOME/.config/agent-relay/outbound.key
+   LISTEN_NAME=<relay-name>
+   CLOUD_NAME=<relay-name>-cloud
+   INBOX_NAME=<relay-name>-inbox
+   CONF
+   )
+   ```
+
+   两个文件的权限必须是 600、文件夹 700，否则 relay 拒绝启动。
+5. **routine。** 运行 `python3 scripts/render_prompt.py routine --lang zh-CN`，把打印出的整段原样交给用户；里面写的是"Mac"，没有关系。告诉用户："在 `[GROK-UI]` 新建一个由 webhook 触发的 routine，把这段贴进去作为提示词。然后在这台电脑的终端里运行下面几行，按提示贴入 Webhook URL（以 `https://` 开头）和 key。"等用户做完。
+
+   ```bash
+   read -r -p 'Webhook URL: ' url; read -r -s -p 'Webhook key: ' key; echo
+   (umask 077; printf 'WEBHOOK_URL=%s\nWEBHOOK_KEY=%s\n' "$url" "$key" >> ~/.config/agent-relay/env)
+   unset url key
+   ```
+
+6. **relay。** 复制过去，在前台启动，比如放在 `tmux` 里；用系统 Python 3.9+ 的绝对路径（不要用虚拟环境）：
+
+   ```bash
+   mkdir -p ~/.local/lib/agent-mesh && install -m 644 agent_relay.py ~/.local/lib/agent-mesh/agent_relay.py
+   AGENT_RELAY_STATE="$HOME/.local/state/agent-relay" AGENT_RELAY_LOG="$HOME/.local/state/agent-relay/agent-relay.log" \
+     REASON_NETWORK_HOME="$HOME/.reason/network" PATH="$HOME/.local/bin:/usr/bin:/bin" \
+     /usr/bin/python3 ~/.local/lib/agent-mesh/agent_relay.py
+   ```
+
+   它一直运行到被停掉；关掉终端或重启电脑它就停了。日志里出现 `agent-relay up: listening as <team-name>/<relay-name>`，并且 `python3 scripts/relay_names.py registered <relay-name>` 输出 `<relay-name>`，就是起来了。
+
+   可选，未经测试：改成 `systemd --user` 服务，停了会自己再起来。先停掉前台的 relay，写好 `~/.config/systemd/user/agent-relay.service`，再运行 `systemctl --user daemon-reload && systemctl --user enable --now agent-relay`。这个服务在用户登录期间运行；没人登录时也要运行，需要 `loginctl enable-linger "$USER"`，这只能由用户决定。
+
+   ```ini
+   [Unit]
+   Description=agent-mesh relay
+
+   [Service]
+   ExecStart=/usr/bin/python3 %h/.local/lib/agent-mesh/agent_relay.py
+   Environment=PATH=%h/.local/bin:/usr/bin:/bin
+   Environment=REASON_NETWORK_HOME=%h/.reason/network
+   Environment=AGENT_RELAY_STATE=%h/.local/state/agent-relay
+   Environment=AGENT_RELAY_LOG=%h/.local/state/agent-relay/agent-relay.log
+   Restart=always
+   RestartSec=30
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+7. **云端。** 像 `install.sh --cloud-prompt` 那样生成云端提示词：
+
+   ```bash
+   repo=https://github.com/xiaozhenliu/agent-mesh.git
+   rel="$(python3 scripts/deploy_state.py release --repo-url "$repo")"
+   tag="$(printf '%s\n' "$rel" | awk '$1=="tag"{print $2}')"
+   commit="$(printf '%s\n' "$rel" | awk '$1=="commit"{print $2}')"
+   sums="$(printf '%s\n' "$rel" | awk '$1=="sum"{print $2"  "$3}')"
+   reason-network invite --me
+   python3 scripts/render_prompt.py cloud-setup --lang zh-CN --team-name <team-name> --mac-home "$HOME" --repo-url "$repo" \
+     --relay-name <relay-name> --release-tag "$tag" --release-commit "$commit" --cloud-checksums "$sums"
+   ```
+
+   `release` 核对这份代码的云端脚本和发布 tag 一致；失败就停下。从 `invite --me` 的输出里，找以 `For a cloud agent of yours` 开头的那一行，取 `send it:` 后面的链接。把链接和打印出的提示词一起交给用户，然后照第 2 阶段第 2 步继续；CopyToBox 的来源是这台电脑的 `$HOME/.config/agent-relay/outbound.key`，提示词里已经写成完整路径。用户说云端已加入后，`reason-network team` 里必须有一行同时含 `<team-name>` 和 `cloud`。
+8. **冒烟测试。** 同第 3 阶段，relay 日志在 `~/.local/state/agent-relay/agent-relay.log`。回复约定：`python3 scripts/reply_convention.py install` 把填好的副本写到 `~/.local/lib/agent-mesh/templates/`，用法同[可选](#可选)。
+
+Linux 上没有卸载器。要关掉时，用户先在 `[GROK-UI]` 暂停 routine，再停掉 relay（Ctrl-C，或 `systemctl --user disable --now agent-relay`）。退出团队、删除密钥或云端数据不在这里：把 [UNINSTALL](UNINSTALL.zh-CN.md) 里各级别会删什么给用户看，不要自己想办法。

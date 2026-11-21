@@ -7,7 +7,7 @@ Connect a cloud Grok Bot with active Claude Code, Codex, pi, and DeepSeek Harnes
 | | |
 |---|---|
 | **Version** | agent-mesh **v0.11.1** · [Changelog](CHANGELOG.md) · [Version file](VERSION). Query it offline with `./install.sh --version`; the Reason Network dependency has a separate version. |
-| **Platform** | Local: macOS (Apple Silicon or Intel) with a one-click installer · relay messaging verified on Debian Linux, but local installation on Linux is not supported yet (see [Prerequisites](#prerequisites)) · Bot's cloud computer: Linux x86_64 or ARM64 · Python 3.9+ on both sides |
+| **Platform** | Local: macOS (Apple Silicon or Intel) with a one-click installer · relay messaging verified on Debian Linux; Linux has no installer yet, only an experimental manual setup in [AGENT-INSTALL](AGENT-INSTALL.md#linux-by-hand-experimental) (see [Prerequisites](#prerequisites)) · Bot's cloud computer: Linux x86_64 or ARM64 · Python 3.9+ on both sides |
 | **Network** | No public IP, no dedicated server, no port forwarding required |
 | **Not required** | Reason account, Docker, or Node |
 | **License** | MIT |
@@ -153,7 +153,7 @@ Five design choices make this work:
 
 ### `[LOCAL]` Local computer
 
-- **Computer and system:** not tied to one OS by design; the engine ships macOS / Linux / Windows builds, and the relay is pure Python. Only macOS (Apple Silicon or Intel) has the one-click installer `./install.sh`, run as a regular user signed into the desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. On Debian Linux, the relay's messaging has been verified inside an existing team, including real two-way messages with the cloud; installing the local side on Linux (creating the team, wiring agents, generating and copying the signing key, running the relay as a service) is not supported yet. In principle systemd could replace the macOS login service. Windows is unverified; Task Scheduler could play the same role. Community testing and contributions are welcome.
+- **Computer and system:** not tied to one OS by design; the engine ships macOS / Linux / Windows builds, and the relay is pure Python. Only macOS (Apple Silicon or Intel) has the one-click installer `./install.sh`, run as a regular user signed into the desktop. Do not use `sudo`; a pure SSH/headless login is outside this installation flow. On Debian Linux, the engine and the relay have been verified with the Linux side creating the team and running the relay, including real two-way messages with the cloud. Test scripts set this up, not an installer: there is no installer for the local side on Linux yet (wiring agents, copying the signing key, running the relay as a service). [AGENT-INSTALL](AGENT-INSTALL.md#linux-by-hand-experimental) describes an experimental manual setup, after which check, update and uninstall do not work. In principle systemd could replace the macOS login service. Windows is unverified; Task Scheduler could play the same role. Community testing and contributions are welcome.
 - **Git and Python 3.9+**, including the `ssl` and `sqlite3` standard-library modules. Check with:
 
   ```bash
@@ -175,6 +175,7 @@ Five design choices make this work:
 ### Grok Bot and team name
 
 - Grok Bot must support webhook-triggered routines and CopyToBox from your Mac.
+- The Bots of one Grok account share one cloud computer, so one Grok account serves one installation. To connect more Bots, run `./install.sh --add-bot` on the Mac that already has it ([Several Grok Bots](#several-grok-bots)).
 - Choose a team name, also used as your person name: 1–40 lowercase ASCII letters, digits, or hyphens; no leading or trailing hyphen. Use a pseudonym. Renaming requires recreating the team.
 - Team and machine names use single hyphens only: the engine merges repeated hyphens, so `a--b` would become `a-b`, and the installer refuses such names.
 - Choose the Bot address name: use the Bot's own name, so your agents can tell your Grok Bots apart. The relay listens as `<team-name>/<name>`, and the cloud uses `<name>-cloud` and `<name>-inbox`. A new installation has no default (before v0.8.0 it was `bot`; existing installations keep their name). Rules: 1–34 lowercase ASCII letters and digits, in groups joined by a single hyphen (no leading, trailing or repeated hyphen), not `terminal` or `terminal-<n>`. Do not use your real name. An unfinished installation cannot change it: queued mail, the routine prompt and the cloud setup all use it. Once the installation is complete, `agent-mesh rename` changes it without anything to do in Grok ([Rename a Bot](#rename-a-bot)).

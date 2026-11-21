@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | **版本** | agent-mesh **v0.11.1** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION)。运行 `./install.sh --version` 可离线查询；依赖的 Reason Network 使用独立版本号。 |
-| **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证，但 Linux 本地安装尚不支持（见[准备](#准备)）· Bot 云电脑：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
+| **支持平台** | 本地：macOS（Apple Silicon 或 Intel）提供一键安装 · relay 的消息收发已在 Debian Linux 上验证；Linux 还没有安装脚本，只有 [AGENT-INSTALL](AGENT-INSTALL.zh-CN.md#linux-手工安装实验性) 里实验性的手工安装（见[准备](#准备)）· Bot 云电脑：Linux x86_64 或 ARM64 · 两端都需 Python 3.9+ |
 | **网络要求** | 本地无需公网 IP、无需自建服务器、无需端口映射 |
 | **不需要** | Reason 账号、Docker 或 Node |
 | **许可证** | MIT |
@@ -153,7 +153,7 @@ sequenceDiagram
 
 ### `[LOCAL]` 本地电脑
 
-- **系统与运行环境**：设计上不绑定系统，引擎有 macOS / Linux / Windows 版本，relay 为纯 Python。目前只有 macOS（Apple Silicon 或 Intel）有一键安装脚本 `./install.sh`，需要已登录桌面的普通用户；不要用 `sudo`，纯 SSH/无桌面登录环境不在本流程支持范围内。Debian Linux 上已在现有团队中验证过 relay 的消息收发，包括与云端的真实双向消息；但在 Linux 上安装本地端（建团队、接入 agent、生成并复制签名密钥、以服务方式运行 relay）尚不支持，思路上可以用 systemd 代替 macOS 的登录服务。Windows 未经验证，可用 Task Scheduler 承担同样角色。欢迎社区实测并贡献安装支持。
+- **系统与运行环境**：设计上不绑定系统，引擎有 macOS / Linux / Windows 版本，relay 为纯 Python。目前只有 macOS（Apple Silicon 或 Intel）有一键安装脚本 `./install.sh`，需要已登录桌面的普通用户；不要用 `sudo`，纯 SSH/无桌面登录环境不在本流程支持范围内。Debian Linux 上已验证过引擎和 relay：由 Linux 这一侧建团队、跑 relay，包括与云端的真实双向消息。这些是测试脚本搭的，不是安装器：Linux 本地端还没有安装脚本（接入 agent、复制签名密钥、以服务方式运行 relay）。[AGENT-INSTALL](AGENT-INSTALL.zh-CN.md#linux-手工安装实验性) 写了实验性的手工安装，装完后不能检查、更新或卸载。思路上可以用 systemd 代替 macOS 的登录服务。Windows 未经验证，可用 Task Scheduler 承担同样角色。欢迎社区实测并贡献安装支持。
 - **Git 与 Python 3.9+**（含 `ssl`、`sqlite3` 标准库模块）。用下面的命令检查：
 
   ```bash
@@ -175,6 +175,7 @@ sequenceDiagram
 ### Grok Bot 与团队名
 
 - 你的 Grok Bot 能创建由 webhook 触发的 routine，并且能用 CopyToBox 读取你电脑上的文件。
+- 同一个 Grok 账号下的 Bot 共用一台云电脑，所以一个 Grok 账号只对应一套安装。想接更多 Bot，在已经装好的那台 Mac 上运行 `./install.sh --add-bot`（[多个 Grok Bot](#多个-grok-bot)）。
 - 想好一个团队名，它同时也是你在团队里的名字：1 到 40 个字符，只能用 ASCII 小写字母、数字和 `-`，首尾不能是 `-`，别用真名。团队建好后名字不能改，只能删掉重建。
 - 团队名和机器名里的 `-` 不能连用：引擎会把连续的 `-` 合并，`a--b` 会变成 `a-b`，所以安装器拒绝这类名字。
 - 选定 Bot 地址名：用 Bot 自己的名字，本机 agent 才分得清你的各个 Grok Bot。relay 用 `<team-name>/<name>` 收信，云端用 `<name>-cloud` 和 `<name>-inbox`。全新安装没有默认名（v0.8.0 以前默认是 `bot`；已有安装保留原来的名字）。规则：1 到 34 个字符，ASCII 小写字母和数字，分段之间用单个 `-` 连接（首尾不能是 `-`，不能连用），不能是 `terminal` 或 `terminal-<n>`。别用真名。安装没完成时不能改名：排队的消息、routine 提示词和云端设置都用这个名字。安装完成后，用 `agent-mesh rename` 改名，不需要在 Grok 里做任何事（见[给 Bot 改名](#给-bot-改名)）。

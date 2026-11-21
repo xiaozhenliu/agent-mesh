@@ -15,7 +15,7 @@ Speak to the user in their language. Keep status updates short. Run commands fro
 - `install.sh` detects that it is not running in a terminal and stops wherever the user has to act, printing what to do. Relay that text to the user verbatim.
 - Run `./check.sh` when a stage says so and paste its output to the user as is. A `FAIL` line names the fix; do not improvise.
 - Do not install anything else, do not change shell config beyond the PATH line in stage 0, do not edit other agents' config files (`reason-network setup` does that, after the user approves its plan).
-- If the machine is not macOS, stop: `install.sh` supports macOS only.
+- `install.sh` supports macOS only. On Linux, follow [Linux by hand (experimental)](#linux-by-hand-experimental) instead of stages 0–3, and only after the user agrees to its limits; on any other system, stop.
 
 ## Stage 0: prerequisites ([LOCAL] installing agent)
 
@@ -88,3 +88,125 @@ Never edit `~/.local/lib/agent-mesh/deployed.json` or Reason Network's settings 
 ## Removal
 
 `[LOCAL]`: first check the checkout's origin and local changes. If there are local changes, show them to the user and stop unless the user explicitly chooses to uninstall with this checkout; never stash, reset or discard them. Otherwise run `git pull --ff-only` (if it fails, show the output and stop), then `./uninstall.sh --plan` and show the user its output; it lists what is installed and what each level removes, and changes nothing. With the user's consent you may remove only the relay program: the user first pauses the routine in `[GROK-UI]` (every Bot's routine), then you run `./uninstall.sh --level program --yes`. `./install.sh --restart-relay` brings it back; once `./check.sh` passes, the user resumes the routine. Levels `identity` (also leave the team on both computers and remove keys and identity) and `all` (also logs, the engine and the cloud's data) need typed confirmation and a step in Grok Bot: ask the user to run `./uninstall.sh --level identity` or `--level all` in their own terminal and follow the [uninstall guide](UNINSTALL.md). With several Bots, all levels except `bot` cover every Bot; to remove only one Bot while another stays, ask the user to run `./uninstall.sh --level bot --relay-name <relay-name>` in their own terminal, which also needs typed confirmation and a step in Grok Bot; it refuses the last Bot, which needs `identity` or `all`. A Bot address removed this way can be used again only by taking it back, which needs the user's own terminal. If an older `./uninstall.sh --all` already ran, the [uninstall guide](UNINSTALL.md#remove-the-identity-or-everything) describes `--residual`. Without a terminal they exit with code 3. All levels keep this folder. Never remove files by hand instead, and never touch a deployment the uninstaller lists as foreign.
+
+## Linux by hand (experimental)
+
+`install.sh`, `check.sh`, `update.sh` and `uninstall.sh` run on macOS only ([#29](https://github.com/xiaozhenliu/agent-mesh/issues/29)). On a Linux computer you can set up the local side by hand, repeating what `install.sh` does for a first installation. Test runs on Debian have covered the engine, creating the team and the relay's real two-way messages with the cloud; these steps as a whole, the systemd service and CopyToBox from Linux have not been verified. Before you start, tell the user that afterwards:
+
+- `check.sh`, `update.sh`, `uninstall.sh` and `agent-mesh` do not work: no check, no update, no rename and no second Bot;
+- the cloud cannot be updated either, because cloud updates are requested by `update.sh`; it stays on the release installed now.
+
+Requirements, besides stage 0 steps 2 and 4 (the network check, and the user's tools, team name, Bot name and address):
+
+- Linux on x86_64 or aarch64, a regular user (not root), Git, Python 3.9+ with `ssl` and `sqlite3`, `curl`, `tar`, `sha256sum` and `openssl`.
+- No other Reason Network: `command -v reason-network` finds nothing and `~/.reason/network` does not exist. Otherwise stop and report, as in stage 0 step 3.
+- The checkout is at the release tag: `git describe --tags --exact-match` prints `v` followed by the contents of `VERSION`.
+- The Grok Bot desktop app for Linux, connected, with local execution allowed. CopyToBox copies the signing key from this computer and reads only files in the home folder, by absolute path. Without it the key cannot reach the cloud: stop. Never paste the key into a chat.
+- The computer stays on and online while the user works with the Bot.
+
+Use `<team-name>` and `<relay-name>` from stage 0 step 4, and a machine name `<machine>` for this computer (lowercase letters and digits joined by single `-`, for example `linux`). Run the commands from the checkout root, in one shell.
+
+1. **Engine.** Take the version (`VERSION=` near the top of `install.sh`) and the checksum for your target (`pinned_sha256` in `install.sh`), then download and check:
+
+   ```bash
+   case "$(uname -m)" in x86_64) target=x86_64-unknown-linux-musl ;; aarch64|arm64) target=aarch64-unknown-linux-musl ;; esac
+   tmp="$(mktemp -d)"
+   curl -fsSL "https://github.com/reason-machines/reason-network/releases/download/<version>/reason-network-$target.tar.gz" -o "$tmp/e.tgz"
+   sha256sum "$tmp/e.tgz"
+   ```
+
+   The checksum must equal the pinned one; otherwise stop. Then:
+
+   ```bash
+   tar --no-same-owner -xzf "$tmp/e.tgz" -C "$tmp" reason-network
+   python3 box/rn-engine.py build --bin "$tmp/reason-network"
+   mkdir -p ~/.local/bin && install -m 755 "$tmp/reason-network" ~/.local/bin/reason-network
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
+
+   `rn-engine.py build` prints the pinned version and the binary's checksum; if it exits 1, the binary is not the pinned build: stop. Persist the PATH line as in stage 0 step 3.
+2. **Team.**
+
+   ```bash
+   python3 scripts/relay_names.py check <relay-name>
+   export REASON_NETWORK_NO_PROMPT=1 REASON_NETWORK_MACHINE=<machine>
+   reason-network init <team-name> --as <team-name> --no-setup
+   python3 box/rn-engine.py config-off --path ~/.reason/network/config.toml auto_update lan
+   reason-network stop; reason-network team
+   reason-network who --all --json | python3 scripts/relay_names.py conflicts <relay-name>
+   ```
+
+   `config-off` turns off the engine's auto-update, which would replace the pinned engine; if it fails, stop. `conflicts` must exit 0.
+3. **Agents.** Run `reason-network setup --dry-run`, show the user the plan as printed and ask "OK to apply?"; on yes, run `reason-network setup`. On Linux the plan may also add a user service for the engine, or say that no supported agent was found; report it as printed. The user then reopens open agent sessions, as in stage 3 step 1.
+4. **Key and relay settings.**
+
+   ```bash
+   mkdir -p ~/.config/agent-relay && chmod 700 ~/.config/agent-relay
+   (umask 077; openssl rand -hex 32 > ~/.config/agent-relay/outbound.key)
+   (umask 077; cat > ~/.config/agent-relay/env <<CONF
+   RN_BIN=$HOME/.local/bin/reason-network
+   PERSON=<team-name>
+   OUTBOUND_KEY_FILE=$HOME/.config/agent-relay/outbound.key
+   LISTEN_NAME=<relay-name>
+   CLOUD_NAME=<relay-name>-cloud
+   INBOX_NAME=<relay-name>-inbox
+   CONF
+   )
+   ```
+
+   Both files must be mode 600 and the folder 700, or the relay refuses to start.
+5. **Routine.** Run `python3 scripts/render_prompt.py routine --lang en` and give the user the printed block verbatim; it says "Mac", which does not matter. Tell the user: "In `[GROK-UI]`, create a routine triggered by a webhook and paste this as its prompt. Then run these lines in a terminal on this computer and paste the Webhook URL (it starts with `https://`) and the key when asked." Wait until the user has done it.
+
+   ```bash
+   read -r -p 'Webhook URL: ' url; read -r -s -p 'Webhook key: ' key; echo
+   (umask 077; printf 'WEBHOOK_URL=%s\nWEBHOOK_KEY=%s\n' "$url" "$key" >> ~/.config/agent-relay/env)
+   unset url key
+   ```
+
+6. **Relay.** Copy it and start it in the foreground, for example in `tmux`, with the absolute path of a system Python 3.9+ (not a virtual environment):
+
+   ```bash
+   mkdir -p ~/.local/lib/agent-mesh && install -m 644 agent_relay.py ~/.local/lib/agent-mesh/agent_relay.py
+   AGENT_RELAY_STATE="$HOME/.local/state/agent-relay" AGENT_RELAY_LOG="$HOME/.local/state/agent-relay/agent-relay.log" \
+     REASON_NETWORK_HOME="$HOME/.reason/network" PATH="$HOME/.local/bin:/usr/bin:/bin" \
+     /usr/bin/python3 ~/.local/lib/agent-mesh/agent_relay.py
+   ```
+
+   It runs until it is stopped; closing the terminal or restarting the computer stops it. It is ready when its log has `agent-relay up: listening as <team-name>/<relay-name>` and `python3 scripts/relay_names.py registered <relay-name>` prints `<relay-name>`.
+
+   Optional and untested: run it as a `systemd --user` service instead, so it starts again by itself. Stop the foreground relay, write `~/.config/systemd/user/agent-relay.service`, then run `systemctl --user daemon-reload && systemctl --user enable --now agent-relay`. The service runs while the user is logged in; to keep it running without a login session, `loginctl enable-linger "$USER"` is needed, which only the user may decide.
+
+   ```ini
+   [Unit]
+   Description=agent-mesh relay
+
+   [Service]
+   ExecStart=/usr/bin/python3 %h/.local/lib/agent-mesh/agent_relay.py
+   Environment=PATH=%h/.local/bin:/usr/bin:/bin
+   Environment=REASON_NETWORK_HOME=%h/.reason/network
+   Environment=AGENT_RELAY_STATE=%h/.local/state/agent-relay
+   Environment=AGENT_RELAY_LOG=%h/.local/state/agent-relay/agent-relay.log
+   Restart=always
+   RestartSec=30
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+7. **Cloud.** Render the cloud prompt as `install.sh --cloud-prompt` does:
+
+   ```bash
+   repo=https://github.com/xiaozhenliu/agent-mesh.git
+   rel="$(python3 scripts/deploy_state.py release --repo-url "$repo")"
+   tag="$(printf '%s\n' "$rel" | awk '$1=="tag"{print $2}')"
+   commit="$(printf '%s\n' "$rel" | awk '$1=="commit"{print $2}')"
+   sums="$(printf '%s\n' "$rel" | awk '$1=="sum"{print $2"  "$3}')"
+   reason-network invite --me
+   python3 scripts/render_prompt.py cloud-setup --lang en --team-name <team-name> --mac-home "$HOME" --repo-url "$repo" \
+     --relay-name <relay-name> --release-tag "$tag" --release-commit "$commit" --cloud-checksums "$sums"
+   ```
+
+   `release` checks that this checkout's cloud scripts match the release tag; if it fails, stop. From the `invite --me` output take the link after `send it:` on the line that starts with `For a cloud agent of yours`. Give the user the link and the printed prompt together and continue as in stage 2 step 2; the CopyToBox source is this computer's `$HOME/.config/agent-relay/outbound.key`, already written out in the prompt. When the user reports that the cloud is in, `reason-network team` must list a row with `<team-name>` and `cloud`.
+8. **Smoke test.** As in stage 3, with the relay log at `~/.local/state/agent-relay/agent-relay.log`. For the reply convention, `python3 scripts/reply_convention.py install` writes the filled-in copies to `~/.local/lib/agent-mesh/templates/`; use them as in [Optional](#optional).
+
+There is no uninstaller on Linux. To switch it off, the user pauses the routine in `[GROK-UI]`; then stop the relay (Ctrl-C, or `systemctl --user disable --now agent-relay`). Leaving the team and removing keys or the cloud's data are not covered: show the user what [UNINSTALL](UNINSTALL.md) says each level removes, and do not improvise.

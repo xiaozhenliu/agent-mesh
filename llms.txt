@@ -10,7 +10,7 @@ Execution location labels: [LOCAL] = the user's local computer (Mac), where the 
 
 ## Install (for agents)
 
-Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), Git, Python 3.9+ with ssl/sqlite3, and at least one installed and authenticated coding agent. [BOT-CLOUD] requires Linux x86_64/ARM64, Bash, Git, Python 3.9+ with ssl/sqlite3, curl, tar, sha256sum, and writable persistent /workspace storage. Both need GitHub HTTPS and iroh connectivity. Default public HTTPS cloning needs no GitHub credentials or SSH key. See README prerequisites for missing tools and existing deployments. The installer uses the actual Mac HOME and Python interpreter; custom engine profiles or conflicting versions/installations stop for review.
+Prerequisites: [LOCAL] requires a desktop macOS login (Apple Silicon or Intel), Git, Python 3.9+ with ssl/sqlite3, and at least one installed and authenticated coding agent. Linux has no installer; AGENT-INSTALL.md has an experimental manual setup, after which check, update and uninstall do not work. [BOT-CLOUD] requires Linux x86_64/ARM64, Bash, Git, Python 3.9+ with ssl/sqlite3, curl, tar, sha256sum, and writable persistent /workspace storage. Both need GitHub HTTPS and iroh connectivity. Default public HTTPS cloning needs no GitHub credentials or SSH key. See README prerequisites for missing tools and existing deployments. The installer uses the actual Mac HOME and Python interpreter; custom engine profiles or conflicting versions/installations stop for review.
 
 - [AGENT-INSTALL.md](AGENT-INSTALL.md): the runbook. Who does each step, exact commands, expected output, what to ask the user, what never to do.
 - [AGENT-INSTALL.zh-CN.md](AGENT-INSTALL.zh-CN.md): the same runbook in Simplified Chinese.
