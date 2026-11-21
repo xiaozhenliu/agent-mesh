@@ -194,6 +194,7 @@ install.name_class_new	The name has never been used in this team.
 install.name_class_own	The name was this Bot's before; the Bot takes it back.
 install.name_class_removed	The name belonged to a Bot uninstalled from this Mac. Taking it back gives this Bot that identity; its sessions:
 install.name_class_left	The name was left by an earlier deployment (no record on this Mac says whose it is). Taking it back gives this Bot that identity; check its sessions:
+install.name_class_claim	The Bot's cloud computer said this name was used there before. Taking it back gives this Bot that identity; check its sessions:
 install.name_unread	%s unread messages to %s are queued on this Mac; after the change the Bot receives them as new messages. Senders:
 install.name_unread_held	%s unread messages to %s are queued on this Mac; they are set aside with the messages already in the Bot's cloud inbox, and agent-mesh rename --accept-history gives them to the Bot. Senders:
 install.rename_busy	a rename is in progress; finish it with agent-mesh rename or undo it with agent-mesh rename --cancel, then run this again

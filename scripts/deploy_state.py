@@ -1670,16 +1670,20 @@ def cmd_removing_done(args):
     save(data)
 
 
-def reserve(data, record):
+def reserve(data, record, claim=False):
     if record.get("reclaim") == 1 or record.get("stage") == "launched":
-        return
+        return False
     slot, name = record["slot"], record["new"]
     former = relay_names.former_of(data)
-    if any(f["slot"] == slot and f["name"] == name for f in former):
-        return
-    now = int(time.time() * 1000)
-    former.append({"name": name, "slot": slot, "since_ms": now, "until_ms": now, "reserved": True})
-    data["former"] = former
+    mine = [f for f in former if f["slot"] == slot and f["name"] == name]
+    if not mine:
+        now = int(time.time() * 1000)
+        mine = [{"name": name, "slot": slot, "since_ms": now, "until_ms": now, "reserved": True}]
+        data["former"] = former + mine
+    for f in mine:
+        if claim:
+            f["claim"] = True
+    return claim
 
 
 def valid_slot(slot):
@@ -1925,7 +1929,10 @@ def cmd_rename_reply(_args):
         print(t("state.rename_reply_mismatch", sender))
         for line in lines:
             print(f"  {line}")
-        reserve(data, record)
+        claim = any(line.startswith(f"STOP: {record['new']} is an earlier address name on this cloud;")
+                    for line in lines)
+        if reserve(data, record, claim):
+            print(t("state.rename_claim_again"))
         data.pop("rename")
         save(data)
         raise SystemExit(1)

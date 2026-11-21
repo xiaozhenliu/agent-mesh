@@ -27,10 +27,11 @@ class RenameSupport(AddSupport):
     def rename_tty(self, repo, *args, answer="y"):
         return self.run_staged(repo, "--rename", *args, steps=[("[y/N] ", answer)])
 
-    def listing(self, name, mac_status="offline", since=None, cloud_status="online"):
-        rows = [{"person": "demo", "machine": "mac", "name": name, "status": mac_status, "since": since or 1},
-                {"person": "demo", "machine": "cloud", "name": f"{name}-cloud", "status": cloud_status, "since": 1},
-                {"person": "demo", "machine": "cloud", "name": f"{name}-inbox", "status": cloud_status, "since": 1}]
+    def listing(self, name, mac_status="offline", since=None, cloud_status="online", cloud=True):
+        rows = [{"person": "demo", "machine": "mac", "name": name, "status": mac_status, "since": since or 1}]
+        if cloud:
+            rows += [{"person": "demo", "machine": "cloud", "name": f"{name}-cloud", "status": cloud_status, "since": 1},
+                     {"person": "demo", "machine": "cloud", "name": f"{name}-inbox", "status": cloud_status, "since": 1}]
         (self.who / "all.json").write_text(json.dumps(dict(EMPTY_DIRECTORY, sessions=rows)))
 
     def env_lines(self, path=None):
@@ -186,6 +187,60 @@ class FirstBot(RenameSupport, unittest.TestCase):
         self.assertEqual(self.former_env(), [])
         self.assertEqual(self.env_file().read_bytes(), before)
         self.assert_retry_reaches_the_pending_name(repo)
+
+    def test_a_name_the_cloud_used_before_is_confirmed_and_claimed_on_the_next_run(self):
+        repo = self.two_ready()
+        self.bot_replies(body="agent-mesh-result request {req}\nSTOP: gamma is an earlier address name on this cloud; "
+                              "the Mac must confirm taking it back (nothing was changed)\n"
+                              "agent-mesh-result lang en\nagent-mesh-result DONE rename\n", sender="{to}")
+        result = self.rename(repo, "gamma", "--yes")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn(m("state.rename_claim_again"), out)
+        self.assertNotIn("reclaim=1", self.sent()[-1]["body"])
+        self.assertEqual([(f["name"], f["reserved"], f["claim"]) for f in self.record()["former"]],
+                         [("gamma", True, True)])
+        result = self.rename(repo, "gamma", "--yes")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn(m("install.name_class_claim"), result.stdout)
+        self.assertIn(m("names.evidence_absent", "demo/gamma-inbox"), result.stdout)
+        self.assertEqual(len(self.sent()), 1)
+        self.accepts("-", "alpha", "gamma")
+        result = self.rename_tty(repo, "gamma")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue(self.sent()[-1]["body"].endswith("\nreclaim=1"))
+        data = self.record()
+        self.assertEqual(data["relay_name"], "gamma")
+        self.assertEqual([f["name"] for f in data["former"]], ["alpha"])
+
+        self.bot_replies(body="agent-mesh-result request {req}\nSTOP: alpha is an earlier address name on this cloud; "
+                              "the Mac must confirm taking it back (nothing was changed)\n"
+                              "agent-mesh-result lang en\nagent-mesh-result DONE rename\n", sender="{to}")
+        self.listing("alpha", cloud=False)
+        result = self.rename(repo, "alpha", "--yes")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn(m("state.rename_claim_again"), out)
+        self.assertEqual([(f["name"], f.get("claim")) for f in self.record()["former"]], [("alpha", True)])
+        self.accepts("-", "gamma", "alpha")
+        result = self.rename_tty(repo, "alpha")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn(m("install.name_class_claim"), out)
+        self.assertTrue(self.sent()[-1]["body"].endswith("\nreclaim=1"))
+        self.assertEqual(self.record()["relay_name"], "alpha")
+        self.assertNotIn("claim", self.record()["former"][0])
+
+    def test_other_refusals_print_no_claim_hint(self):
+        repo = self.two_ready()
+        self.bot_replies(body="agent-mesh-result request {req}\nSTOP: gamma is an address name of beta on this cloud; "
+                              "choose another name (nothing was changed)\n"
+                              "agent-mesh-result lang en\nagent-mesh-result DONE rename\n", sender="{to}")
+        result = self.rename(repo, "gamma", "--yes")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn(m("state.rename_claim_again"), result.stdout + result.stderr)
+        self.assertNotIn("claim", self.record()["former"][0])
 
     def assert_retry_reaches_the_pending_name(self, repo):
         self.assertEqual(self.state_cmd("former", root=repo).stdout.strip(), "")
@@ -385,23 +440,52 @@ class FirstBot(RenameSupport, unittest.TestCase):
         result = self.rename_tty(repo, "old")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(m("names.reclaim_online", "demo/old", "online"), result.stderr)
-        self.listing("old", since=int(time.time() * 1000) - 3600 * 1000, cloud_status="offline")
-        result = self.rename_tty(repo, "old")
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("demo/old", result.stderr)
-        self.listing("old", since=int(time.time() * 1000) - 60 * 86400 * 1000, cloud_status="offline")
+        self.assertNotIn("demo/old-cloud", result.stderr)
+        self.listing("old", since=int(time.time() * 1000) - 3600 * 1000, cloud=False)
         self.ps.write_text("777 1 /opt/reason-network listen --as old-inbox\n")
         result = self.rename_tty(repo, "old")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("777", result.stderr)
+        self.assertNotIn("demo/old-cloud", result.stderr)
         self.ps.write_text("")
         self.accepts("-", "alpha", "old")
         result = self.rename_tty(repo, "old")
         out = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, out)
         self.assertIn(m("install.name_class_left"), out)
+        for name in ("demo/old-cloud", "demo/old-inbox"):
+            self.assertIn(m("names.evidence_absent", name), out)
         self.assertTrue(self.sent()[-1]["body"].endswith("\nreclaim=1"))
         self.assertEqual(self.record()["relay_name"], "old")
+
+    def test_names_come_back_when_their_cloud_sessions_are_out_of_sight(self):
+        repo = self.two_ready()
+        self.accepts("-", "alpha", "gamma")
+        result = self.rename(repo, "gamma", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for old, new in (("gamma", "alpha"), ("alpha", "gamma")):
+            self.listing(new, cloud=False)
+            self.sessions([(new, f"cli:{new}", 1)])
+            self.accepts("-", old, new)
+            result = self.rename(repo, new, "--yes")
+            out = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, out)
+            self.assertIn(m("install.name_class_own"), out)
+            self.assertIn(m("names.evidence_absent", f"demo/{new}-cloud"), out)
+            self.assertNotIn("reclaim", self.sent()[-1]["body"])
+            self.assertEqual(self.record()["relay_name"], new)
+        data = self.record()
+        data["removed_bots"] = ["gone"]
+        self.write_record(data)
+        (self.who / "all.json").write_text(json.dumps(EMPTY_DIRECTORY))
+        self.accepts("-", "gamma", "gone")
+        result = self.rename_tty(repo, "gone")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn(m("install.name_class_removed"), out)
+        self.assertIn(m("names.evidence_absent", "demo/gone-inbox"), out)
+        self.assertTrue(self.sent()[-1]["body"].endswith("\nreclaim=1"))
+        self.assertEqual(self.record()["relay_name"], "gone")
 
 
 class AddedBot(RenameSupport, unittest.TestCase):

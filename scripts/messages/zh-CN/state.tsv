@@ -66,6 +66,7 @@ state.rename_damaged	%s 里的改名记录已损坏；没有做任何改动。�
 state.rename_exists	已有一次改名在进行；运行 agent-mesh rename 完成它，或运行 agent-mesh rename --cancel 撤销
 state.rename_old_differs	%s 不同时是 deployed.json 和 env 文件里这个 Bot 的当前地址名；没有做任何改动，请运行 ./check.sh
 state.rename_reply_mismatch	Bot 云电脑（%s）没有接受这次改名；这台 Mac 没有任何改动，改名记录已清除：
+state.rename_claim_again	Bot 云电脑以前用过这个名字；在终端里再运行一次同样的 agent-mesh rename 命令，确认收回。
 state.rename_pending	Bot 云电脑（%s）已接受改名，新名字收到第一条消息时完成切换
 state.rename_not_replied	Bot 云电脑还没有接受这次改名；请再次运行 agent-mesh rename
 state.rename_backup_bad	%s 里的改名备份缺失或损坏，无法恢复旧名字；没有做任何改动。请改为运行 agent-mesh rename 完成改名

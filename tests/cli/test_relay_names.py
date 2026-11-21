@@ -354,7 +354,12 @@ class NameCheck(unittest.TestCase):
         self.assertEqual(lines[0], "class own")
         self.assertEqual(lines[-1], "unread 0")
         self.assertEqual(len([line for line in lines if line.startswith("evidence ")]), 4)
-        self.assertEqual(self.check("luna", "--slot", "luna", listing=self.own("luna")).returncode, 1)
+        self.assertFalse([line for line in lines if "not in this team's list" in line])
+        result = self.check("luna", "--slot", "luna", listing=self.own("luna"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "class own")
+        self.assertEqual(len([line for line in lines if line.startswith("evidence ")]), 3)
         session_db(self.base / "other.db", [("luna", "cli:luna", 1)])
         env = dict(os.environ, HOME=str(self.base))
         result = subprocess.run([sys.executable, str(SCRIPT), "name-check", "demo", "luna", "--slot", "luna", "--db",
@@ -381,52 +386,106 @@ class NameCheck(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("cli:next", result.stderr)
 
-    def test_a_removed_name_needs_its_key_and_cloud_sessions_and_no_listener(self):
+    def test_a_removed_name_is_checked_on_this_mac_and_its_cloud_sessions_are_only_shown(self):
         result = self.check("gone", "--slot", "-", listing=self.own("gone"))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("no key for the session gone", result.stderr)
+        self.assertEqual((result.returncode, result.stdout.splitlines()[0]), (0, "class removed"), result.stderr)
+        self.assertNotIn("evidence this Mac's engine holds", result.stdout)
         session_db(self.db, [("gone", "cli:gone", 1)])
         idle = self.own("gone", status="idle", since=int(time.time() * 1000))
         result = self.check("gone", "--slot", "-", listing=idle)
         self.assertEqual((result.returncode, result.stdout.splitlines()[0]), (0, "class removed"), result.stderr)
-        self.assertNotIn("not offline", result.stderr)
         self.ps.write_text("  700 1 /x/reason-network listen --as gone --wait 600\n")
         result = self.check("gone", "--slot", "-", listing=idle)
         self.assertEqual(result.returncode, 1)
         self.assertIn("process 700 is listening as gone", result.stderr)
         self.ps.write_text("")
-        missing = dict(directory(), sessions=self.own("gone")["sessions"][:2])
-        result = self.check("gone", "--slot", "-", listing=missing)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("demo/gone-inbox is not in this team's list", result.stderr)
+        for kept in (2, 1, 0):
+            listing = dict(directory(), sessions=self.own("gone")["sessions"][:kept])
+            result = self.check("gone", "--slot", "-", listing=listing)
+            self.assertEqual(result.returncode, 0, (kept, result.stderr))
+            lines = result.stdout.splitlines()
+            self.assertEqual(lines[0], "class removed")
+            absent = [n for n in ("gone-cloud", "gone-inbox") if n not in [r["name"] for r in listing["sessions"]]]
+            for n in absent:
+                self.assertIn(f"evidence session demo/{n}: not in this team's list; the Bot's cloud computer checks its "
+                              "own sessions when it registers the name", lines)
+            self.assertIn("evidence this Mac's engine holds the relay key of gone", lines)
         moved = self.own("gone")
         moved["sessions"][1]["machine"] = "laptop"
         self.assertIn("on machine laptop, not on cloud", self.check("gone", "--slot", "-", listing=moved).stderr)
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO sessions VALUES ('gone-2', 'cli:gone', 'cli', '/', NULL, NULL, NULL, 'pull', 2)")
+        con.commit()
+        con.close()
         result = self.check("gone", "--slot", "-", listing=self.own("gone"))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines()[0], "class removed")
-        self.assertEqual(self.check("gone", listing=self.own("gone")).stdout.splitlines()[0], "class removed")
-
-    def test_a_left_name_must_have_been_offline_for_a_day_everywhere(self):
-        session_db(self.db, [("left", "cli:left", 1)])
-        now = int(__import__("time").time() * 1000)
-        listing = self.own("left", since=now - 3600 * 1000)
-        for row in listing["sessions"]:
-            row["status"] = "offline"
-        result = self.check("left", "--slot", "-", listing=listing)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("demo/left has been offline only since", result.stderr)
-        listing["sessions"][0]["since"] = now - 2 * 86400 * 1000
+        self.assertIn("holds the relay key of gone as the session gone-2", result.stderr)
+
+    def test_a_left_name_must_be_offline_on_this_mac_and_its_cloud_sessions_are_only_shown(self):
+        session_db(self.db, [("left", "cli:left", 1)])
+        now = int(time.time() * 1000)
+        listing = self.own("left", since=now - 3600 * 1000)
+        listing["sessions"][0]["status"] = "offline"
         result = self.check("left", "--slot", "-", listing=listing)
         self.assertEqual(result.stdout.splitlines()[0], "class left", result.stderr)
-        listing["sessions"][2]["status"] = "online"
-        self.assertIn("demo/left-inbox is online", self.check("left", "--slot", "-", listing=listing).stderr)
+        listing["sessions"][0]["status"] = "online"
+        self.assertIn("demo/left is online", self.check("left", "--slot", "-", listing=listing).stderr)
+        listing["sessions"][0]["status"] = "offline"
+        result = self.check("left", "--slot", "-", listing=dict(directory(), sessions=[]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "class left")
+        self.assertEqual(len([line for line in lines if "not in this team's list" in line]), 2)
+        self.assertIn("evidence this Mac's engine holds the relay key of left", lines)
         con = sqlite3.connect(self.db)
         con.execute("INSERT INTO sessions VALUES ('other', 'cli:left-cloud', 'cli', '/', NULL, NULL, NULL, 'pull', 1)")
         con.commit()
         con.close()
-        listing["sessions"][2]["status"] = "offline"
         self.assertIn("cli:left-cloud", self.check("left", "--slot", "-", listing=listing).stderr)
+        named = dict(directory(machine="cloud"), sessions=[dict(listing["sessions"][0], machine="cloud", status="online")])
+        self.assertIn("demo/left is online", self.check("left", "--slot", "-", listing=named).stderr)
+
+    def test_sessions_of_this_mac_under_other_keys_block_the_name(self):
+        session_db(self.db, [("hid", "cli:other", 1), ("hid2-inbox", "cli:zzz", 1)])
+        result = self.check("hid", "--slot", "-")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("holds the session hid under the key cli:other", result.stderr)
+        result = self.check("hid2", "--slot", "-")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("holds the session hid2-inbox under the key cli:zzz", result.stderr)
+
+    def test_a_held_name_the_cloud_asked_to_claim_goes_through_the_full_checks(self):
+        record = self.base / ".local/lib/agent-mesh/deployed.json"
+        data = json.loads(record.read_text())
+        data["former"].append({"name": "next", "slot": "-", "since_ms": 5, "until_ms": 5, "reserved": True,
+                               "claim": True})
+        record.write_text(json.dumps(data))
+        result = self.check("next", "--slot", "-")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "class claim")
+        self.assertEqual(len([line for line in lines if "not in this team's list" in line]), 2)
+        self.ps.write_text("  700 1 /x/reason-network listen --as next-inbox\n")
+        result = self.check("next", "--slot", "-")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("process 700 is listening as next", result.stderr)
+        self.assertEqual(self.check("next", "--slot", "luna").returncode, 1)
+        data["former"][0]["claim"] = True
+        record.write_text(json.dumps(data))
+        session_db(self.db, [("old", "cli:old", 1)])
+        result = self.check("old", "--slot", "luna", listing=self.own("old"))
+        self.assertEqual(result.stdout.splitlines()[0], "class claim", result.stderr)
+
+    def test_cloud_sessions_alone_make_a_left_name_that_this_mac_can_take(self):
+        cloud = dict(directory(), sessions=self.own("far")["sessions"][1:])
+        result = self.check("far", "--slot", "-", listing=cloud)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "class left")
+        since = time.strftime("%Y-%m-%d %H:%M", time.localtime(1 / 1000))
+        for name in ("far-cloud", "far-inbox"):
+            self.assertIn(f"evidence session demo/{name} on machine cloud: online since {since}", lines)
+        self.assertFalse([line for line in lines if "not in this team's list" in line or "relay key" in line])
 
     def test_listening_processes_and_launchd_jobs_block_a_reclaim(self):
         session_db(self.db, [("gone", "cli:gone", 1)])
@@ -449,9 +508,13 @@ class NameCheck(unittest.TestCase):
         self.assertIn(f"the launchd job {job} still uses gone", result.stderr)
         job.write_bytes(plistlib.dumps({"Label": "com.example.helper", "ProgramArguments": ["/bin/run", "/data/gone/x"]}))
         self.assertEqual(self.check("gone", "--slot", "-", listing=listing).returncode, 1)
-        for other in ("gone-ish", "gonex", "agone"):
+        for other in ("gone-ish", "gonex", "agone", "/opt/gone_relay.py", "/opt/gone.sh", "gone_x", "x.gone",
+                      "gone-inboxes"):
             job.write_bytes(plistlib.dumps({"Label": "com.example.helper", "ProgramArguments": ["/bin/run", other]}))
             self.assertEqual(self.check("gone", "--slot", "-", listing=listing).returncode, 0, other)
+        job.write_bytes(plistlib.dumps({"Label": "com.example.helper", "ProgramArguments": ["/bin/run", "--as",
+                                                                                         "gone-inbox"]}))
+        self.assertIn(f"the launchd job {job} still uses gone", self.check("gone", "--slot", "-", listing=listing).stderr)
         env = self.base / "elsewhere/env"
         env.parent.mkdir()
         env.write_text("LISTEN_NAME=moon\nFORMER_NAMES=gone:99999999999\n")

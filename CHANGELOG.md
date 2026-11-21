@@ -4,6 +4,16 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.11.1 — 2026-11-22
+
+Taking a name back, or renaming a Bot back, no longer needs the Bot's cloud sessions to show in the team list (#66). Update with `agent-mesh update`; updating from v0.11.0 leaves the cloud as it is, and the routine stub needs no new paste.
+
+### Fixed
+
+- `agent-mesh rename` and `./install.sh --add-bot` check only this Mac when a name is taken back or renamed back. Cloud sessions the team lists are shown for you to confirm; ones it does not list no longer stop the change, and a name left by an earlier setup no longer has to be offline for 24 hours.
+- A login service whose program path only contains the name, such as `<name>_relay.py`, no longer counts as using that name.
+- When the Bot's cloud computer refuses a rename because it used the name before, running the same `agent-mesh rename` again in a terminal asks you to confirm taking the name back, instead of being refused again.
+
 ## v0.11.0 — 2026-11-21
 
 A Bot's address name can now be changed (#53). Update with `agent-mesh update`; it updates the Bot's cloud computer, and a pasted routine stub needs no new paste (if you still use the complete prompt, paste it again when `agent-mesh update` asks).

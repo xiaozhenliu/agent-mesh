@@ -323,16 +323,19 @@ class AddNames(AddSupport, unittest.TestCase):
 
     def test_the_three_names_are_checked_without_exemptions(self):
         repo = self.two_ready()
-        listings = [self.cloud_listing("beta", machine="mac", status="offline"),
-                    self.cloud_listing("beta-cloud", machine="laptop"),
-                    self.cloud_listing("beta-inbox", machine="cloud", status="offline")]
-        for listing in listings:
+        for listing in (self.cloud_listing("beta", machine="mac", status="offline"),
+                        self.cloud_listing("beta-inbox", status="offline"), self.cloud_listing("beta-cloud")):
+            (self.who / "all.json").write_text(json.dumps(listing))
+            result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "beta")
+            self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+            self.assertIn(m("install.name_class_left"), result.stdout)
+        for listing, why in ((self.cloud_listing("beta", machine="mac"), m("names.reclaim_online", "demo/beta", "online")),
+                             (self.cloud_listing("beta-cloud", machine="laptop"),
+                              m("names.reclaim_machine", "demo/beta-cloud", "laptop", "cloud"))):
             (self.who / "all.json").write_text(json.dumps(listing))
             result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "beta")
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-            session = listing["sessions"][0]
-            self.assertIn(f"the session demo/{session['name']} ", result.stderr)
-            self.assertIn(m("names.reclaim_key", "beta"), result.stderr)
+            self.assertIn(why, result.stderr)
         (self.who / "all.json").write_text(json.dumps(self.cloud_listing()))
         self.sessions([("old", "cli:beta-inbox", 1)])
         result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "beta")
@@ -342,8 +345,9 @@ class AddNames(AddSupport, unittest.TestCase):
         data["removed_bots"] = ["gone"]
         self.write_record(data)
         result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "gone")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(m("names.reclaim_missing", "demo/gone"), result.stderr)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn(m("install.name_class_removed"), result.stdout)
+        self.assertIn(m("names.evidence_absent", "demo/gone-cloud"), result.stdout)
         result = self.run_add(repo, "--grok-name", "Beta", "--relay-name", "alpha")
         self.assertEqual(result.returncode, 1)
         self.assertIn(m("install.add_exists", "alpha", "alpha"), result.stderr)

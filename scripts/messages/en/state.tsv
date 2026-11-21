@@ -66,6 +66,7 @@ state.rename_damaged	the rename record in %s is damaged; nothing was changed. Ru
 state.rename_exists	a rename is already in progress; run agent-mesh rename to finish it, or agent-mesh rename --cancel to undo it
 state.rename_old_differs	%s is not the current address name of this Bot in both deployed.json and its env file; nothing was changed, run ./check.sh
 state.rename_reply_mismatch	the Bot cloud (%s) did not accept the rename; nothing was changed on this Mac and the rename record was dropped:
+state.rename_claim_again	The Bot's cloud computer used this name before; run the same agent-mesh rename command again in a terminal to confirm taking it back.
 state.rename_pending	the Bot cloud (%s) accepted the rename and switches to the new name when the first message arrives there
 state.rename_not_replied	the Bot cloud has not accepted the rename yet; run agent-mesh rename again
 state.rename_backup_bad	the rename backup in %s is missing or damaged, so the old name cannot be restored; nothing was changed. Run agent-mesh rename to finish the rename instead

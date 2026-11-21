@@ -194,6 +194,7 @@ install.name_class_new	这个名字在团队里从未用过。
 install.name_class_own	这个名字以前属于这个 Bot，这次是收回。
 install.name_class_removed	这个名字属于一个已从这台 Mac 卸载的 Bot。收回后这个 Bot 就使用这个身份；它的会话：
 install.name_class_left	这个名字是以前的部署留下的（这台 Mac 上没有记录说明它属于谁）。收回后这个 Bot 就使用这个身份；请核对它的会话：
+install.name_class_claim	Bot 云电脑说这个名字以前在那里用过。收回后这个 Bot 就使用这个身份；请核对它的会话：
 install.name_unread	这台 Mac 上有 %s 条发往 %s 的未读消息在排队；改动之后 Bot 会把它们当作新消息收下。发件人：
 install.name_unread_held	这台 Mac 上有 %s 条发往 %s 的未读消息在排队；它们会和 Bot 云端收件箱里已有的消息一起被搁置，agent-mesh rename --accept-history 把它们交给 Bot。发件人：
 install.rename_busy	有一次改名正在进行；先用 agent-mesh rename 完成，或用 agent-mesh rename --cancel 撤销，再运行这个命令

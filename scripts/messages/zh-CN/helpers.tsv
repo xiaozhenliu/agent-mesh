@@ -45,11 +45,10 @@ names.add_removed	%s 属于一个已卸载的 Bot
 names.add_key_taken	这台 Mac 的引擎已有会话键 %s（会话 %s）；请换一个名字
 names.same	%s 已经是这个 Bot 的地址名
 names.other_slot	%s 是或曾是这台 Mac 上另一个 Bot（%s）的地址名；名字始终属于用过它的那个 Bot，请换一个名字
-names.reclaim_missing	这个团队的列表里没有会话 %s，无法证明这个名字属于你；请换一个名字
+names.evidence_absent	会话 %s：不在这个团队的列表里；Bot 云电脑登记这个名字时会核对自己的会话
 names.reclaim_machine	会话 %s 在机器 %s 上，而不是 %s；请换一个名字
 names.reclaim_online	会话 %s 的状态是 %s，不是离线；先停掉仍在使用它的程序，或换一个名字
-names.reclaim_recent	会话 %s 从 %s 起才离线；以前的部署留下的名字要离线满 24 小时才能收回
-names.reclaim_key	这台 Mac 的引擎没有会话 %s 的密钥，无法收回这个身份；请换一个名字
+names.reclaim_key	这台 Mac 的引擎把 %s 的 relay 密钥登记成了会话 %s，无法收回这个身份；请换一个名字
 names.reclaim_key_other	这台 Mac 的引擎持有的会话 %s 使用键 %s，它不是 relay；请换一个名字
 names.reclaim_listening	进程 %s 正以 %s 监听（%s）；先停掉它，或换一个名字
 names.reclaim_plist	launchd 任务 %s 仍在使用 %s；先删除或修改它，或换一个名字

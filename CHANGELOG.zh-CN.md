@@ -4,6 +4,16 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.11.1 — 2026-11-22
+
+收回名字或把 Bot 改回原名时，不再要求 Bot 的云端会话出现在团队列表里（#66）。用 `agent-mesh update` 更新；从 v0.11.0 升级不更新云端，routine 桩不用重贴。
+
+### 修复
+
+- `agent-mesh rename` 和 `./install.sh --add-bot` 收回名字或改回原名时只检查本机。团队列出的云端会话列给你确认；没列出的不再拦下改名，早先部署留下的名字也不再要求离线满 24 小时。
+- 程序路径里只是含有这个名字的登录服务（如 `<name>_relay.py`）不再算作在用这个名字。
+- Bot 云电脑因为以前用过某个名字而拒绝改名时，在终端里再运行一次同样的 `agent-mesh rename` 会请你确认收回，不再被反复拒绝。
+
 ## v0.11.0 — 2026-11-21
 
 Bot 地址名可以改了（#53）。用 `agent-mesh update` 更新；本版会更新 Bot 云电脑，已贴 routine 桩的不用重贴（仍用完整提示词的，`agent-mesh update` 提示时重贴一次）。

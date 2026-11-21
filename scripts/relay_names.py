@@ -20,7 +20,7 @@
   relay_names.py name-check PERSON NAME [--slot SLOT] [--relay-pid PID] [--db PATH] [--ps-file PATH]
                                        read `reason-network who --all --json` on stdin and decide whether NAME can
                                        become the address name of the Bot SLOT (- for the first Bot; without --slot,
-                                       a Bot being added). Prints "class new|own|removed|left", then "evidence TEXT",
+                                       a Bot being added). Prints "class new|own|removed|left|claim", then "evidence TEXT",
                                        "unread N" and "sender ADDRESS N" lines for a name taken back; exit 1 with the
                                        reasons if NAME cannot be used, 2 if it cannot be checked
   relay_names.py cloud-sessions PERSON NAME
@@ -58,7 +58,6 @@ KEYS = ("LISTEN_NAME", "CLOUD_NAME", "INBOX_NAME")
 RELAY_DEFAULTS = {"LISTEN_NAME": "bot", "CLOUD_NAME": "bot-cloud", "INBOX_NAME": "bot-inbox"}
 CLOUD_MACHINE = "cloud"
 GROK_MAX_LEN = 64
-OFFLINE_MS = 24 * 3600 * 1000
 RELAY_LABEL = "com.local.agent-relay"
 ENV_VARS = ("PATH", "REASON_NETWORK_HOME", "AGENT_RELAY_ENV", "AGENT_RELAY_STATE", "AGENT_RELAY_LOG")
 
@@ -276,6 +275,23 @@ def owner(data, roster, name, slot):
     return None, None
 
 
+def local_names(db, names):
+    if not Path(db).exists():
+        return []
+    con = open_ro(db)
+    try:
+        return [(n, row[0]) for n in names
+                for row in con.execute("SELECT key FROM sessions WHERE name = ?", (n,)).fetchall()
+                if row[0] != f"cli:{n}"]
+    finally:
+        con.close()
+
+
+def local_traces(db, wanted):
+    found = [t("names.add_key_taken", f"cli:{key}", session) for key, session in local_keys(db, wanted)]
+    return found + [t("names.reclaim_key_other", session, key) for session, key in local_names(db, wanted)]
+
+
 def taken(directory, person, name, db):
     found = []
     wanted = derived(name)
@@ -283,14 +299,16 @@ def taken(directory, person, name, db):
         if s.get("person") == person and s["name"] in wanted:
             found.append(t("names.taken", f"{person}/{s['name']}", s.get("machine") or t("names.unknown"),
                            s.get("status") or t("names.unknown")))
-    for key, session in local_keys(db, wanted):
-        found.append(t("names.add_key_taken", f"cli:{key}", session))
-    return found
+    return found + local_traces(db, wanted)
 
 
 def reserved_only(data, name, slot):
     mine = [f for f in former_of(data) if f["name"] == name and f["slot"] == slot]
     return bool(mine) and all(f.get("reserved") is True for f in mine) and name != slot
+
+
+def claim_asked(data, name, slot):
+    return any(f["name"] == name and f["slot"] == slot and f.get("claim") is True for f in former_of(data))
 
 
 def taken_elsewhere(directory, person, name, db):
@@ -303,9 +321,7 @@ def taken_elsewhere(directory, person, name, db):
             continue
         found.append(t("names.taken", f"{person}/{s['name']}", s.get("machine") or t("names.unknown"),
                        s.get("status") or t("names.unknown")))
-    for key, session in local_keys(db, wanted):
-        found.append(t("names.add_key_taken", f"cli:{key}", session))
-    return found
+    return found + local_traces(db, wanted)
 
 
 def when(ms):
@@ -314,14 +330,14 @@ def when(ms):
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000))
 
 
-def session_problems(directory, person, name, cls, now_ms):
+def session_problems(directory, person, name, cls):
     me = directory.get("machine")
     problems, evidence = [], []
-    for wanted, machine in zip(derived(name), (me, CLOUD_MACHINE, CLOUD_MACHINE)):
+    for i, wanted in enumerate(derived(name)):
+        machine = me if i == 0 else CLOUD_MACHINE
         rows = [s for s in sessions_of(directory) if s.get("person") == person and s["name"] == wanted]
-        if not rows:
-            problems.append(t("names.reclaim_missing", f"{person}/{wanted}"))
-            continue
+        if not rows and i:
+            evidence.append(t("names.evidence_absent", f"{person}/{wanted}"))
         for s in rows:
             status, since = s.get("status") or t("names.unknown"), s.get("since")
             evidence.append(t("names.evidence_session", f"{person}/{wanted}", s.get("machine") or t("names.unknown"),
@@ -329,30 +345,23 @@ def session_problems(directory, person, name, cls, now_ms):
             if s.get("machine") != machine:
                 problems.append(t("names.reclaim_machine", f"{person}/{wanted}", s.get("machine") or t("names.unknown"),
                                   machine))
-            elif cls == "left":
-                if status != "offline":
-                    problems.append(t("names.reclaim_online", f"{person}/{wanted}", status))
-                elif not (isinstance(since, int) and now_ms - since >= OFFLINE_MS):
-                    problems.append(t("names.reclaim_recent", f"{person}/{wanted}", when(since)))
+            elif cls in ("left", "claim") and i == 0 and status != "offline":
+                problems.append(t("names.reclaim_online", f"{person}/{wanted}", status))
     return problems, evidence
 
 
 def key_problems(db, name):
     if not Path(db).exists():
-        return [t("names.reclaim_key", name)], []
+        return [], []
     problems = []
-    if registered(db, name) != name:
-        problems.append(t("names.reclaim_key", name))
+    have = registered(db, name)
+    if have is not None and have != name:
+        problems.append(t("names.reclaim_key", name, have))
     for key, session in local_keys(db, derived(name)[1:]):
         problems.append(t("names.add_key_taken", f"cli:{key}", session))
-    con = open_ro(db)
-    try:
-        row = con.execute("SELECT key FROM sessions WHERE name = ?", (name,)).fetchone()
-    finally:
-        con.close()
-    if row is not None and row[0] != f"cli:{name}":
-        problems.append(t("names.reclaim_key_other", name, row[0]))
-    return problems, ([] if problems else [t("names.evidence_key", name)])
+    for session, key in local_names(db, derived(name)):
+        problems.append(t("names.reclaim_key_other", session, key))
+    return problems, ([t("names.evidence_key", name)] if have == name and not problems else [])
 
 
 def listening(ps_text, name, relay_pid):
@@ -386,7 +395,8 @@ def env_names(path):
 
 def plist_users(agents, name, skip, home):
     found = []
-    word = re.compile(r"(?<![A-Za-z0-9-])" + re.escape(name) + r"(?![A-Za-z0-9-])")
+    names = "|".join(re.escape(n) for n in derived(name))
+    word = re.compile(r"(?<![A-Za-z0-9_.-])(?:" + names + r")(?![A-Za-z0-9_.-])")
     try:
         paths = sorted(Path(agents).glob("*.plist"))
     except OSError:
@@ -436,7 +446,7 @@ def own_paths(home, roster, slot, name):
     return {b["plist"] for b in roster if b["slot"] == slot}
 
 
-def name_check(directory, person, name, slot, db, home, ps_text, relay_pid=None, now_ms=None):
+def name_check(directory, person, name, slot, db, home, ps_text, relay_pid=None):
     import bots
     why = problem(name)
     if why:
@@ -449,14 +459,15 @@ def name_check(directory, person, name, slot, db, home, ps_text, relay_pid=None,
     cls, holder = owner(data, roster, name, slot)
     if cls == "other":
         return None, [t("names.add_is_bot", name) if slot is None else t("names.other_slot", name, holder)], [], []
-    if cls == "own" and reserved_only(data, name, slot):
+    if cls == "own" and claim_asked(data, name, slot):
+        cls = "claim"
+    elif cls == "own" and reserved_only(data, name, slot):
         return "own", taken_elsewhere(directory, person, name, db), [], []
     if cls is None:
         if not taken(directory, person, name, db):
             return "new", [], [], []
         cls = "left"
-    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    problems, evidence = session_problems(directory, person, name, cls, now_ms)
+    problems, evidence = session_problems(directory, person, name, cls)
     more, keys = key_problems(db, name)
     problems += more
     evidence += keys
