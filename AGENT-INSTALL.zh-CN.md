@@ -14,14 +14,18 @@
 - 不读取、打印或粘贴 `~/.config/agent-relay/env`、`~/.config/agent-relay-bots/<name>/env`、`~/.config/agent-relay/outbound.key` 或 Webhook key。可以检查文件是否存在。
 - `install.sh` 在非交互终端里会在需要用户操作的位置停下并打印操作说明，把说明原样交给用户。
 - 每个阶段要求时运行 `./check.sh`，原样展示结果。`FAIL` 行给出修复办法，照做，不要即兴发挥。
-- 不安装额外软件，除第 0 阶段的 PATH 外不改 shell 配置。其他 agent 的配置由 `reason-network setup` 在用户确认计划后修改。
+- 不安装额外软件（缺命令行开发者工具时，由用户在第 0 阶段自己装），除第 0 阶段的 PATH 外不改 shell 配置。其他 agent 的配置由 `reason-network setup` 在用户确认计划后修改。
 - `install.sh` 只支持 macOS。Linux 上改按 [Linux 手工安装（实验性）](#linux-手工安装实验性) 操作，代替第 0–3 阶段，并且要用户先同意它的限制；其他系统一律停止。
 
 ## 第 0 阶段：准备（[LOCAL] 安装 agent）
 
-1. 先按指南「准备」检查 `[LOCAL]` 和 `[BOT-CLOUD]` 的依赖。`[LOCAL]` 的 `uname -s` 应输出 `Darwin`，CPU 为 arm64 或 x86_64；当前用户应已登录桌面，不用 sudo。运行 `git --version` 和 `python3 -c 'import sys, ssl, sqlite3; print(sys.version)'`，要求 Git 可用、Python 3.9+。缺少 Git/Python 时可先运行 `xcode-select --install`，等用户完成安装后重新检查，不把“已发起安装”当作已就绪。已有 agent 也须先安装、登录并能独立工作。
+1. 先按指南「准备」检查 `[LOCAL]` 和 `[BOT-CLOUD]` 的依赖。`[LOCAL]` 的 `uname -s` 应输出 `Darwin`，CPU 为 arm64 或 x86_64；当前用户应已登录桌面，不用 sudo。已有 agent 也须先安装、登录并能独立工作。不要假定任何开发工具已经装好，按下面的顺序检查：
+   - 运行 `xcode-select -p`。输出路径说明已装 Apple 命令行开发者工具（或 Xcode）。失败时，`/usr/bin/git` 和 `/usr/bin/python3` 只是占位程序：`command -v` 照样找得到，但一运行就会弹出 macOS 安装窗口并报错退出。新 Mac 就是这种状态。
+   - `xcode-select -p` 失败，且 `command -v git` 或 `command -v python3` 输出 `/usr/bin` 下的路径时，需要装命令行开发者工具。运行 `xcode-select --install`，并告诉用户：「macOS 会弹窗询问是否安装命令行开发者工具。点「安装」，同意许可协议，等下载装完，可能要一阵子。装好后告诉我。」没有弹窗时，请用户在「终端」里运行 `xcode-select --install`。弹窗说无法安装该软件时，请用户登录 Apple ID，从 https://developer.apple.com/download/all/ 下载与自己 macOS 版本对应的 Command Line Tools for Xcode 并安装。用户说装好后，再运行一次 `xcode-select -p`，不把“已发起安装”当作已就绪。不需要 Homebrew。
+   - 运行 `git --version` 和 `python3 -c 'import sys, ssl, sqlite3; print(sys.version)'`，要求 Git 可用、Python 3.9+。较旧的命令行开发者工具自带的 Python 可能低于 3.9；这时告诉用户，由用户自己装 Python 3.9+（比如用 python.org 的安装包或 Homebrew）并放进 PATH。不要自己装 Python 或 Homebrew。
+   - `curl`、`tar`、`shasum`、`openssl`、`launchctl`、`plutil` 是 macOS 自带的，用 `command -v` 检查。缺任何一个都报告并停下。
 2. 运行 `curl -sS -o /dev/null -m 10 -w '%{http_code}\n' https://aps1-1.relay.n0.iroh.link/`，应输出 `200`。失败时先让用户关掉 VPN/代理重试；若恢复，给 `iroh.link` 及所有子域添加直连规则（TUN、虚拟网卡、增强或全局模式也需要），并排除 HTTPS 解密/MITM。用 `curl -sv -o /dev/null https://aps1-1.relay.n0.iroh.link/ 2>&1 | grep issuer` 查看，应是公共 CA（目前是 Let's Encrypt）而非代理自己的 CA。引擎可能使用多台中继，规则应覆盖整个域名；`reasonmachines.com` 及其子域也按同样方式放行，因为 Reason Network 0.12 默认使用那里的 Reason 中继。关闭代理后仍失败则排查 DNS、防火墙和网络。返回 200 后再继续。
-3. 如果 `$HOME/.local/bin` 不在 PATH，后续 Bash/zsh 命令加上 `export PATH="$HOME/.local/bin:$PATH";` 前缀。持久配置前确认用户实际使用的 shell：zsh 用 `~/.zshrc`，Bash 用实际读取的启动文件，fish 用 `fish_add_path "$HOME/.local/bin"`，不要统一修改 zsh 配置。检查现有 Reason Network 的路径、版本和默认状态目录；不兼容时先报告，不覆盖另一套安装，也不直接卸载。仓库目录已存在时先核对 origin 和本地改动；本地目录可以自选。`./check.sh` 显示这台 Mac 已经运行 agent-mesh、且就是用户说的那个 Bot 时，不要重新安装：按[更新](#更新)处理；要再接一个 Bot 时按第 5 步。
+3. 如果 `$HOME/.local/bin` 不在 PATH，后续 Bash/zsh 命令加上 `export PATH="$HOME/.local/bin:$PATH";` 前缀。持久配置前确认用户实际使用的 shell：zsh 用 `~/.zshrc`，Bash 用实际读取的启动文件，fish 用 `fish_add_path "$HOME/.local/bin"`，不要统一修改 zsh 配置。检查现有 Reason Network 的路径、版本和默认状态目录；不兼容时先报告，不覆盖另一套安装，也不直接卸载。还没有代码时，Git 可用后再克隆，例如 `git clone https://github.com/xiaozhenliu/agent-mesh.git ~/agent-mesh`（目录可以自选），之后的命令都在它的根目录运行。目录已存在时先核对 origin 和本地改动。`./check.sh` 显示这台 Mac 已经运行 agent-mesh、且就是用户说的那个 Bot 时，不要重新安装：按[更新](#更新)处理；要再接一个 Bot 时按第 5 步。
 4. 一次向用户确认：使用 Claude Code、Codex、pi、DeepSeek Harness 中的哪些（其他工具不在本手册支持范围）；团队名（同时是 person 名，1–40 个 ASCII 小写字母、数字或 `-`，首尾不能是 `-`、不能连用，不用真名，建好不能直接改）；Grok Bot 在 Grok 里叫什么（任何语言都可以，原样保存；最多 64 个字符，首尾不能有空格，不能有换行或其他控制字符），再由它推导 Bot 地址名（小写字母、数字，用单个 `-` 分隔，最多 34 个字符，不能是 terminal；安装完成后可以用 `agent-mesh rename` 修改）：英文名转小写（`Nova` → `nova`），中文或其他非拉丁字母的名字给出拼音或英文建议（「小助手」→ `xiaozhushou`），把地址给用户看，用户确认或修改后再用；没有默认名，全新安装不带 `--relay-name` 时会停下并给出建议；Grok Bot 能否创建 webhook routine 并使用 CopyToBox（都必须支持）；Mac 是否会保持唤醒（接电防睡眠，合盖会让整套停止）。
 5. **在已有安装上再接一个 Grok Bot。** 第 3 步发现这台 Mac 已有 agent-mesh 安装（`./check.sh` 会打印它的 `Bot address:` 行），而用户想再接一个 Grok Bot 时，不要重做第 1、2 阶段，也不要问团队名。只问新 Bot 在 Grok 里叫什么，按第 4 步给出拼音或英文的地址建议，用户确认或修改后再用。然后运行 `./install.sh --add-bot --grok-name '<grok-name>' --relay-name <relay-name> --lang zh-CN`。绝不加 `--yes`：`--add-bot` 不接受它，计划必须由用户在终端里确认。没有终端时，安装器打印计划并以退出码 3 停下，什么都不改；把计划给用户看，请用户在自己的终端里运行同一条命令、回答 `y`，在 `[GROK-UI]` 用它打印的提示词新建由 webhook 触发的 routine，再把 Webhook URL 和 key 贴到那个终端。不需要云端提示词、邀请链接或 CopyToBox：新 Bot 会在共用的云电脑上自己登记，安装器负责确认（见[多个 Grok Bot](README.zh-CN.md#多个-grok-bot)）。安装器提示 `run ./update.sh first` 时，先按[更新](#更新)处理。它报告这个 Bot 保持 pending 时，之后运行 `./install.sh --relay-name <relay-name> --wake-bot --lang zh-CN`，从添加停下的地方继续。最后运行 `./check.sh`，按第 3 阶段测试新地址。
 
@@ -91,9 +95,9 @@
 
 前提，另加第 0 阶段第 2、4 步（网络检查，以及用户的工具、团队名、Bot 名字和地址）：
 
-- x86_64 或 aarch64 的 Linux，普通用户（不是 root），有 Git、Python 3.9+（含 `ssl`、`sqlite3`）、`curl`、`tar`、`sha256sum` 和 `openssl`。
+- x86_64 或 aarch64 的 Linux，普通用户（不是 root），有 Git、Python 3.9+（含 `ssl`、`sqlite3`）、`curl`、`tar`、`sha256sum` 和 `openssl`。用 `command -v` 和第 0 阶段第 1 步的 Python 命令检查。缺了就告诉用户，由用户用发行版的包管理器安装，例如 Debian 上 `sudo apt install git python3 curl openssl ca-certificates`。用不用 sudo 由用户决定。
 - 没有别的 Reason Network：`command -v reason-network` 找不到，`~/.reason/network` 不存在。否则停下并报告，同第 0 阶段第 3 步。
-- 代码检出在发布 tag 上：`git describe --tags --exact-match` 输出 `v` 加 `VERSION` 文件的内容。
+- 代码检出在发布 tag 上。还没有代码时按第 0 阶段第 3 步克隆，再在里面运行 `git checkout "v$(cat VERSION)"`。`git describe --tags --exact-match` 必须输出 `v` 加 `VERSION` 文件的内容。
 - 装有 Linux 版 Grok Bot 桌面应用，已连接，并允许在本机执行。CopyToBox 从这台电脑复制签名密钥，只能按绝对路径读取 home 文件夹里的文件。没有它，密钥送不到云端：停下。绝不要把密钥贴进聊天。
 - 用户使用 Bot 期间，这台电脑一直开着、联网。
 
