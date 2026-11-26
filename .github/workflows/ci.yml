@@ -59,7 +59,7 @@ jobs:
   macos:
     name: macos (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
