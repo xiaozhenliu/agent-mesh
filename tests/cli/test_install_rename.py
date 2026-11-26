@@ -3,7 +3,7 @@ import re
 import time
 import unittest
 
-from tests.cli.install_support import EMPTY_DIRECTORY
+from tests.cli.install_support import EMPTY_DIRECTORY, reshape_bot_lines
 from tests.cli.test_install_add import LEGACY_LABEL, AddSupport, m
 
 REQ = re.compile(r"[0-9a-f]{16}")
@@ -537,6 +537,36 @@ class AddedBot(RenameSupport, unittest.TestCase):
         self.assertEqual([f["name"] for f in self.record()["former"]], ["delta"])
         self.assertEqual(self.marker_name("beta"), "demo/beta")
         self.assertEqual(self.legacy_touched(), [])
+
+    def test_renaming_reads_the_status_lines_by_key_name(self):
+        repo = self.two_ready()
+        self.added(repo)
+        rename = lambda: self.rename(repo, "gamma", "--relay-name", "alpha")
+        sent = self.sent()
+        base = rename()
+        self.assertEqual(base.returncode, 3, base.stdout + base.stderr)
+        for spec in ({"*": "reorder"}, {"*": "drop record"}, {"beta": "set address nova"}):
+            reshape_bot_lines(repo, spec)
+            result = rename()
+            self.assertEqual((result.returncode, result.stdout), (3, base.stdout), (spec, result.stderr))
+        data = self.record()
+        data["removing"] = {"name": "beta", "kind": "added", "step": "stopped"}
+        self.write_record(data)
+        for spec, shown in ((None, "beta"), ({"*": "reorder"}, "beta"), ({"beta": "set address nova"}, "nova")):
+            reshape_bot_lines(repo, spec)
+            result = self.rename(repo, "gamma", "--relay-name", "alpha", "--yes")
+            self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
+            self.assertIn(m("install.bot_removing", shown, shown), result.stderr, spec)
+        del data["removing"]
+        self.write_record(data)
+        for spec in ({"beta": "drop address"}, {"beta": "drop removing"}, {"beta": "repeat stage"},
+                     {"beta": "repeat record"}, {"beta": "dangling"}):
+            reshape_bot_lines(repo, spec)
+            result = self.rename(repo, "gamma", "--relay-name", "alpha", "--yes")
+            self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
+            self.assertIn(m("install.rename_status_failed"), result.stderr, spec)
+            self.assertNotIn("rename", self.record(), spec)
+        self.assertEqual(self.sent(), sent)
 
     def test_a_name_of_another_bot_is_refused(self):
         repo = self.two_ready()

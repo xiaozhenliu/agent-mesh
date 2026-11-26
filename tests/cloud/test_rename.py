@@ -170,6 +170,33 @@ class FirstBot(CloudClone):
         self.fetch(new)
         self.assertEqual(self.relay(), "gamma\n")
 
+    def test_a_held_message_sent_again_as_a_new_row_neither_switches_nor_reaches_the_bot(self):
+        self.add_session("gamma-cloud")
+        self.add_session("gamma-inbox")
+        old = self.message("left from an earlier Bot", inbox="gamma-inbox")
+        p = self.apply("rename", "-", "bot", "gamma", R, "reclaim")
+        self.assertEqual(p.stdout.splitlines()[-1], f"agent-mesh-result rename {R} pending - bot gamma held 1", p.stdout)
+        self.assertEqual(self.message("left from an earlier Bot", inbox="gamma-inbox", mid=old), old)
+        probe = self.message("probe")
+        got = self.fetch(probe)
+        self.assertEqual(got[probe]["status"], "complete")
+        self.assertNotIn(old, got)
+        self.assertNotEqual(self.relay(), "gamma\n")
+        self.assertIsNotNone(self.pending())
+        new = self.message("first new message", inbox="gamma-inbox")
+        got = self.fetch(new)
+        self.assertEqual(got[new]["status"], "complete")
+        self.assertNotIn(old, got)
+        self.assertEqual((self.relay(), self.pending(), list(self.former())), ("gamma\n", None, ["bot"]))
+        probe = self.message("probe again")
+        got = self.fetch(probe)
+        self.assertEqual(got[probe]["status"], "complete")
+        self.assertNotIn(old, got)
+        self.assertEqual(self.message("the same id to another inbox", mid=old), old)
+        got = self.fetch(old)[old]
+        self.assertEqual(got["status"], "complete")
+        self.assertEqual(Path(got["full"]).read_text(), "the same id to another inbox")
+
     def test_a_removed_name_is_taken_back_only_with_reclaim(self):
         (self.box / "bots-removed").mkdir()
         (self.box / "bots-removed" / "zeta").write_text("t\n")

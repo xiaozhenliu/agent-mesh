@@ -109,9 +109,9 @@ class CloudClone(unittest.TestCase):
         self.release(NEXT, files)
         return self.commits[NEXT]
 
-    def message(self, text, frm="demo/mac", inbox="bot-inbox"):
+    def message(self, text, frm="demo/mac", inbox="bot-inbox", mid=None):
         self.n += 1
-        mid = f"m{self.n:04d}abc"
+        mid = mid or f"m{self.n:04d}abc"
         body = rr.fwd_body(KEY, mid, frm, "codex", "01JTHREAD", text)
         db = sqlite3.connect(self.box / "state" / "network.db")
         db.execute("INSERT INTO messages (id, sender, recipient, body, wake, sent_at) VALUES (?,?,?,?,1,?)",

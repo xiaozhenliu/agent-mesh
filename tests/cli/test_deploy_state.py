@@ -256,6 +256,18 @@ class DeployState(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return [line.split("\t")[:2] for line in r.stdout.splitlines()]
 
+    def test_bot_lines_keep_the_key_order_that_older_readers_expect(self):
+        self.legacy_env()
+        self.added_env("luna")
+        self.write({"schema": 1, "relay_name": "bot", "bots": {"luna": {"stage": "relay", "added_ms": 1}}})
+        r = self.state("status", "--lang", "en", "--python", sys.executable)
+        lines = [line.split() for line in r.stdout.splitlines() if line.startswith("bot ")]
+        self.assertEqual([w[1] for w in lines], ["bot", "luna"], r.stdout + r.stderr)
+        for w in lines:
+            self.assertEqual(w[2:20:2], ["kind", "stage", "webhook", "relay", "prompt", "cloud", "removing", "record",
+                                         "address"], w)
+            self.assertEqual(len(w) % 2, 0, w)
+
     def test_removing_marks_one_bot_and_done_drops_it_for_good(self):
         self.legacy_env()
         self.added_env("luna")

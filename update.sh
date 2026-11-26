@@ -4,21 +4,13 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/scripts/msg.sh"
 . "$HERE/scripts/lock.sh"
+. "$HERE/scripts/bot_status.sh"
 
 die() { printf 'update: %s\n' "$(tq "$@")" >&2; exit 1; }
 fail() { printf 'update: %s\n' "$*" >&2; exit 1; }
 ask() { local a=""; read -r -p "$(tq "$@") [y/N] " a || true; [[ "$a" == [yY]* ]]; }
 ask_go() { local a=""; read -r -p "$(tq update.continue) [Y/n] " a || return 1; [[ -z "$a" || "$a" == [yY]* ]]; }
 state() { "$PYTHON" "$HERE/scripts/deploy_state.py" --prompt-mode "$PROMPT_MODE" "$@"; }
-pair() {
-  local key="$1"
-  shift
-  while [ "$#" -ge 2 ]; do
-    if [ "$1" = "$key" ]; then printf '%s\n' "$2"; return 0; fi
-    shift 2
-  done
-  return 1
-}
 state_full() { "$PYTHON" "$HERE/scripts/deploy_state.py" --prompt-mode full "$@"; }
 installer() { "$BASH" "$HERE/install.sh" "$@" --lang "$DOC_LANG"; }
 service() { echo "gui/$(id -u)/$LABEL"; }
@@ -419,9 +411,10 @@ read_status() {
       engine) read -r S_ENGINE S_EVER S_EPIN <<< "$v" ;; etxn) S_ETXN="$v" ;; cloud_engine) S_CENGINE="$v" ;;
       cloud_release) S_CREL="$v" ;; config) S_CONFIG="$v" ;; recover) S_RECOVER="$v" ;;
       bot)
-        read -r -a w <<< "$v"
-        B_NAMES+=("${w[0]}"); B_KINDS+=("${w[2]}"); B_STAGES+=("${w[4]}"); B_RELAY+=("${w[8]}")
-        B_PROMPT+=("${w[10]}"); B_CLOUD+=("${w[12]}"); B_REMOVING+=("${w[14]}"); B_ADDRS+=("$(pair address bot "${w[@]}" || printf '%s' "${w[0]}")")
+        read -r -a w <<< "bot $v"
+        bot_status_read "${w[@]}" && bot_status_has kind stage relay prompt cloud removing || die update.no_status
+        B_NAMES+=("$BS_NAME"); B_KINDS+=("$BS_KIND"); B_STAGES+=("$BS_STAGE"); B_RELAY+=("$BS_RELAY")
+        B_PROMPT+=("$BS_PROMPT"); B_CLOUD+=("$BS_CLOUD"); B_REMOVING+=("$BS_REMOVING"); B_ADDRS+=("${BS_ADDRESS:-$BS_NAME}")
         B_LABELS+=("$LABEL"); B_PLISTS+=("$PLIST"); B_MARKERS+=("$MARKER") ;;
     esac
   done <<< "$out"

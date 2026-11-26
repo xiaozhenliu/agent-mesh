@@ -48,6 +48,54 @@ def fake_python(path, target=None):
     return path
 
 
+RESHAPE_BOT_LINES = '''
+
+_reshape = {spec!r}
+_bot_lines_as_produced = bot_lines
+
+
+def bot_lines(*args):
+    for line in _bot_lines_as_produced(*args):
+        w = line.split()
+        how = _reshape.get(w[1], _reshape.get("*"))
+        if how is None:
+            yield line
+            continue
+        head, pairs = w[:2], [w[i:i + 2] for i in range(2, len(w), 2)]
+        mode, _, arg = how.partition(" ")
+        if mode == "reorder":
+            pairs = pairs[::-1]
+            pairs.insert(len(pairs) // 2, ["future", "value"])
+            pairs.insert(1, ["*", "value"])
+        elif mode == "drop":
+            pairs = [p for p in pairs if p[0] != arg]
+        elif mode == "repeat":
+            pairs += [p for p in pairs if p[0] == arg]
+        elif mode == "set":
+            key, value = arg.split()
+            pairs = [[k, value if k == key else v] for k, v in pairs]
+        elif mode == "hide":
+            continue
+        tail = ["future"] if mode == "dangling" else []
+        yield " ".join(head + [x for p in pairs for x in p] + tail)
+'''
+
+
+def reshape_bot_lines(repo, spec):
+    """Rewrite the Bot lines that deploy_state.py status prints in a test checkout; spec maps a Bot name or "*" to
+    reorder, dangling, hide, drop KEY, repeat KEY or set KEY VALUE."""
+    path = Path(repo) / "scripts/deploy_state.py"
+    text = path.read_text()
+    marker = '\n\nif __name__ == "__main__":'
+    assert text.count(marker) == 1
+    start = text.find("\n\n_reshape = ")
+    if start != -1:
+        text = text[:start] + text[text.index(marker):]
+    if spec:
+        text = text.replace(marker, RESHAPE_BOT_LINES.format(spec=spec).rstrip("\n") + marker)
+    path.write_text(text)
+
+
 def rn_engine():
     spec = importlib.util.spec_from_file_location("rn_engine", ROOT / "box/rn-engine.py")
     module = importlib.util.module_from_spec(spec)

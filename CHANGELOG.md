@@ -4,6 +4,14 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.11.2 — 2026-11-26
+
+The installer and `agent-mesh update` read each Bot's state by name, so a later release can add to that state without them misreading it (#64). Update with `agent-mesh update`; updating from v0.11.1 leaves the cloud as it is, and the routine stub needs no new paste.
+
+### Fixed
+
+- `agent-mesh update` stops with "could not read the deployment state" instead of a shell error when a Bot's state is incomplete.
+
 ## v0.11.1 — 2026-11-22
 
 Taking a name back, or renaming a Bot back, no longer needs the Bot's cloud sessions to show in the team list (#66). Update with `agent-mesh update`; updating from v0.11.0 leaves the cloud as it is, and the routine stub needs no new paste.

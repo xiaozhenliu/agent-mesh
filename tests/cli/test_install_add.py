@@ -5,7 +5,7 @@ import time
 import unittest
 
 import messages
-from tests.cli.install_support import EMPTY_DIRECTORY, TEAM_ID, InstallHarness
+from tests.cli.install_support import EMPTY_DIRECTORY, TEAM_ID, InstallHarness, reshape_bot_lines
 
 HOOK = "https://example.invalid/beta-hook"
 KEY = "beta-secret-key-0123"
@@ -442,6 +442,35 @@ class TwoBots(AddSupport, unittest.TestCase):
 
     def run_in(self, *args, timeout=60):
         return self.run_script("install.sh", *args, root=self.repo_dir, timeout=timeout)
+
+    def test_adding_a_bot_reads_the_status_lines_by_key_name(self):
+        add = lambda: self.run_in("--add-bot", "--grok-name", "Gamma", "--relay-name", "gamma", timeout=30)
+        posts, changes = self.posts(), self.service_changes()
+        base = add()
+        self.assertEqual(base.returncode, 3, base.stdout + base.stderr)
+        for spec in ({"*": "reorder"}, {"*": "drop address"}, {"*": "drop record"}, {"beta": "set address nova"}):
+            reshape_bot_lines(self.repo_dir, spec)
+            result = add()
+            self.assertEqual((result.returncode, result.stdout), (3, base.stdout), (spec, result.stderr))
+        data = self.record()
+        data["removing"] = {"name": "beta", "kind": "added", "step": "stopped"}
+        self.write_record(data)
+        for spec in (None, {"*": "reorder"}, {"beta": "set address nova"}):
+            reshape_bot_lines(self.repo_dir, spec)
+            result = add()
+            self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
+            self.assertIn(m("install.bot_removing", "beta", "beta"), result.stderr, spec)
+        del data["removing"]
+        self.write_record(data)
+        for spec in ({"beta": "drop removing"}, {"beta": "drop kind"}, {"beta": "repeat removing"},
+                     {"beta": "repeat record"}, {"beta": "dangling"}):
+            reshape_bot_lines(self.repo_dir, spec)
+            result = add()
+            self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
+            self.assertIn(m("install.add_status_failed"), result.stderr, spec)
+            self.assertNotIn("unbound variable", result.stderr, spec)
+            self.assertNotIn("gamma", self.record()["bots"], spec)
+        self.assertEqual((self.posts(), self.service_changes()), (posts, changes))
 
     def test_per_bot_modes_need_a_relay_name(self):
         for args in (["--webhook"], ["--cloud-prompt"], ["--purge-copies"], ["--wake-bot"], ["--grok-name", "X"]):

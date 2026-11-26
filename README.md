@@ -8,14 +8,14 @@
 
 Connect live **Claude Code**, **Codex**, **pi**, and **DeepSeek Harness (dsh)** sessions on your local computer with a cloud **Grok Bot** in one private [Reason Network](https://github.com/reason-machines/reason-network) team — either side can start a multi-turn conversation and every reply wakes the other, with **no public IP, dedicated server, port forwarding, Reason account, Docker, or Node required**.
 
-[![Version](https://img.shields.io/badge/version-v0.11.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.11.2-blue.svg)](CHANGELOG.md)
 [![Reason Network](https://img.shields.io/badge/Reason%20Network-v0.12.17-6f42c1.svg)](https://github.com/reason-machines/reason-network)
 [![Local](https://img.shields.io/badge/local-macOS%20%7C%20Debian%20verified-007ec6.svg)](#prerequisites)
 [![Bot Cloud](https://img.shields.io/badge/bot%20cloud-Linux%20x86__64%20%7C%20ARM64-2ea44f.svg)](#prerequisites)
 [![Python](https://img.shields.io/badge/python-3.9%2B-3776ab.svg)](#prerequisites)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Release **v0.11.1** · [Changelog](CHANGELOG.md) · [Version file](VERSION) · Offline query: `./install.sh --version` (Reason Network has a separate version)
+Release **v0.11.2** · [Changelog](CHANGELOG.md) · [Version file](VERSION) · Offline query: `./install.sh --version` (Reason Network has a separate version)
 
 **[Install](#install) · [Verify](#verify) · [Architecture](#architecture-overview) · [How It Works](#how-it-works) · [Multi-Bot](#several-grok-bots) · [Security](#security-and-privacy) · [Troubleshooting](#troubleshooting) · [Terms](#terms)**
 

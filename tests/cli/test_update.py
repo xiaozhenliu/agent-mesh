@@ -13,6 +13,7 @@ from tests.cli.install_support import (
     BASE_PYTHON,
     InstallHarness,
     fake_python,
+    reshape_bot_lines,
     rn_engine,
 )
 from tests.cli.test_install_add import LEGACY_LABEL, TEAM_HASH, AddSupport, m
@@ -91,6 +92,22 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertNotIn("rn setup", self.calls())
         self.assertNotIn("rn invite", self.calls())
         self.assertNotIn("rn send", self.calls())
+
+    def test_a_status_without_bot_lines_keeps_the_single_bot_fallback(self):
+        repo = self.installed()
+        confirmed = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(confirmed.returncode, 0, confirmed.stdout + confirmed.stderr)
+        self.mark(repo, "prompt", "pending")
+        base = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(base.returncode, 0, base.stdout + base.stderr)
+        self.assertNotEqual(base.stdout, confirmed.stdout)
+        reshape_bot_lines(repo, {"*": "hide"})
+        result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual((result.returncode, result.stdout), (0, base.stdout), result.stderr)
+        reshape_bot_lines(repo, {"*": "drop cloud"})
+        result = self.run_script("update.sh", "--no-pull", "--plan", root=repo)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.no_status"), result.stderr)
 
     def test_update_compares_generated_output(self):
         repo = self.installed()
@@ -1596,6 +1613,33 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(m("update.bot_removing", "beta", "beta"), result.stderr)
         self.assertEqual(self.service_changes(), [])
+
+    def test_the_status_lines_are_read_by_key_name(self):
+        changes = self.service_changes()
+        base = self.update("--plan")
+        self.assertEqual(base.returncode, 0, base.stdout + base.stderr)
+        for spec in ({"*": "reorder"}, {"*": "drop address"}, {"*": "drop record"}):
+            reshape_bot_lines(self.repo_dir, spec)
+            result = self.update("--plan")
+            self.assertEqual((result.returncode, result.stdout), (0, base.stdout), (spec, result.stderr))
+        data = self.record()
+        data["removing"] = {"name": "beta", "kind": "added", "step": "stopped"}
+        self.write_record(data)
+        for spec in (None, {"*": "reorder"}):
+            reshape_bot_lines(self.repo_dir, spec)
+            result = self.update("--plan")
+            self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
+            self.assertIn(m("update.bot_removing", "beta", "beta"), result.stderr, spec)
+        del data["removing"]
+        self.write_record(data)
+        for spec in ({"beta": "drop kind"}, {"beta": "drop removing"}, {"beta": "repeat relay"},
+                     {"beta": "repeat record"}, {"beta": "dangling"}):
+            reshape_bot_lines(self.repo_dir, spec)
+            result = self.update()
+            self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
+            self.assertIn(m("update.no_status"), result.stderr, spec)
+            self.assertNotIn("unbound variable", result.stderr, spec)
+        self.assertEqual(self.service_changes(), changes)
 
     def test_the_guided_flow_stops_all_relays_and_pauses_and_resumes_every_routine(self):
         self.old_stubs()

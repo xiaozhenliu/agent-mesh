@@ -15,6 +15,7 @@ SEL_KIND=""; SEL_NAME=""; REPLACE_CODE=1; SLOT=""; ADDRESS=""; FORMER_VALUE=""; 
 export REASON_NETWORK_NO_PROMPT=1
 . "$HERE/scripts/msg.sh"
 . "$HERE/scripts/lock.sh"
+. "$HERE/scripts/bot_status.sh"
 
 NAME=""; MACHINE="mac"; YES=0; MODE=full; DOC_LANG=""; RELAY_NAME_ARG=""; GROK_NAME=""; GROK_SET=0; ADD=0; KEEP_ROLLBACK=0
 PYTHON_ARG=""; RELAY_PYTHON=""; RENAME=0; RENAME_TO_ARG=""; CANCEL=0; HISTORY=0
@@ -798,18 +799,19 @@ add_ready() {
       name) [ "${w[1]:-}" != changed ] || die "$(tq install.add_update_first)" ;;
       bots) die "$(tq install.add_status_failed)" ;;
       bot)
-        [ "${#w[@]}" -ge 18 ] || die "$(tq install.add_status_failed)"
-        [ "${w[1]}" != "$1" ] || continue
-        [ "${w[15]}" = - ] || die "$(tq install.bot_removing "${w[1]}" "${w[1]}")"
-        if [ "${w[3]}" = added ] && { [ "${w[5]}" != relay ] || [ "${w[13]}" != confirmed ]; }; then
-          die "$(tq install.add_unfinished "${w[1]}" "./install.sh --add-bot --relay-name ${w[1]} --lang $DOC_LANG")"
+        bot_status_read "${w[@]}" && bot_status_has kind stage webhook relay prompt cloud removing \
+          || die "$(tq install.add_status_failed)"
+        [ "$BS_NAME" != "$1" ] || continue
+        [ "$BS_REMOVING" = - ] || die "$(tq install.bot_removing "$BS_NAME" "$BS_NAME")"
+        if [ "$BS_KIND" = added ] && { [ "$BS_STAGE" != relay ] || [ "$BS_CLOUD" != confirmed ]; }; then
+          die "$(tq install.add_unfinished "$BS_NAME" "./install.sh --add-bot --relay-name $BS_NAME --lang $DOC_LANG")"
         fi
-        if [ "${w[7]}" != ok ]; then
+        if [ "$BS_WEBHOOK" != ok ]; then
           webhook="./install.sh --webhook --lang $DOC_LANG"
-          [ "${#R_NAMES[@]}" = 1 ] && [ "${w[3]}" = legacy ] || webhook="./install.sh --webhook --relay-name ${w[1]} --lang $DOC_LANG"
-          die "$(tq install.add_finish_first "${w[1]}" "$webhook")"
+          [ "${#R_NAMES[@]}" = 1 ] && [ "$BS_KIND" = legacy ] || webhook="./install.sh --webhook --relay-name $BS_NAME --lang $DOC_LANG"
+          die "$(tq install.add_finish_first "$BS_NAME" "$webhook")"
         fi
-        [ "${w[9]}" = unchanged ] && [ "${w[11]}" = unchanged ] || die "$(tq install.add_update_first)" ;;
+        [ "$BS_RELAY" = unchanged ] && [ "$BS_PROMPT" = unchanged ] || die "$(tq install.add_update_first)" ;;
     esac
   done <<< "$st"
 }
@@ -1084,18 +1086,8 @@ rename_cmd() {
   printf '%s' "$cmd"
 }
 
-pair() {
-  local key="$1"
-  shift
-  while [ "$#" -ge 2 ]; do
-    if [ "$1" = "$key" ]; then printf '%s\n' "$2"; return 0; fi
-    shift 2
-  done
-  return 1
-}
-
 rename_ready() {
-  local st line w addr
+  local st line w
   st="$(deploy_state status --lang "$DOC_LANG" --python "$RELAY_PYTHON")" || die "$(tq install.rename_status_failed)"
   while IFS= read -r line; do
     w=(); read -r -a w <<< "$line"
@@ -1107,15 +1099,15 @@ rename_ready() {
       name) [ "${w[1]:-}" != changed ] || die "$(tq install.rename_update_first)" ;;
       bots) die "$(tq install.rename_status_failed)" ;;
       bot)
-        [ "${#w[@]}" -ge 18 ] || die "$(tq install.rename_status_failed)"
-        addr="$(pair address "${w[@]}")" || die "$(tq install.rename_status_failed)"
-        [ "${w[15]}" = - ] || die "$(tq install.bot_removing "$addr" "$addr")"
-        if [ "${w[3]}" = added ] && { [ "${w[5]}" != relay ] || [ "${w[13]}" != confirmed ]; }; then
-          die "$(tq install.rename_unfinished "$addr" "./install.sh --add-bot --relay-name ${w[1]} --lang $DOC_LANG")"
+        bot_status_read "${w[@]}" && bot_status_has kind stage webhook relay cloud removing address \
+          || die "$(tq install.rename_status_failed)"
+        [ "$BS_REMOVING" = - ] || die "$(tq install.bot_removing "$BS_ADDRESS" "$BS_ADDRESS")"
+        if [ "$BS_KIND" = added ] && { [ "$BS_STAGE" != relay ] || [ "$BS_CLOUD" != confirmed ]; }; then
+          die "$(tq install.rename_unfinished "$BS_ADDRESS" "./install.sh --add-bot --relay-name $BS_NAME --lang $DOC_LANG")"
         fi
-        [ "${w[1]}" = "$1" ] || continue
-        [ "${w[7]}" = ok ] || die "$(tq install.rename_webhook_first "$addr")"
-        [ "${w[9]}" = unchanged ] || die "$(tq install.rename_update_first)" ;;
+        [ "$BS_NAME" = "$1" ] || continue
+        [ "$BS_WEBHOOK" = ok ] || die "$(tq install.rename_webhook_first "$BS_ADDRESS")"
+        [ "$BS_RELAY" = unchanged ] || die "$(tq install.rename_update_first)" ;;
     esac
   done <<< "$st"
 }

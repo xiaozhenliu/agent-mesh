@@ -4,6 +4,14 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.11.2 — 2026-11-26
+
+安装器和 `agent-mesh update` 按名称读取每个 Bot 的状态，以后的版本给状态加内容时不会让它们读错（#64）。用 `agent-mesh update` 更新；从 v0.11.1 升级不更新云端，routine 桩不用重贴。
+
+### 修复
+
+- Bot 的状态不完整时，`agent-mesh update` 报“无法读取部署状态”后停下，不再出现 shell 报错。
+
 ## v0.11.1 — 2026-11-22
 
 收回名字或把 Bot 改回原名时，不再要求 Bot 的云端会话出现在团队列表里（#66）。用 `agent-mesh update` 更新；从 v0.11.0 升级不更新云端，routine 桩不用重贴。

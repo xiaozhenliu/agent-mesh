@@ -8,14 +8,14 @@
 
 把你本地电脑上正在运行的 **Claude Code**、**Codex**、**pi**、**DeepSeek Harness (dsh)** 会话与云端 **Grok Bot** 连进同一个 [Reason Network](https://github.com/reason-machines/reason-network) 私有团队——双方随时发起多轮对话，谁回了信都会把对方叫醒，**无需公网 IP、自建服务器、端口映射、Reason 账号、Docker 或 Node**。
 
-[![Version](https://img.shields.io/badge/version-v0.11.1-blue.svg)](CHANGELOG.zh-CN.md)
+[![Version](https://img.shields.io/badge/version-v0.11.2-blue.svg)](CHANGELOG.zh-CN.md)
 [![Reason Network](https://img.shields.io/badge/Reason%20Network-v0.12.17-6f42c1.svg)](https://github.com/reason-machines/reason-network)
 [![Local](https://img.shields.io/badge/local-macOS%20%7C%20Debian%20verified-007ec6.svg)](#准备)
 [![Bot Cloud](https://img.shields.io/badge/bot%20cloud-Linux%20x86__64%20%7C%20ARM64-2ea44f.svg)](#准备)
 [![Python](https://img.shields.io/badge/python-3.9%2B-3776ab.svg)](#准备)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-当前版本 **v0.11.1** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION) · 离线查询：`./install.sh --version`（Reason Network 使用独立版本号）
+当前版本 **v0.11.2** · [更新日志](CHANGELOG.zh-CN.md) · [版本文件](VERSION) · 离线查询：`./install.sh --version`（Reason Network 使用独立版本号）
 
 **[安装](#安装) · [验证](#验证) · [架构概览](#架构概览) · [怎么工作](#怎么工作) · [多个 Bot](#多个-grok-bot) · [安全与隐私](#安全与隐私) · [常见问题](#常见问题) · [术语](#术语)**
 
