@@ -140,8 +140,10 @@ def descends(pid, parents, ancestor):
 
 def leftovers(base, started):
     """Processes that may still change files under base: those naming it, as given or resolved, and those started
-    since the test began that descend from this process or are in its session without hanging below the process
-    that started this one (a parallel test run or a pipeline); None when ps cannot tell."""
+    since the test began that descend from this process, or that are in its session and in its process group or a
+    group whose leader has exited, without hanging below the process that started this one (a parallel test run or a
+    pipeline); None when ps cannot tell. A session can hold unrelated processes: on macOS, launch agents and the
+    services launchd starts on demand all share one session, each in a group of its own."""
     rows = processes()
     if rows is None:
         return None
@@ -156,7 +158,11 @@ def leftovers(base, started):
     starter = parents.get(me) if parents.get(me, 0) > 1 else None
     spellings = sorted({str(base), os.path.realpath(base)}, key=len, reverse=True)
     named = re.compile("(?:" + "|".join(map(re.escape, spellings)) + r")(?![\w.-])")
-    session, window = os.getsid(0), time.time() - started + 1
+    try:
+        session, group = os.getsid(0), os.getpgid(0)
+    except OSError:
+        return None
+    window = time.time() - started + 1
     found = []
     for pid, ppid, age, command in rows:
         if pid in mine:
@@ -170,12 +176,14 @@ def leftovers(base, started):
             if starter is not None and descends(ppid, parents, starter):
                 continue
             try:
-                same = os.getsid(pid) == session
+                if os.getsid(pid) != session:
+                    continue
+                leader = os.getpgid(pid)
             except ProcessLookupError:
                 continue
             except OSError:
                 return None
-            if same:
+            if leader == group or leader not in parents:
                 found.append(pid)
     return found
 
