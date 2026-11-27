@@ -729,7 +729,8 @@ class Bootstrap(CloudClone):
         self.git("-C", str(self.root), "checkout", "-q", "--detach", "v0.8.1")
 
     def runner(self, env=None, stub=None):
-        return StubRunner(stub or prompt_block("routine", "en"), self.root, dict(self.env, **(env or {})))
+        return StubRunner(stub or prompt_block("routine", "en"), self.root,
+                          {**self.env, "FETCH_TIMEOUT": "0", **(env or {})})
 
     def test_stub_updates_an_old_cloud_and_reloads_in_the_same_run(self):
         commit = self.next_release()

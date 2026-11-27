@@ -30,7 +30,7 @@ class Claims(FetchFixture, unittest.TestCase):
         self.n += 1
         self.row(f"01RC{self.n:022d}", self.fwd(mid, text, key=key), int((time.time() - age) * 1000))
 
-    def fetch(self, *ids, timeout="1"):
+    def fetch(self, *ids, timeout="0"):
         rc, res = self.run_fetch("fetch", "--timeout", timeout, *ids)
         by = {r["id"]: r for r in res}
         self.assertEqual(len(by), len(res), res)                      # never two results for one id

@@ -27,12 +27,14 @@ concurrency:
 
 jobs:
   linux:
-    name: linux (Python ${{ matrix.python }})
+    name: linux (Python ${{ matrix.python }}, ${{ matrix.part }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
+        python: ["3.9", "3.13"]
+        part: [update, engine, install, other]
         include:
           - python: "3.9"
             os: ubuntu-24.04
@@ -46,30 +48,36 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Documentation
+        if: matrix.part == 'other'
         run: python3 scripts/check_docs.py
-      - name: CLI tests
-        run: python3 -m unittest discover -s tests/cli -t . -p 'test_*.py'
+      - name: CLI tests (${{ matrix.part }})
+        run: python3 -m tests.parts cli ${{ matrix.part }}
       - name: Rendering tests
+        if: matrix.part == 'other'
         run: python3 -m unittest discover -s tests/rendering -t . -p 'test_*.py'
       - name: Relay tests
+        if: matrix.part == 'other'
         run: python3 -m unittest discover -s tests/relay -t . -p 'test_*.py'
       - name: Cloud tests
+        if: matrix.part == 'other'
         run: python3 -m unittest discover -s tests/cloud -t . -p 'test_*.py'
 
   macos:
-    name: macos (${{ matrix.label }})
+    name: macos (${{ matrix.label }}, ${{ matrix.part }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 300
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
+        label: [Python 3.9, runner python3]
+        part: [update, engine, install, other]
         include:
-          - label: runner python3
-            os: macos-latest
-            python: ""
           - label: Python 3.9
             os: macos-15-intel
             python: "3.9"
+          - label: runner python3
+            os: macos-latest
+            python: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,13 +88,16 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Python version
         run: python3 --version
-      - name: CLI tests
-        run: python3 -m unittest discover -s tests/cli -t . -p 'test_*.py'
+      - name: CLI tests (${{ matrix.part }})
+        run: python3 -m tests.parts cli ${{ matrix.part }}
       - name: Rendering tests
+        if: matrix.part == 'other'
         run: python3 -m unittest discover -s tests/rendering -t . -p 'test_*.py'
       - name: Relay tests
+        if: matrix.part == 'other'
         run: python3 -m unittest discover -s tests/relay -t . -p 'test_*.py'
       - name: Shell syntax
+        if: matrix.part == 'other'
         run: bash scripts/check_shell.sh --syntax-only
 
   node:
