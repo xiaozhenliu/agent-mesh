@@ -17,6 +17,7 @@ import threading
 import time
 from pathlib import Path
 from render_prompt import CLOUD_FILES, ROOT
+from tests.cli.snapshots import claim, reusable
 
 
 def own_group_with_default_signals():
@@ -134,7 +135,7 @@ class InstallHarness:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        self.base = claim(self)
         self.home = self.base / "custom homes" / "Alex's & Team"
         self.home.mkdir(parents=True)
         self.bin = self.base / "tools"
@@ -279,6 +280,7 @@ exit 0""")
         path = self.hooks / "posts"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    @reusable
     def two_ready(self, first="alpha"):
         self.configured(first)
         self.multi_launchd()
@@ -457,6 +459,7 @@ exit 0""")
         self.tool("git", GIT_STUB)
         return repo
 
+    @reusable
     def installed(self, record=True, relay=None):
         self.configured(relay)
         repo = self.repo()

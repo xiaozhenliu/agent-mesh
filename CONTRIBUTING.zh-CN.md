@@ -44,6 +44,8 @@ bash scripts/check_shell.sh
 
 CI 在每种运行环境上把 CLI 测试分成四部分并行运行：`python3 -m tests.parts cli <部分>`，`<部分>` 为 `update`、`engine`、`install` 或 `other`。`tests/parts.py` 列出前三部分的模块，`other` 运行其余全部 CLI 模块，新增模块无须改动它。四部分合起来与上面 `tests/cli` 那条命令运行的测试相同，在开发电脑上也可以同时运行。
 
+CLI 测试里的 `installed()`、`two_ready()` 和 `added()` 通过真实脚本搭好一个 Bot，每次要几秒。`tests/cli/snapshots.py` 让它们在每个测试类、每种起始状态下只构建一次；同一类里后面的测试以相同方式调用时，重放那次构建改动过的文件，并与它的结果核对。因此同一类的测试共用一个目录路径；某个测试留下仍在运行的进程或线程后，后面的测试换用新路径并重新构建。重放保留首次构建写下的时间、请求 id 和 PID，需要拿它们与自己算出的时间比较的测试，用 `type(self).installed.__wrapped__(self)`（另外两个同理）现场构建。
+
 旧版 CLI 测试跑完后可能留下假引擎守护进程，每个都是一个 `python3` 进程，命令为 `<临时目录>/workspace/box/bin/engine/reason-network daemon --service`。用 `ps -axo pid,command | grep '[w]orkspace/box/bin/engine/reason-network daemon'` 列出，再用 `kill <pid>` 停掉。真实引擎是二进制文件，不由 `python3` 运行，不会匹配这个模式。现在的 CLI 测试会在假守护进程比测试活得久时报失败。
 
 dsh 测试也可以用[插件指南](dsh/README.zh-CN.md)中的 App 自带运行时。安装器和卸载器测试使用临时 home 和模拟的系统、网络、服务、引擎命令，不安装软件、不删除临时目录以外的东西，也不接触真实服务。文档检查覆盖语言配对、相对链接和锚点、提示词占位符、AGENTS 模板里的生成块、协议向量和消息目录（各语言 key 与 `%s` 个数一致、只用允许的转换和转义、每个 key 都被使用、被使用的 key 都存在）；不能代替人工核对翻译含义。

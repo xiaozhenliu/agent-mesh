@@ -6,6 +6,7 @@ import unittest
 
 import messages
 from tests.cli.install_support import EMPTY_DIRECTORY, TEAM_ID, InstallHarness, reshape_bot_lines
+from tests.cli.snapshots import reusable
 
 HOOK = "https://example.invalid/beta-hook"
 KEY = "beta-secret-key-0123"
@@ -25,6 +26,7 @@ class AddSupport(InstallHarness):
                      ("(not echoed): ", KEY)]
         return self.run_staged(repo, "--add-bot", "--grok-name", grok, *args, steps=steps)
 
+    @reusable
     def added(self, repo, name="beta"):
         self.registers_on_wake(name)
         self.bot_confirms(name)
