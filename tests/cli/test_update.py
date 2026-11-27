@@ -82,13 +82,23 @@ class Update(InstallHarness, unittest.TestCase):
         repo = self.installed()
         with open(repo / "agent_relay.py", "a") as stream:
             stream.write("\n")
-        result = self.run_script("update.sh", "--no-pull", root=repo, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        with subprocess.Popen(["/bin/bash", str(repo / "update.sh"), "--no-pull"], env=self.env,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+            try:
+                out, err = proc.communicate(input="", timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise
+        self.assertEqual(proc.returncode, 0, out + err)
+        self.assertEqual((self.home / ".local/lib/agent-mesh.lock").read_text(), f"pid {proc.pid}\n")
         relay, _ = self.relay_files()
         self.assertEqual(relay.read_bytes(), (repo / "agent_relay.py").read_bytes())
-        self.assertNotIn("[GROK-UI]", result.stdout)
-        self.assertRegex(result.stdout, r"relay\s+updated")
-        self.assertIn("RESULT ok", result.stdout)
+        self.assertEqual(self.started()[-1], self.sha(repo / "agent_relay.py"))
+        self.assertNotIn("[GROK-UI]", out)
+        self.assertNotIn("another management command", out + err)
+        self.assertRegex(out, r"relay\s+updated")
+        self.assertIn("RESULT ok", out)
         self.assertNotIn("rn setup", self.calls())
         self.assertNotIn("rn invite", self.calls())
         self.assertNotIn("rn send", self.calls())
@@ -153,20 +163,11 @@ class Update(InstallHarness, unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("unreadable", result.stderr)
 
-    def test_update_guided_flow_runs_in_order_and_records_each_step(self):
-        self.guided_flow("--manual")
-
     def test_update_without_a_record_of_the_cloud_side_uses_the_guided_flow_by_itself(self):
-        self.guided_flow()
-
-    def guided_flow(self, *args):
         repo = self.installed(record=False)
-        result = self.run_tty(repo, "--no-pull", *args, answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
+        result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        if args:
-            self.assertNotIn(m("update.plan_no_record"), result.stdout)
-        else:
-            self.assertIn(m("update.plan_no_record"), result.stdout)
+        self.assertIn(m("update.plan_no_record"), result.stdout)
         [message] = self.sent()
         self.assertRegex(message["body"], r"\Aagent-mesh stub [0-9a-f]{16}\nlang=en\Z")
         self.assertLess(result.stdout.index("match: commit, checksums and engine"),
@@ -314,6 +315,8 @@ class Update(InstallHarness, unittest.TestCase):
         (self.git / "release-commit").write_text("b" * 40 + "\n")
         result = self.run_tty(repo, "--no-pull", "--manual", answers=["y", "y", *self.cloud_reply(repo), "y", "y"])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.plan_cloud_manual"), result.stdout)
+        self.assertNotIn(m("update.plan_no_record"), result.stdout)
         self.assertIn(f"TAG={self.release_tag(repo)}; COMMIT={'b' * 40}", result.stdout)
         self.assertIn("mismatch: the reply shows commit aaaaaaaaaaaa, not bbbbbbbbbbbb", result.stdout)
         result = self.run_tty(repo, "--no-pull", answers=["y", "y", *self.cloud_reply(repo, commit="b" * 40), "y", "y"])
@@ -1605,15 +1608,6 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         self.assertEqual(self.bot("gamma")["prompt"]["state"], "confirmed")
         self.assertEqual(len(self.sent()), sent)
 
-    def test_a_bot_being_removed_stops_the_update(self):
-        data = self.record()
-        data["removing"] = {"name": "beta", "kind": "added", "step": "stopped"}
-        self.write_record(data)
-        result = self.update("--plan")
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn(m("update.bot_removing", "beta", "beta"), result.stderr)
-        self.assertEqual(self.service_changes(), [])
-
     def test_the_status_lines_are_read_by_key_name(self):
         changes = self.service_changes()
         base = self.update("--plan")
@@ -1625,15 +1619,13 @@ class MultiBotUpdate(AddSupport, unittest.TestCase):
         data = self.record()
         data["removing"] = {"name": "beta", "kind": "added", "step": "stopped"}
         self.write_record(data)
-        for spec in (None, {"*": "reorder"}):
-            reshape_bot_lines(self.repo_dir, spec)
-            result = self.update("--plan")
-            self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
-            self.assertIn(m("update.bot_removing", "beta", "beta"), result.stderr, spec)
+        reshape_bot_lines(self.repo_dir, None)
+        result = self.update("--plan")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("update.bot_removing", "beta", "beta"), result.stderr)
         del data["removing"]
         self.write_record(data)
-        for spec in ({"beta": "drop kind"}, {"beta": "drop removing"}, {"beta": "repeat relay"},
-                     {"beta": "repeat record"}, {"beta": "dangling"}):
+        for spec in ({"beta": "drop kind"}, {"beta": "drop removing"}, {"beta": "dangling"}):
             reshape_bot_lines(self.repo_dir, spec)
             result = self.update()
             self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))

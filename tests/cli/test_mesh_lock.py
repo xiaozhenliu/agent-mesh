@@ -264,18 +264,6 @@ class Entrypoints(InstallHarness, LockHome, unittest.TestCase):
         self.lockfile = self.home / ".local/lib/agent-mesh.lock"
         return self.hold()
 
-    def test_update_runs_install_under_its_own_lock(self):
-        repo = self.installed()
-        with open(repo / "agent_relay.py", "a") as stream:
-            stream.write("\n")
-        result = self.run_script("update.sh", "--no-pull", "--yes", root=repo, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertRegex(result.stdout, r"relay\s+updated")
-        self.assertEqual(self.started()[-1], self.sha(repo / "agent_relay.py"))
-        self.assertNotIn("another management command", result.stdout + result.stderr)
-        lock = self.home / ".local/lib/agent-mesh.lock"
-        self.assertRegex(lock.read_text(), r"^pid \d+\n$")
-
     def test_every_writing_entry_waits_for_the_lock_and_preflight_does_not(self):
         repo = self.installed()
         before = self.record()

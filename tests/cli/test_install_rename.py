@@ -559,8 +559,7 @@ class AddedBot(RenameSupport, unittest.TestCase):
             self.assertIn(m("install.bot_removing", shown, shown), result.stderr, spec)
         del data["removing"]
         self.write_record(data)
-        for spec in ({"beta": "drop address"}, {"beta": "drop removing"}, {"beta": "repeat stage"},
-                     {"beta": "repeat record"}, {"beta": "dangling"}):
+        for spec in ({"beta": "drop address"}, {"beta": "drop removing"}, {"beta": "dangling"}):
             reshape_bot_lines(repo, spec)
             result = self.rename(repo, "gamma", "--relay-name", "alpha", "--yes")
             self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))

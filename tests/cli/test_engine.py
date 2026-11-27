@@ -190,6 +190,12 @@ def fake_engine(version):
     return FAKE.replace("@PYTHON@", sys.executable).replace("@VERSION@", version)
 
 
+def fake_effective(text):
+    scope = {}
+    exec(FAKE[FAKE.index("def effective("):FAKE.index("def daemon(")], scope)
+    return scope["effective"](text)
+
+
 def tarball(version):
     data = fake_engine(version).encode()
     archive = io.BytesIO()
@@ -1609,9 +1615,12 @@ class MacUpgrade(UpgradeSupport, InstallHarness, unittest.TestCase):
         self.assertEqual((self.daemon(self.rn_home), self.cfg.read_bytes()), (pid, final))
         self.assertFalse(self.kept.exists())
 
-    def repaired_with_the_top_already_right(self, table):
+    def test_lines_left_in_several_tables_are_removed_and_their_neighbours_stay(self):
         top = self.APPENDED + 'person = "demo"\n\n'
+        table = ('[inbound]\ndefault = "accept"\n\n[inbound.people]\nauto_update = false\nbob = "hold"\n'
+                 'lan = "refuse"\n\n[folders]\n"~/lan" = "off"\nlan = false\nauto_update = "~/updates"\n\n[extra]\n')
         want = top + table.replace("auto_update = false\n", "").replace("lan = false\n", "")
+        self.assertEqual(fake_effective(top + '[folders]\n"~/personal" = "off"\n' + self.APPENDED), "defaults")
         repo = self.settings_in_a_table(text=top + table + self.APPENDED)
         old_pid = self.daemon(self.rn_home)
         self.assertTrue(self.daemon_config(self.rn_home).startswith(self.APPENDED))
@@ -1628,17 +1637,6 @@ class MacUpgrade(UpgradeSupport, InstallHarness, unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("line(s) that an earlier version appended inside a table", result.stdout)
         self.assert_settings_loaded(old_pid, want)
-
-    def test_lines_left_in_the_people_table_are_removed_although_the_top_of_the_file_is_already_right(self):
-        self.repaired_with_the_top_already_right('[inbound]\ndefault = "accept"\n\n[inbound.people]\nbob = "hold"\n')
-
-    def test_lines_left_in_the_folders_table_are_removed_although_the_top_of_the_file_is_already_right(self):
-        self.repaired_with_the_top_already_right('[folders]\n"~/personal" = "off"\n')
-
-    def test_lines_left_in_several_tables_are_removed_and_their_neighbours_stay(self):
-        self.repaired_with_the_top_already_right('[inbound.people]\nauto_update = false\nbob = "hold"\n'
-                                                 'lan = "refuse"\n\n[folders]\n"~/lan" = "off"\nlan = false\n'
-                                                 'auto_update = "~/updates"\n\n[extra]\n')
 
     def test_a_table_that_names_a_setting_in_another_way_stops_the_update_before_anything_changes(self):
         top = self.APPENDED + 'person = "demo"\n\n[folders]\n"~/personal" = "off"\n'

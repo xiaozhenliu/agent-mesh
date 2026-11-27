@@ -14,6 +14,7 @@ from tests.cli.install_support import (
     EMPTY_DIRECTORY,
     fake_python,
 )
+from tests.cli.test_install_add import m
 
 
 class InstallNames(InstallHarness, unittest.TestCase):
@@ -119,11 +120,15 @@ class InstallNames(InstallHarness, unittest.TestCase):
         for args in (("--name", "demo", "--relay-name", "bob", "--yes"), ("--webhook", "--relay-name", "bob"),
                      ("--cloud-prompt", "--relay-name", "bob")):
             result = self.run_script("install.sh", *args)
-            self.assertNotEqual(result.returncode, 0, args)
-            self.assertIn("not 'bob'. --relay-name selects an existing Bot and does not rename it; "
-                          "to rename this Bot, run agent-mesh rename bob", result.stderr, args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn(m("install.rename_refused", "alice", "bob", "bob"), result.stderr, args)
+            self.assertIn(m("install.add_hint"), result.stderr, args)
             self.assertEqual((env.read_bytes(), record.read_bytes()), before, args)
             self.assertEqual(self.rn_calls(), [], args)
+        result = self.run_script("install.sh", "--wake-bot")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(m("install.wake_legacy"), result.stderr)
+        self.assertEqual((env.read_bytes(), record.read_bytes()), before)
         result = self.run_script("install.sh", "--cloud-prompt", "--relay-name", "alice")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Bot address: demo/alice (cloud sessions alice-cloud, alice-inbox)", result.stdout)

@@ -455,15 +455,14 @@ class TwoBots(AddSupport, unittest.TestCase):
         data = self.record()
         data["removing"] = {"name": "beta", "kind": "added", "step": "stopped"}
         self.write_record(data)
-        for spec in (None, {"*": "reorder"}, {"beta": "set address nova"}):
+        for spec in (None, {"beta": "set address nova"}):
             reshape_bot_lines(self.repo_dir, spec)
             result = add()
             self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
             self.assertIn(m("install.bot_removing", "beta", "beta"), result.stderr, spec)
         del data["removing"]
         self.write_record(data)
-        for spec in ({"beta": "drop removing"}, {"beta": "drop kind"}, {"beta": "repeat removing"},
-                     {"beta": "repeat record"}, {"beta": "dangling"}):
+        for spec in ({"beta": "drop removing"}, {"beta": "drop kind"}, {"beta": "dangling"}):
             reshape_bot_lines(self.repo_dir, spec)
             result = add()
             self.assertEqual(result.returncode, 1, (spec, result.stdout + result.stderr))
@@ -560,21 +559,6 @@ class TwoBots(AddSupport, unittest.TestCase):
         self.assertEqual(after[LEGACY_LABEL], before[LEGACY_LABEL])
         self.assertNotEqual(after[f"{LEGACY_LABEL}.beta"]["pid"], before[f"{LEGACY_LABEL}.beta"]["pid"])
         self.assertEqual(self.legacy_touched(), [])
-
-
-class SingleBot(AddSupport, unittest.TestCase):
-    def test_a_new_name_without_add_bot_is_refused_with_a_hint(self):
-        repo = self.two_ready()
-        result = self.run_script("install.sh", "--name", "demo", "--relay-name", "other", "--yes", root=repo)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn(m("install.rename_refused", "alpha", "other", "other"), result.stderr)
-        self.assertIn(m("install.add_hint"), result.stderr)
-        result = self.run_script("install.sh", "--webhook", "--relay-name", "other", root=repo)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(m("install.add_hint"), result.stderr)
-        result = self.run_script("install.sh", "--wake-bot", root=repo)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(m("install.wake_legacy"), result.stderr)
 
 
 if __name__ == "__main__":

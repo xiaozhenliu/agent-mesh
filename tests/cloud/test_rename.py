@@ -22,6 +22,28 @@ def run_apply(box, root, env, *args):
                            *args], env=env, capture_output=True, text=True, timeout=120)
 
 
+class ExcludeStructure(unittest.TestCase):
+    def test_only_the_structure_that_fetch_writes_is_accepted(self):
+        valid = load("rn_fetch_exclusion", HERE / "rn-fetch.py").exclusion_valid
+        row = "01RN0000000000000000000001"
+        claim = lambda **c: {"inbox": "bot-inbox", "rows": [[row, "m1"], [row, None]], **c}
+        for data in ({"claims": {}, "accepted": {}}, {"claims": {R: claim(ts=1)}, "accepted": {RA: claim(rows=[])}}):
+            self.assertTrue(valid(data), data)
+        bad = [{}, None, [], ["claims"], "text", {"claims": {}}, {"claims": {}, "accepted": {}, "extra": {}},
+               {"claims": [], "accepted": {}}, {"claims": None, "accepted": {}}, {"claims": {}, "accepted": []},
+               {"claims": {"": claim()}, "accepted": {}}, {"claims": {R: "x"}, "accepted": {}},
+               {"claims": {R: {"rows": []}}, "accepted": {}}, {"claims": {R: claim(inbox="")}, "accepted": {}},
+               {"claims": {R: claim(inbox=1)}, "accepted": {}}, {"claims": {R: claim(rows="x")}, "accepted": {}},
+               {"claims": {}, "accepted": {R: claim(rows=[[row]])}}, {"claims": {R: claim(rows=[row])}, "accepted": {}},
+               {"claims": {R: claim(rows=[[row, "m1", "m2"]])}, "accepted": {}},
+               {"claims": {R: claim(rows=[["", "m1"]])}, "accepted": {}},
+               {"claims": {R: claim(rows=[[1, "m1"]])}, "accepted": {}},
+               {"claims": {R: claim(rows=[[row, ""]])}, "accepted": {}},
+               {"claims": {R: claim(rows=[[row, 1]])}, "accepted": {}}]
+        for data in bad:
+            self.assertFalse(valid(data), data)
+
+
 class FirstBot(CloudClone):
     def setUp(self):
         super().setUp()
@@ -276,11 +298,8 @@ class FirstBot(CloudClone):
         (self.box / "exclude.json").write_text(json.dumps(good))
         p = self.cloud("fetch", mid)
         self.assertNotIn('"status": "complete"', p.stdout)
-        bad = [{}, None, [], {"claims": [], "accepted": {}}, {"claims": None, "accepted": {}}, {"claims": {}},
-               {"claims": {R: {"inbox": "bot-inbox", "rows": "x"}}, "accepted": {}},
-               {"claims": {R: {"inbox": "bot-inbox", "rows": [["01RN0000000000000000000001"]]}}, "accepted": {}},
-               {"claims": {R: {"rows": []}}, "accepted": {}}, ["claims"], "text"]
-        for data in bad:
+        for data in (None, {"claims": {}},
+                     {"claims": {R: {"inbox": "bot-inbox", "rows": [["01RN0000000000000000000001"]]}}, "accepted": {}}):
             with self.subTest(data=data):
                 (self.box / "exclude.json").write_text(json.dumps(data))
                 p = self.cloud("fetch", mid)
